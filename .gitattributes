@@ -1,0 +1,19 @@
+# Check out every text file with LF on every platform. Tests compare files byte for byte
+# (pinned SHA-256 of the bundled font licence, the generated shortcut table in the docs).
+* text=auto eol=lf
+
+# Licence notices quote upstream texts verbatim, including their own line endings.
+THIRD_PARTY_NOTICES*.md -text
+
+# Windows scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.ttf binary
+*.otf binary
+*.jar binary
+*.keystore binary
+*.procreate binary
