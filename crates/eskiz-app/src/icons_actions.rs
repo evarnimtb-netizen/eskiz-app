@@ -134,6 +134,15 @@ pub fn icon_sun(p: &Painter, r: Rect, c: Color32) {
     }
 }
 
+/// Eskiz look: the pointer nib with a sparkle (a new coat of paint), distinct from the sun.
+pub fn icon_eskiz_look(p: &Painter, r: Rect, c: Color32) {
+    let g = Grid::new(p, r, c);
+    g.closed(&[(4.0, 10.5), (15.0, 15.0), (10.5, 19.0), (6.0, 19.0)]);
+    g.line(&[(8.0, 15.0), (12.0, 11.5)]);
+    g.line(&[(18.0, 3.0), (18.0, 9.0)]);
+    g.line(&[(15.0, 6.0), (21.0, 6.0)]);
+}
+
 /// Window with its side panel on the right: right-hand interface.
 pub fn icon_sidebar_right(p: &Painter, r: Rect, c: Color32) {
     let g = Grid::new(p, r, c);
@@ -253,7 +262,8 @@ pub fn icon_hsb(p: &Painter, r: Rect, c: Color32) {
 }
 
 /// Every icon here, for the review window and for tests.
-pub const ALL: [(&str, IconFn); 32] = [
+pub const ALL: [(&str, IconFn); 33] = [
+    ("eskiz look", icon_eskiz_look),
     ("canvas", icon_canvas),
     ("share", icon_share),
     ("prefs", icon_prefs),

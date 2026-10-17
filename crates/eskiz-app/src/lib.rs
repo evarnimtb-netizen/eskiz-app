@@ -98,6 +98,8 @@ mod lifecycle_host;
 mod recovery_tests;
 #[cfg(test)]
 mod android_fix_tests;
+#[cfg(test)]
+mod rc1_tests;
 pub mod storage;
 pub mod studio;
 pub(crate) mod licenses;

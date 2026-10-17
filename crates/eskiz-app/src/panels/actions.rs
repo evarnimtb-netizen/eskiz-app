@@ -467,7 +467,7 @@ impl EskizApp {
             }
         }
         let mut eskiz = prefs.identity == crate::theme::UiIdentity::Eskiz;
-        if list_row(ui, &pal, ia::icon_sun, "Eskiz look", Some("New colors and typeface"), true, Trailing::Switch(eskiz)).clicked() {
+        if list_row(ui, &pal, ia::icon_eskiz_look, "Eskiz look", Some("New colors and typeface"), true, Trailing::Switch(eskiz)).clicked() {
             eskiz = !eskiz;
             prefs.identity = if eskiz { crate::theme::UiIdentity::Eskiz } else { crate::theme::UiIdentity::Classic };
         }

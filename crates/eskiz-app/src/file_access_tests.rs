@@ -61,7 +61,7 @@ fn press(h: &mut Headless, name: &str, nth: usize) {
     let mut all = buttons(h, name);
     // Buttons low in a long panel start out scrolled off; scroll the panel until it is on screen.
     for _ in 0..6 {
-        let visible = all.get(nth).is_some_and(|p| p.y < 780.0);
+        let visible = all.get(nth).is_some_and(|p| p.y < 640.0);
         if visible || all.is_empty() {
             break;
         }

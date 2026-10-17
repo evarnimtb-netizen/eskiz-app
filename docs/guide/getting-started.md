@@ -54,7 +54,7 @@ Short messages appear at the bottom of the screen to confirm actions, such as "U
 
 The first time you start Eskiz, a short tour opens over the Gallery. It offers a sample canvas called "Sample: first steps" and then three hints on the canvas: paint a stroke, undo it, and change the brush size. Each hint waits for you to do the action, and every step can be skipped with its **Skip** button or the Esc key. The sample is an ordinary artwork, so you can delete it from the Gallery like any other.
 
-To see the tour again, open **Actions**, then **Help**, then **Welcome tour**. The **Settings** tab also has **Show welcome again on next launch**.
+The tour opens only for a new user. If your data folder already holds artworks (for example from an earlier test build), Eskiz assumes you know your way around and does not show it. To see it, open **Actions**, then **Help**, then **Welcome tour**. The **Settings** tab also has **Show welcome again on next launch**.
 
 ## Saving
 

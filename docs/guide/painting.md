@@ -45,7 +45,7 @@ One finger paints with the current tool, unless **Disable touch painting** is on
 
 Pick a color from the canvas in any of three ways:
 
-- hold one finger still for 0.4 seconds (the delay is set in Gesture controls, from 0.1 to 1.5 seconds);
+- hold one finger still for 0.4 seconds, from the moment it touches down (a stroke that has already moved is never interrupted; the delay is set in Gesture controls, from 0.1 to 1.5 seconds);
 - hold the **Pick Color** button in the sidebar for the same delay;
 - on a desktop, hold **Alt** (Option on macOS) and click or drag.
 

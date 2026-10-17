@@ -55,8 +55,12 @@ pub(crate) fn small_label(ui: &mut egui::Ui, pal: &Palette, text: &str) {
 }
 
 pub(crate) fn title_row(ui: &mut egui::Ui, text: &str) {
-    if crate::theme::is_eskiz(ui.ctx()) {
-        ui.label(RichText::new(text).font(egui::FontId::new(16.0, egui::FontFamily::Name(crate::fonts::HEADING_FAMILY.into()))));
+    let heading = if crate::theme::is_eskiz(ui.ctx()) { crate::fonts::heading_font(ui.ctx(), 16.0) } else { None };
+    if let Some(font) = heading {
+        ui.label(RichText::new(text).font(font));
+    } else if crate::theme::is_eskiz(ui.ctx()) {
+        // The Eskiz fonts arrive next pass: same size, default family, for this one frame.
+        ui.label(RichText::new(text).size(16.0));
     } else {
         ui.label(RichText::new(text).size(17.0).strong());
     }

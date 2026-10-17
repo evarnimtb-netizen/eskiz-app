@@ -65,3 +65,35 @@ fn eskiz_top_bar_uses_the_navy_chrome() {
     // Bar #121829 at 92% over the #242424 surround.
     assert!(p[2] > p[0] && p[0] < 0x20, "navy bar, got {p:?}");
 }
+
+/// Switching the look at any moment must not panic: fonts installed with `set_fonts` only
+/// take effect next frame, so no text may name a family the current frame lacks.
+#[test]
+fn switching_the_look_with_panels_open_never_panics() {
+    use crate::popover::Panel;
+    for start in UiIdentity::ALL {
+        let mut h = window(start);
+        for panel in [Panel::Actions, Panel::Layers, Panel::Brush, Panel::Colour] {
+            h.open_panel(panel);
+            for _ in 0..3 {
+                let next = if h.app.prefs.identity == UiIdentity::Eskiz { UiIdentity::Classic } else { UiIdentity::Eskiz };
+                h.app.prefs.identity = next;
+                for _ in 0..4 {
+                    h.step();
+                }
+                assert_eq!(theme::is_eskiz(&h.ctx), next == UiIdentity::Eskiz);
+            }
+        }
+        // Light and identity changing in the same frame.
+        h.app.prefs.light = !h.app.prefs.light;
+        h.app.prefs.identity = UiIdentity::Eskiz;
+        h.advance(0.2);
+    }
+}
+
+#[test]
+fn starting_with_the_eskiz_look_never_panics_on_first_frame() {
+    let mut h = Headless::new(WINDOW, Document::new(64, 64), Prefs { identity: UiIdentity::Eskiz, ..Prefs::default() });
+    h.open_panel(crate::popover::Panel::Actions);
+    h.advance(0.3);
+}

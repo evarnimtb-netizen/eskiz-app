@@ -40,6 +40,16 @@ pub fn install(ctx: &egui::Context, identity: UiIdentity) {
     ctx.set_fonts(definitions(identity));
 }
 
+/// The heading font for `size`, or `None` while the heading family is not yet bound in this pass.
+///
+/// `Context::set_fonts` only takes effect at the start of the next pass, but the palette flag
+/// (`theme::is_eskiz`) flips at once. Text that names [`HEADING_FAMILY`] before the fonts have
+/// arrived would panic ("family not bound"), so callers fall back to the proportional font.
+pub fn heading_font(ctx: &egui::Context, size: f32) -> Option<FontId> {
+    let family = FontFamily::Name(HEADING_FAMILY.into());
+    ctx.fonts(|f| f.families().contains(&family)).then(|| FontId::new(size, family))
+}
+
 /// Width of one digit cell: the width of "0" in `font`.
 pub fn digit_cell(painter: &Painter, font: &FontId) -> f32 {
     painter.layout_no_wrap("0".to_owned(), font.clone(), Color32::WHITE).size().x

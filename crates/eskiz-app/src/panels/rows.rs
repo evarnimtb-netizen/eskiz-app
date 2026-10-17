@@ -11,6 +11,9 @@ use crate::theme::Palette;
 pub const ROW_H: f32 = 46.0;
 /// Height of a row with a second line.
 pub const ROW_H_TALL: f32 = 54.0;
+/// Desktop (pointer) row heights.
+pub const ROW_H_COMPACT: f32 = 34.0;
+pub const ROW_H_TALL_COMPACT: f32 = 42.0;
 
 /// What sits at the right end of a row.
 pub enum Trailing<'a> {
@@ -42,9 +45,35 @@ pub fn list_row(
     enabled: bool,
     trailing: Trailing,
 ) -> Response {
-    let height = if sub.is_some() { ROW_H_TALL } else { ROW_H };
+    let compact = is_compact(ui.ctx());
+    // Metrics: full-size touch targets on touch devices, tighter rows for a pointer.
+    let (row_h, row_h_tall, icon_size, icon_x, text_x_off, label_pt, sub_pt, sw_w, sw_h) = if compact {
+        (ROW_H_COMPACT, ROW_H_TALL_COMPACT, 20.0, 20.0, 40.0, 13.0, 10.5, 34.0, 20.0)
+    } else {
+        (ROW_H, ROW_H_TALL, 24.0, 26.0, 50.0, 14.0, 11.0, 40.0, 24.0)
+    };
+    // How much of the row's right end the trailing element takes.
+    let reserve = match &trailing {
+        Trailing::None => 14.0,
+        Trailing::Chevron => 14.0 + 14.0,
+        Trailing::Switch(_) => 14.0 + sw_w + 8.0,
+        Trailing::Text(t) => {
+            let w = ui.painter().layout_no_wrap((*t).to_owned(), FontId::proportional(12.0), pal.text_dim).size().x;
+            14.0 + w + 10.0
+        }
+    };
+    let width = ui.available_width();
+    let max_w = (width - text_x_off - reserve).max(20.0);
+    // The second line wraps (at most two lines) instead of being cut off.
+    let sub_galley = sub.map(|s| {
+        let mut job = egui::text::LayoutJob::simple(s.to_owned(), FontId::proportional(sub_pt), pal.text_dim, max_w);
+        job.wrap.max_rows = 2;
+        ui.painter().layout_job(job)
+    });
+    let extra = sub_galley.as_ref().map_or(0.0, |g| if g.rows.len() > 1 { sub_pt + 2.0 } else { 0.0 });
+    let height = if sub.is_some() { row_h_tall + extra } else { row_h };
     let sense = if enabled { Sense::click() } else { Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), sense);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), sense);
     let name = match sub {
         Some(s) => format!("{label}, {s}"),
         None => label.to_owned(),
@@ -57,9 +86,8 @@ pub fn list_row(
     let fill = if enabled && resp.hovered() { pal.separator } else { pal.row };
     painter.rect_filled(rect, CornerRadius::same(10), fill);
     let colour = ink(pal, enabled);
-    icon(&painter, Rect::from_center_size(Pos2::new(rect.left() + 26.0, rect.center().y), vec2(24.0, 24.0)), colour);
+    icon(&painter, Rect::from_center_size(Pos2::new(rect.left() + icon_x, rect.center().y), vec2(icon_size, icon_size)), colour);
 
-    // Right end first, so the text knows how much room it has.
     let mut right = rect.right() - 14.0;
     match trailing {
         Trailing::None => {}
@@ -68,34 +96,47 @@ pub fn list_row(
             let line = Stroke::new(1.75, pal.text_dim);
             painter.line_segment([c + vec2(-3.0, -6.0), c + vec2(3.0, 0.0)], line);
             painter.line_segment([c + vec2(3.0, 0.0), c + vec2(-3.0, 6.0)], line);
-            right -= 14.0;
         }
         Trailing::Switch(on) => {
-            switch(&painter, pal, Rect::from_min_size(Pos2::new(right - 40.0, rect.center().y - 12.0), vec2(40.0, 24.0)), on, enabled);
-            right -= 48.0;
+            switch(&painter, pal, Rect::from_min_size(Pos2::new(right - sw_w, rect.center().y - sw_h / 2.0), vec2(sw_w, sw_h)), on, enabled);
         }
         Trailing::Text(t) => {
             let galley = painter.layout_no_wrap(t.to_owned(), FontId::proportional(12.0), pal.text_dim);
             let w = galley.size().x;
             painter.galley(Pos2::new(right - w, rect.center().y - galley.size().y / 2.0), galley, pal.text_dim);
-            right -= w + 10.0;
+            right -= w;
         }
     }
-    let text_x = rect.left() + 50.0;
-    let max_w = (right - text_x).max(20.0);
-    match sub {
-        Some(s) => {
-            painter.text(Pos2::new(text_x, rect.center().y - 9.0), Align2::LEFT_CENTER, label, FontId::proportional(14.0), colour);
-            let line = fit_text(&painter, s, &FontId::proportional(11.0), max_w);
-            painter.text(Pos2::new(text_x, rect.center().y + 10.0), Align2::LEFT_CENTER, line, FontId::proportional(11.0), pal.text_dim);
+    let _ = right;
+    let text_x = rect.left() + text_x_off;
+    let label_font = FontId::proportional(label_pt);
+    let label_line = fit_text(&painter, label, &label_font, max_w);
+    match sub_galley {
+        Some(g) => {
+            let block = label_pt + 4.0 + g.size().y;
+            let top = rect.center().y - block / 2.0;
+            painter.text(Pos2::new(text_x, top), Align2::LEFT_TOP, label_line, label_font, colour);
+            painter.galley(Pos2::new(text_x, top + label_pt + 4.0), g, pal.text_dim);
         }
         None => {
-            let line = fit_text(&painter, label, &FontId::proportional(14.0), max_w);
-            painter.text(Pos2::new(text_x, rect.center().y), Align2::LEFT_CENTER, line, FontId::proportional(14.0), colour);
+            painter.text(Pos2::new(text_x, rect.center().y), Align2::LEFT_CENTER, label_line, label_font, colour);
         }
     }
     crate::a11y::focus_ring(ui.painter(), rect, &resp, pal, 10);
     resp
+}
+
+/// Context flag: a touch event has been seen, so panels keep full-size touch targets.
+const TOUCH_SEEN: &str = "eskiz_touch_seen";
+
+/// Record that the user touches the screen (called when a touch event arrives).
+pub fn note_touch(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(Id::new(TOUCH_SEEN), true));
+}
+
+/// Whether rows are drawn compact: a desktop with pointer input and no touch seen yet.
+pub fn is_compact(ctx: &egui::Context) -> bool {
+    !cfg!(target_os = "android") && !ctx.data(|d| d.get_temp::<bool>(Id::new(TOUCH_SEEN)).unwrap_or(false))
 }
 
 /// Shorten `text` with an ellipsis until it measures no wider than `max_w`: from the left for

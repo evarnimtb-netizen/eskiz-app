@@ -225,9 +225,15 @@ fn dab(layer: &mut Layer, a: &mut Active, cx: f64, cy: f64) -> Option<PixelRect>
         }),
     }
 
-    // Pick up part of what the disc held, so the carried colour moves along the stroke.
+    // The finger holds only what it picked up: after laying paint down it takes part of what the
+    // disc held. A plain mix (not the wet brush's alpha-weighted pickup) so that over bare canvas
+    // the carried paint thins out dab by dab instead of lasting for ever, and it can never
+    // exceed what was picked up.
     if let Some(c) = a.carry.as_mut() {
-        c.pick_up(under, a.pull);
+        let pull = a.pull.clamp(0.0, 1.0);
+        for (v, u) in c.rgba.iter_mut().zip(under) {
+            *v = *v * (1.0 - pull) + u * pull;
+        }
     }
     Some(rect)
 }
@@ -325,6 +331,34 @@ mod tests {
             assert!(p[3] > 40 && p[0] > p[2] + 20, "{p:?}");
             // ...and the canvas beyond the end of the stroke stays clear.
             assert_eq!(pixel(&canvas, 75, 20), [0; 4]);
+        }
+    }
+
+    /// A smudge only moves what is there: dragged off a single painted line over empty canvas,
+    /// the paint thins out, the total alpha does not grow, and the far canvas stays clear.
+    #[test]
+    fn smudge_does_not_deposit_paint_over_empty_canvas() {
+        let (w, h) = (200, 40);
+        let mut canvas = Layer::new(w, h);
+        for y in 0..h {
+            canvas.set_pixel(20, y, [200, 40, 40, 255]);
+        }
+        let total = |c: &Layer| -> u64 { (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| u64::from(c.pixel(x, y)[3])).sum() };
+        let start = total(&canvas);
+        let mut engine = SmudgeEngine::default();
+        assert!(engine.begin(&canvas, 3, 6.0, 1.0, false));
+        engine.push(&mut canvas, 10.0, 20.0);
+        for step in 1..=170 {
+            engine.push(&mut canvas, 10.0 + f64::from(step), 20.0);
+        }
+        engine.end(&mut canvas);
+        // Alpha never grows beyond what the line held (rounding aside)...
+        assert!(total(&canvas) <= start + start / 50, "{} vs {start}", total(&canvas));
+        // ...and far along the stroke, and off its path, the canvas is clear.
+        for x in 80..w {
+            for y in 0..h {
+                assert_eq!(canvas.pixel(x, y)[3], 0, "paint at {x},{y}");
+            }
         }
     }
 

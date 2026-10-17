@@ -447,7 +447,7 @@ pub struct EskizApp {
     repeat: Option<RepeatClock>,
     /// Two-finger pinch in progress: (start time, product of zoom deltas).
     pinch: Option<(f64, f32)>,
-    eyedrop: Option<Eyedrop>,
+    pub(crate) eyedrop: Option<Eyedrop>,
     pub(crate) shape_edit: Option<ShapeEdit>,
     /// The floating reference window (see [`crate::reference`]).
     pub(crate) reference: crate::reference::Reference,
@@ -513,12 +513,29 @@ pub fn over_ui(ctx: &egui::Context, pos: Pos2) -> bool {
     ctx.layer_id_at(pos).is_some_and(|l| l.order != Order::Background)
 }
 
+/// The Eskiz v5 icon (drawn in code by `packaging/icon-gen`, 512 px) for the window and the
+/// Dock / taskbar while the app runs, so eframe does not fall back to egui's own logo.
+pub fn window_icon() -> egui::IconData {
+    const PNG: &[u8] = include_bytes!("../../../packaging/icons/png/eskiz-512.png");
+    match image::load_from_memory(PNG) {
+        Ok(img) => {
+            let img = img.to_rgba8();
+            egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
+        }
+        Err(_) => egui::IconData::default(),
+    }
+}
+
 fn dist(a: P, b: P) -> f64 {
     (a.0 - b.0).hypot(a.1 - b.1)
 }
 
 impl EskizApp {
     pub fn new(ctx: &egui::Context, doc: Document, status: String, prefs: Prefs) -> Self {
+        if prefs.identity == theme::UiIdentity::Eskiz {
+            // Start with the Eskiz fonts queued, so they are bound from the second pass.
+            crate::fonts::install(ctx, prefs.identity);
+        }
         let active = doc.layer_ids().last().copied().unwrap_or(0);
         let mut app = Self {
             tour: crate::onboarding::Tour::idle(),
@@ -914,6 +931,12 @@ impl EskizApp {
         self.finish_stroke_state();
     }
 
+    /// Whether the stroke in progress has travelled away from its first point.
+    pub(crate) fn stroke_has_moved(&self) -> bool {
+        self.session.is_stroking()
+            && self.stroke_points.first().is_some_and(|&f| self.stroke_points.iter().any(|&p| dist(p, f) > 1.0))
+    }
+
     /// Hold to Shape check, once per frame while a stroke is held.
     fn check_hold_shape(&mut self, pointer: Pos2, time: f64) {
         if !self.prefs.hold_shape || self.tool == Tool::Smudge || self.stroke_points.len() < 3 {
@@ -935,6 +958,10 @@ impl EskizApp {
             self.stroke_points = points;
             return;
         };
+        if hold_shape::outline(&fit.shape, 2.0).len() < 2 {
+            self.stroke_points = points;
+            return;
+        }
         self.cancel_stroke();
         let hold = points[points.len() - 1];
         let anchor = hold_shape::anchor(&fit.shape);
@@ -949,12 +976,38 @@ impl EskizApp {
             drag: None,
             edits: 0,
         });
-        self.paint_shape(&fit.shape, time);
+        if !self.paint_shape(&fit.shape, time) {
+            // The shape painted nothing: put the user's own stroke back rather than lose it.
+            self.shape_edit = None;
+            self.replay_stroke(&points, time);
+            return;
+        }
         let edits = self.session.edits();
         if let Some(e) = self.shape_edit.as_mut() {
             e.edits = edits;
         }
         self.show_toast(format!("Shape created: {} \u{b7} Edit Shape", fit.kind.name()), 2.4);
+    }
+
+    /// Paint `points` (canvas pixels) again as one stroke with the current tool's brush.
+    fn replay_stroke(&mut self, points: &[P], time: f64) {
+        let settings = self.stroke_settings();
+        if !self.session.begin_stroke(self.active, &settings) {
+            return;
+        }
+        let mut dirty: Option<PixelRect> = None;
+        for (i, &(x, y)) in points.iter().enumerate() {
+            let raw = RawPointer { x, y, time: time + i as f64 / 120.0, kind: PointerKind::Mouse, force: None };
+            if let Some(r) = self.session.push(sample_from(raw)) {
+                dirty = Some(dirty.map_or(r, |d| d.union(r)));
+            }
+        }
+        if let Some(r) = self.session.end_stroke() {
+            dirty = Some(dirty.map_or(r, |d| d.union(r)));
+        }
+        if let Some(r) = dirty {
+            self.refresh(r);
+        }
     }
 
     /// Paint a shape as one stroke with the current brush. Refreshes the canvas.
@@ -1290,6 +1343,15 @@ impl EskizApp {
     }
 
     fn read_egui_input(&self, ui: &egui::Ui) -> FrameInput {
+        let input = self.read_egui_input_inner(ui);
+        if !input.touches.is_empty() {
+            // Outside the input closure: `data_mut` would deadlock inside it.
+            crate::panels::rows::note_touch(ui.ctx());
+        }
+        input
+    }
+
+    fn read_egui_input_inner(&self, ui: &egui::Ui) -> FrameInput {
         ui.input(|i| {
             let mut touch = None;
             let mut touches = Vec::new();
@@ -1372,7 +1434,7 @@ impl EskizApp {
     }
 
     /// Run what a recognised gesture asks for, if its switch is on.
-    fn on_gesture(&mut self, ctx: &egui::Context, g: Gesture, time: f64) {
+    pub(crate) fn on_gesture(&mut self, ctx: &egui::Context, g: Gesture, time: f64) {
         let Some(cmd) = gesture::route(g, &self.gesture_switches()) else {
             return;
         };
@@ -1388,7 +1450,9 @@ impl EskizApp {
             gesture::Command::ShowCopyMenu => self.sheet = Some(crate::sheets::Sheet::CopyMenu),
             gesture::Command::ToggleFullscreen => self.toggle_fullscreen(),
             gesture::Command::Eyedropper(pos) => {
-                if self.adjust.is_none() && self.eyedrop.is_none() {
+                // A stroke that has already moved is never cancelled by the hold: the
+                // eyedropper starts only when the press has been still since the start.
+                if self.adjust.is_none() && self.eyedrop.is_none() && !self.stroke_has_moved() {
                     self.begin_eyedrop(pos);
                 }
             }
@@ -1958,6 +2022,7 @@ pub fn run_shared(file: Option<PathBuf>, tweak: impl Fn(&mut eframe::NativeOptio
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Eskiz")
         .with_app_id("eskiz")
+        .with_icon(std::sync::Arc::new(window_icon()))
         .with_inner_size([1280.0, 860.0])
         .with_min_inner_size([900.0, 600.0]);
     // macOS: the content runs under a transparent title bar. The traffic-light buttons stay,
@@ -2126,6 +2191,20 @@ mod tests {
         // A damaged curve falls back to the identity and keeps the other fields.
         let bad = Prefs::decode("light=1;pcurve=oops");
         assert!(bad.light && bad.pressure_curve.is_identity());
+    }
+
+    /// The window carries the Eskiz icon, not eframe's default (which is egui's logo).
+    #[test]
+    fn window_icon_is_the_eskiz_icon() {
+        let icon = window_icon();
+        assert_eq!((icon.width, icon.height), (512, 512));
+        assert_eq!(icon.rgba.len(), 512 * 512 * 4);
+        // Rounded square: corners transparent, centre opaque and not egui's white.
+        assert_eq!(icon.rgba[3], 0, "transparent corner");
+        let mid = (256 * 512 + 256) * 4;
+        assert_eq!(icon.rgba[mid + 3], 255);
+        let vb = egui::ViewportBuilder::default().with_icon(std::sync::Arc::new(window_icon()));
+        assert!(vb.icon.is_some());
     }
 
     #[test]

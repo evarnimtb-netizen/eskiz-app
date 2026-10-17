@@ -25,6 +25,15 @@ First public preview of Eskiz, a free, open source painting app for macOS, Windo
 - GPU-accelerated canvas and compositor with an automatic fallback to a software path when no suitable GPU is found.
 - Packages: macOS universal DMG, Windows x64 zip, Linux AppImage and tarball, and an experimental Android APK. Every package includes the third-party license notices.
 
+### Fixed (release-candidate smoke test)
+
+- Turning on Settings > "Eskiz look" no longer quits the app (a heading font was used a frame before the new fonts were installed). Switching in either direction is safe at any moment, and so is starting with the look already on.
+- The smudge tool only moves paint that is already there: the carried colour now thins out as it is laid down instead of lasting for ever, so it no longer paints over empty canvas like an airbrush.
+- A stroke can no longer vanish while it is drawn: the eyedropper hold never cancels a stroke that has moved, and Hold to Shape puts your own stroke back if the shape would paint nothing.
+- The Actions popover is compact on desktop (touch devices keep large targets); long row titles wrap or shorten instead of running under the switch, and subtitles wrap to two lines. "Eskiz look" has its own icon.
+- The running app shows the Eskiz icon in the Dock, taskbar and window, not the default egui logo.
+- User guide: the welcome tour is skipped for data folders that already hold artworks; Help > Welcome tour shows it.
+
 ### Known issues
 
 - **Builds are not code-signed.** Your system will warn you the first time you open Eskiz.
