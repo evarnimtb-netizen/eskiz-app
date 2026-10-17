@@ -22,6 +22,12 @@ Values are not case-sensitive. An unknown value means the default.
 
 Your drawings are kept in a library folder in your user data folder for Eskiz. To use another folder, set **ESKIZ_LIBRARY_DIR** to its path before starting Eskiz.
 
+## A stroke disappeared
+
+A stroke that has put ink on the canvas is never thrown away by Eskiz: it stays until you undo it. While you draw, trackpad pinch and scroll, a second contact on the trackpad, a window switch, a save or leaving the canvas do not cancel the stroke. If the pen-up is lost (for example the window loses focus mid-stroke) the stroke is finished where it was and is one undo step. Hold to Shape replaces a stroke on purpose; turn it off in Preferences if you pause a lot while drawing.
+
+If you still see a stroke vanish, start Eskiz from a terminal with **ESKIZ_TRACE_STROKES=1**. Eskiz then writes one line to the terminal for each stroke that begins, is committed or is cancelled, with the reason (for example `commit reason=pointer released`, `commit reason=window lost focus`, `cancel reason=hold to shape replaces the stroke`), and a line for each gesture it ignored because a stroke was open. Attach the lines around the moment it happened to your bug report. The trace costs nothing when the variable is not set.
+
 ## Lost work
 
 Eskiz saves when you leave the canvas, when the app closes, and every 30 seconds while there are unsaved changes. Each save is written to a temporary file and then put in place, so a save that is interrupted leaves the last good copy intact. There is no separate crash-recovery prompt. If Eskiz stops unexpectedly, the most recent changes, up to about 30 seconds of work, may not be in the saved file.

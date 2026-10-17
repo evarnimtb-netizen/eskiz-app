@@ -664,7 +664,7 @@ impl EskizApp {
                 }
                 Marker::Into { row } => {
                     let r = cards[row];
-                    p.rect_filled(r, CornerRadius::same(10), pal.accent.gamma_multiply(0.22));
+                    p.rect_filled(r, CornerRadius::same(10), pal.selected_bg(0.22));
                     p.rect_stroke(r, CornerRadius::same(10), Stroke::new(2.5, pal.accent), StrokeKind::Inside);
                 }
             }
@@ -679,8 +679,8 @@ impl EskizApp {
         let x0 = row_rect.right() - ACTIONS_W;
         let lock_label = if row.locked { "Unlock" } else { "Lock" };
         let items: [(&'static str, icons::IconFn, Color32); 3] = [
-            (lock_label, icons::icon_lock, Color32::from_rgb(0x6E, 0x76, 0x86)),
-            ("Duplicate", icons::icon_layers, pal.accent),
+            (lock_label, icons::icon_lock, if pal.is_eskiz() { pal.track } else { Color32::from_rgb(0x6E, 0x76, 0x86) }),
+            ("Duplicate", icons::icon_layers, pal.accent_fill),
             ("Delete", icons::icon_trash, pal.danger),
         ];
         let can_delete = self.can_delete_layer(row.id);
@@ -787,7 +787,7 @@ impl EskizApp {
         let bar = Rect::from_center_size(Pos2::new(hit.center().x, hit.center().y), Vec2::new(track.width() + 20.0, 6.0));
         p.rect_filled(bar, CornerRadius::same(3), pal.row);
         let tx = track.left() + track.width() * value;
-        p.rect_filled(Rect::from_min_max(bar.min, Pos2::new(tx, bar.max.y)), CornerRadius::same(3), pal.accent);
+        p.rect_filled(Rect::from_min_max(bar.min, Pos2::new(tx, bar.max.y)), CornerRadius::same(3), pal.accent_fill);
         p.circle_filled(Pos2::new(tx, bar.center().y), 10.0, Color32::WHITE);
         p.circle_stroke(Pos2::new(tx, bar.center().y), 10.0, Stroke::new(1.0, Color32::from_black_alpha(70)));
 

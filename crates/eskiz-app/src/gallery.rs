@@ -37,7 +37,8 @@ use crate::theme::{self, Palette};
 mod view;
 
 /// Height of the gallery header bar, points.
-pub const HEADER_H: f32 = 56.0;
+/// Same height as the canvas top bar, so the title sits on the same baseline in both screens.
+pub const HEADER_H: f32 = crate::app::BAR_HEIGHT;
 /// Card to canvas zoom, seconds.
 pub const OPEN_SECS: f64 = 0.25;
 /// Leftward drag, in points, that reveals a card's actions.
@@ -105,12 +106,15 @@ pub(crate) struct HeaderRects {
     pub stack: Rect,
     pub back: Rect,
     pub delete_stack: Rect,
+    /// The "Gallery" title text (the gallery screen's header).
+    pub title: Rect,
 }
 
 impl Default for HeaderRects {
     fn default() -> Self {
         Self {
             select: Rect::NOTHING,
+            title: Rect::NOTHING,
             import: Rect::NOTHING,
             plus: Rect::NOTHING,
             sort: Rect::NOTHING,
@@ -459,6 +463,11 @@ impl EskizApp {
 
     /// Queue a background save of the current document. The snapshot is taken now.
     fn queue_save(&mut self) {
+        if self.session.is_stroking() {
+            // The layer holds a half-drawn stroke: the autosave clock saves once the pen lifts.
+            crate::stroke_trace::event("ignored", "save while a stroke is open (deferred)");
+            return;
+        }
         let (edits, sig) = (self.session.edits(), meta_signature(&self.session.doc));
         let Some(cur) = self.gal.current.as_mut() else {
             return;
@@ -472,7 +481,7 @@ impl EskizApp {
     pub(crate) fn open_gallery(&mut self, ctx: &egui::Context) {
         self.ensure_storage(ctx);
         self.close_three_d();
-        self.cancel_stroke();
+        self.commit_stroke("leaving the canvas for the gallery");
         self.popovers.close();
         if self.is_dirty() {
             self.queue_save();
@@ -672,7 +681,7 @@ impl EskizApp {
     pub(crate) fn save_on_exit(&mut self) {
         self.save_three_d_now();
         if matches!(self.gal.screen, Screen::Canvas) && self.gal.library.is_some() && self.is_dirty() {
-            self.cancel_stroke();
+            self.commit_stroke("the app is saving on exit");
             self.queue_save();
         }
     }
@@ -1076,9 +1085,9 @@ impl EskizApp {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
                 self.gal.space_rects.push(rect);
                 let on = self.gal.new_space == space;
-                let fill = if on { gp.accent } else if resp.hovered() { gp.track } else { gp.row };
+                let fill = if on { gp.accent_fill } else if resp.hovered() { gp.track } else { gp.row };
                 ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
-                let ink = if on { Color32::WHITE } else { gp.text };
+                let ink = if on { gp.on_accent } else { gp.text };
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, space.label(), FontId::proportional(13.0), ink);
                 if resp.clicked() {
                     self.gal.new_space = space;
@@ -1095,9 +1104,9 @@ impl EskizApp {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
                 self.gal.depth_rects.push(rect);
                 let on = self.gal.new_depth == depth;
-                let fill = if on { gp.accent } else if resp.hovered() { gp.track } else { gp.row };
+                let fill = if on { gp.accent_fill } else if resp.hovered() { gp.track } else { gp.row };
                 ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
-                let ink = if on { Color32::WHITE } else { gp.text };
+                let ink = if on { gp.on_accent } else { gp.text };
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, depth.label(), FontId::proportional(13.0), ink);
                 if resp.clicked() {
                     self.gal.new_depth = depth;
@@ -1113,7 +1122,7 @@ impl EskizApp {
             ui.add(egui::TextEdit::singleline(&mut self.gal.custom_h).desired_width(62.0).hint_text("height"));
             ui.label(RichText::new("px").size(11.0).color(gp.text_dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let create = egui::Button::new(RichText::new("Create").color(Color32::WHITE)).fill(gp.accent);
+                let create = egui::Button::new(RichText::new("Create").color(gp.on_primary)).fill(gp.primary);
                 let create_resp = ui.add(create);
                 if debug_input() {
                     let (down, up) = ui.input(|i| (i.pointer.any_pressed(), i.pointer.any_released()));
@@ -1149,7 +1158,7 @@ impl EskizApp {
             go = true;
         }
         ui.horizontal(|ui| {
-            let b = egui::Button::new(RichText::new("Import").color(Color32::WHITE)).fill(gp.accent);
+            let b = egui::Button::new(RichText::new("Import").color(gp.on_primary)).fill(gp.primary);
             if ui.add(b).clicked() {
                 go = true;
             }

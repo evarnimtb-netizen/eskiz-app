@@ -11,9 +11,9 @@ use crate::theme::Palette;
 
 /// A pill-shaped button that shows whether it is the active choice.
 pub(crate) fn chip(ui: &mut egui::Ui, pal: &Palette, text: &str, active: bool) -> bool {
-    let label = RichText::new(text).size(12.5).color(if active { Color32::WHITE } else { pal.text });
+    let label = RichText::new(text).size(12.5).color(if active { pal.on_accent } else { pal.text });
     let button = egui::Button::new(label)
-        .fill(if active { pal.accent } else { pal.row })
+        .fill(if active { pal.accent_fill } else { pal.row })
         .corner_radius(CornerRadius::same(14))
         .min_size(vec2(0.0, 28.0));
     ui.add(button).clicked()
@@ -21,9 +21,9 @@ pub(crate) fn chip(ui: &mut egui::Ui, pal: &Palette, text: &str, active: bool) -
 
 /// One half of the Layer | Pencil switch: a full-width button with the active one filled.
 pub(crate) fn segment(ui: &mut egui::Ui, pal: &Palette, width: f32, text: &str, active: bool) -> bool {
-    let label = RichText::new(text).size(13.0).color(if active { Color32::WHITE } else { pal.text });
+    let label = RichText::new(text).size(13.0).color(if active { pal.on_accent } else { pal.text });
     let button = egui::Button::new(label)
-        .fill(if active { pal.accent } else { pal.row })
+        .fill(if active { pal.accent_fill } else { pal.row })
         .corner_radius(CornerRadius::same(8))
         .min_size(vec2(width, 32.0));
     ui.add(button).clicked()

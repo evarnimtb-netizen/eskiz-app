@@ -663,9 +663,9 @@ impl EskizApp {
             crate::a11y::toggle(&resp, egui::WidgetType::SelectableLabel, true, self.colour_ui.tab == *tab, *name);
             let selected = self.colour_ui.tab == *tab;
             if selected {
-                ui.painter().rect_filled(r.shrink(3.0), CornerRadius::same(8), pal.accent_fill);
+                ui.painter().rect_filled(r.shrink(3.0), CornerRadius::same(8), pal.primary);
             }
-            let colour = if selected { pal.on_accent } else { pal.text_dim };
+            let colour = if selected { pal.on_primary } else { pal.text_dim };
             ui.painter().text(r.center(), Align2::CENTER_CENTER, *name, FontId::proportional(13.0), colour);
             if resp.clicked() {
                 self.colour_ui.tab = *tab;

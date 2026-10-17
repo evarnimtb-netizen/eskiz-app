@@ -88,6 +88,14 @@ pub struct Palette {
     pub accent_fill: Color32,
     /// Text and glyphs on `accent_fill`.
     pub on_accent: Color32,
+    /// The one loud colour: fill of the primary button of a screen and of the active tool or tab.
+    /// Classic uses its accent for these (and for everything else); the Eskiz look keeps
+    /// `accent` and `accent_fill` neutral graphite and spends this colour only there.
+    pub primary: Color32,
+    /// Glyph or text in the primary colour (active tool, active tab) on a panel or bar.
+    pub primary_text: Color32,
+    /// Text and glyphs on `primary`.
+    pub on_primary: Color32,
     pub warning: Color32,
     pub success: Color32,
     /// Guides, grids and selection helpers.
@@ -128,6 +136,9 @@ pub fn palette_for(identity: UiIdentity, light: bool) -> Palette {
             edge: Color32::from_rgb(0x8E, 0x8E, 0x93),
             accent_fill: ACCENT,
             on_accent: Color32::WHITE,
+            primary: ACCENT,
+            primary_text: ACCENT,
+            on_primary: Color32::WHITE,
             warning: Color32::from_rgb(230, 90, 80),
             success: ACCENT,
             blueprint: ACCENT,
@@ -155,6 +166,9 @@ pub fn palette_for(identity: UiIdentity, light: bool) -> Palette {
             edge: Color32::from_rgb(0x8A, 0x8A, 0x90),
             accent_fill: ACCENT,
             on_accent: Color32::WHITE,
+            primary: ACCENT,
+            primary_text: ACCENT,
+            on_primary: Color32::WHITE,
             warning: Color32::from_rgb(230, 90, 80),
             success: ACCENT,
             blueprint: ACCENT,
@@ -164,33 +178,38 @@ pub fn palette_for(identity: UiIdentity, light: bool) -> Palette {
     }
 }
 
-/// The Eskiz identity. The values are checked against `packaging/identity/eskiz-tokens.json` by a test.
+/// The Eskiz identity: neutral graphite chrome, flat surfaces with 1 px hairlines, and the nib
+/// orange only for the active tool or tab and the primary button. The values are checked against
+/// `packaging/identity/eskiz-tokens.json` by a test.
 fn eskiz_palette(light: bool) -> Palette {
     if light {
         Palette {
             light,
             identity: UiIdentity::Eskiz,
             backdrop: hex(0xD4D4D4),
-            bar: Color32::from_rgba_unmultiplied(0xF3, 0xF4, 0xF8, 235),
-            panel: hex(0xFAFBFD),
-            row: hex(0xECEEF4),
-            track: hex(0x9AA3BC),
-            separator: hex(0xD5D9E4),
-            text: hex(0x141A2B),
-            text_dim: hex(0x454F68),
-            accent: hex(0xA33008),
+            bar: Color32::from_rgba_unmultiplied(0xF4, 0xF4, 0xF5, 235),
+            panel: hex(0xFAFAFA),
+            row: hex(0xEEEEEF),
+            track: hex(0xA2A5AB),
+            separator: hex(0xDADADD),
+            text: hex(0x17181A),
+            text_dim: hex(0x4A4D54),
+            accent: hex(0x26272B),
             danger: hex(0xA5211A),
-            ring: hex(0x141A2B),
-            shadow: Color32::from_black_alpha(89),
-            hairline: Color32::from_black_alpha(20),
-            hover: hex(0xDBDFEA),
-            edge: hex(0x7580A0),
-            accent_fill: hex(0xFF5A1F),
-            on_accent: hex(0x0B1020),
+            ring: hex(0x17181A),
+            shadow: Color32::TRANSPARENT,
+            hairline: Color32::from_black_alpha(26),
+            hover: hex(0xE2E2E4),
+            edge: hex(0x757880),
+            accent_fill: hex(0x5B5F68),
+            on_accent: hex(0xFFFFFF),
+            primary: hex(0xFF5A1F),
+            primary_text: hex(0xA33008),
+            on_primary: hex(0x0B0C0E),
             warning: hex(0x7A4F00),
             success: hex(0x0B5E3D),
             blueprint: hex(0x1D5195),
-            focus_ring: hex(0x1E4F96),
+            focus_ring: hex(0x1C1D20),
             focus_halo: hex(0xFFFFFF),
         }
     } else {
@@ -198,32 +217,59 @@ fn eskiz_palette(light: bool) -> Palette {
             light,
             identity: UiIdentity::Eskiz,
             backdrop: hex(0x242424),
-            bar: Color32::from_rgba_unmultiplied(0x12, 0x18, 0x29, 235),
-            panel: hex(0x1A2133),
-            row: hex(0x242D45),
-            track: hex(0x6A779A),
-            separator: hex(0x2B3552),
-            text: hex(0xEEF2FA),
-            text_dim: hex(0xA9B5CE),
-            accent: hex(0xFF8A60),
+            bar: Color32::from_rgba_unmultiplied(0x18, 0x19, 0x1B, 235),
+            panel: hex(0x1F2022),
+            row: hex(0x28292C),
+            track: hex(0x6B6E75),
+            separator: hex(0x303134),
+            text: hex(0xECEDEF),
+            text_dim: hex(0xA3A6AD),
+            accent: hex(0xE1E3E7),
             danger: hex(0xFF8F8F),
-            ring: hex(0xEEF2FA),
-            shadow: Color32::from_black_alpha(89),
-            hairline: Color32::from_white_alpha(20),
-            hover: hex(0x303B59),
-            edge: hex(0x7A88AD),
-            accent_fill: hex(0xFF5A1F),
-            on_accent: hex(0x0B1020),
+            ring: hex(0xECEDEF),
+            shadow: Color32::TRANSPARENT,
+            hairline: Color32::from_white_alpha(26),
+            hover: hex(0x323336),
+            edge: hex(0x7D8088),
+            accent_fill: hex(0x8D9199),
+            on_accent: hex(0x101113),
+            primary: hex(0xFF5A1F),
+            primary_text: hex(0xFF8A60),
+            on_primary: hex(0x0B0C0E),
             warning: hex(0xFFC247),
             success: hex(0x5FD6A0),
             blueprint: hex(0x8FB9F2),
-            focus_ring: hex(0x8FB9F2),
-            focus_halo: hex(0x0B1020),
+            focus_ring: hex(0xF2F3F5),
+            focus_halo: hex(0x0B0C0E),
         }
     }
 }
 
 impl Palette {
+    /// Whether this is the Eskiz look.
+    pub fn is_eskiz(&self) -> bool {
+        self.identity == UiIdentity::Eskiz
+    }
+
+    /// Colour of an idle toolbar glyph: Classic uses the text colour, Eskiz the quieter secondary one.
+    pub fn glyph_idle(&self) -> Color32 {
+        if self.is_eskiz() {
+            self.text_dim
+        } else {
+            self.text
+        }
+    }
+
+    /// Soft background behind a selected or active item: a tint of the accent in Classic, the
+    /// flat hover surface in Eskiz (no tinted panels). `strength` is Classic's tint alpha factor.
+    pub fn selected_bg(&self, strength: f32) -> Color32 {
+        if self.is_eskiz() {
+            self.hover
+        } else {
+            self.accent.gamma_multiply(strength)
+        }
+    }
+
     /// Colour of a disabled control's label or glyph. It is the secondary-text token, which
     /// meets 4.5:1 on every surface, so disabled controls stay readable. They look different from
     /// enabled ones by colour (dimmer than `text`) and by not responding.
@@ -280,17 +326,21 @@ pub fn tokens(identity: UiIdentity) -> Tokens {
             banner_radius: 4,
             bubble_radius: 4,
             toast_radius: 6,
-            shadow_dy: 4,
-            shadow_blur: 16,
-            shadow_alpha: 89,
+            shadow_dy: 0,
+            shadow_blur: 0,
+            shadow_alpha: 0,
             rail_width: 3.0,
         },
     }
 }
 
-/// Panel shadow: Classic 24 px blur at 40% black; Eskiz 16 px at 35%.
+/// Panel shadow: Classic 24 px blur at 40% black; Eskiz has none (flat).
 pub fn shadow(pal: &Palette) -> Shadow {
     let t = tokens(pal.identity);
+    if pal.identity == UiIdentity::Eskiz {
+        // Flat: surfaces are separated by 1 px hairlines, not by shadows.
+        return Shadow::NONE;
+    }
     Shadow {
         offset: [0, t.shadow_dy],
         blur: t.shadow_blur,
@@ -445,6 +495,9 @@ mod tests {
                 ("accent", pal.accent),
                 ("accent_fill", pal.accent_fill),
                 ("on_accent", pal.on_accent),
+                ("primary", pal.primary),
+                ("primary_text", pal.primary_text),
+                ("on_primary", pal.on_primary),
                 ("danger", pal.danger),
                 ("warning", pal.warning),
                 ("success", pal.success),
@@ -472,7 +525,7 @@ mod tests {
     /// The icon's accent colors are the Eskiz accent source.
     #[test]
     fn eskiz_accent_comes_from_the_icon() {
-        assert_eq!(palette_for(UiIdentity::Eskiz, false).accent_fill, hex(0xFF5A1F));
+        assert_eq!(palette_for(UiIdentity::Eskiz, false).primary, hex(0xFF5A1F));
         assert_eq!(palette_for(UiIdentity::Eskiz, false).blueprint, hex(0x8FB9F2));
     }
 

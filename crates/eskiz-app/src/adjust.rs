@@ -249,7 +249,7 @@ impl EskizApp {
             .mask()
             .filter(|m| m.width == w && m.height == h && self.session.selection().is_active())
             .map(|m| Arc::new(m.data.clone()));
-        self.cancel_stroke();
+        self.commit_stroke("an adjustment opened");
         self.popovers.close();
         let mut adj = Adjustment::new(kind);
         // Clone always paints; Pencil mode paints for every type.

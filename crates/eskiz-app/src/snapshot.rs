@@ -115,6 +115,12 @@ pub struct Headless {
     dropped: Vec<egui::DroppedFileHandle>,
     /// The AccessKit tree of the last frame, when `ctx.enable_accesskit()` was called.
     pub access: Option<egui::accesskit::TreeUpdate>,
+    /// CPU time of the last frame's `App::update` (the UI root), not the software rasteriser.
+    /// Native pixels per point reported to egui (QA capture renders at 2x).
+    pub ppp: f32,
+    pub last_update: std::time::Duration,
+    /// Repaint delay the last frame asked for (`ZERO` = immediately, huge = idle).
+    pub last_repaint: std::time::Duration,
 }
 
 impl Headless {
@@ -137,6 +143,9 @@ impl Headless {
             pointer: Pos2::ZERO,
             dropped: Vec::new(),
             access: None,
+            ppp: 1.0,
+            last_update: std::time::Duration::ZERO,
+            last_repaint: std::time::Duration::MAX,
         };
         // Two frames: the first measures and lays out, the second draws settled.
         h.step();
@@ -211,6 +220,11 @@ impl Headless {
         self.time += 1.0 / 60.0;
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+            viewports: std::iter::once((
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo { native_pixels_per_point: Some(self.ppp), ..Default::default() },
+            ))
+            .collect(),
             time: Some(self.time),
             predicted_dt: 1.0 / 60.0,
             events: std::mem::take(&mut self.events),
@@ -219,13 +233,21 @@ impl Headless {
             ..RawInput::default()
         };
         let app = &mut self.app;
+        let mut spent = std::time::Duration::ZERO;
         let mut out = self.ctx.run_ui(input, |ui| {
+            let t0 = std::time::Instant::now();
             if app.lifecycle_on {
                 let ctx = ui.ctx().clone();
                 app.lifecycle_frame(&ctx);
             }
-            app.ui_root(ui)
+            app.ui_root(ui);
+            spent = t0.elapsed();
         });
+        self.last_update = spent;
+        self.last_repaint = out
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(std::time::Duration::MAX, |v| v.repaint_delay);
         self.access = out.platform_output.accesskit_update.take();
         for (id, deltas) in &out.textures_delta.set {
             let tex = self.textures.entry(*id).or_insert(Tex { w: 0, h: 0, px: Vec::new() });
@@ -247,6 +269,22 @@ impl Headless {
         for _ in 0..frames {
             self.step();
         }
+    }
+
+    /// Run one frame and rasterise it at `ppp` pixels per point (the window stays `size` points).
+    pub fn render_at(&mut self, ppp: f32) -> Image {
+        self.ppp = ppp;
+        let mut prims = self.step();
+        // Tessellated geometry is in points; the rasteriser works in pixels.
+        for prim in &mut prims {
+            prim.clip_rect = Rect::from_min_max(prim.clip_rect.min * ppp, prim.clip_rect.max * ppp);
+            if let Primitive::Mesh(m) = &mut prim.primitive {
+                for v in &mut m.vertices {
+                    v.pos *= ppp;
+                }
+            }
+        }
+        rasterise(&prims, &self.textures, (self.size.x * ppp) as usize, (self.size.y * ppp) as usize)
     }
 
     /// Render one frame to an image.

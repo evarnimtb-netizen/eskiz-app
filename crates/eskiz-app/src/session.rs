@@ -216,6 +216,12 @@ impl Session {
         self.engine.is_active() || self.smudge.is_active()
     }
 
+    /// The layer the stroke in progress paints on (it can differ from the active layer if that
+    /// changed after pen-down).
+    pub fn stroke_layer(&self) -> Option<u64> {
+        self.stroke_layer
+    }
+
     // ----- painting -----
 
     /// Can this item take paint? It must be a raster layer, shown (with every group above it

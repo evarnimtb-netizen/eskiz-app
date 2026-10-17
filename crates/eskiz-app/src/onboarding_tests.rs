@@ -506,7 +506,7 @@ fn tour_text_meets_contrast_in_every_look() {
                     let r = contrast_ratio(fg, pal.panel);
                     assert!(r >= 4.5, "{what} on panel {r:.2}:1 ({identity:?} light={light})");
                 }
-                let fill = if identity == UiIdentity::Eskiz { pal.accent_fill } else { pal.accent };
+                let fill = if identity == UiIdentity::Eskiz { pal.primary } else { pal.accent };
                 let r = contrast_ratio(onboarding::ink_on(fill), fill);
                 assert!(r >= 4.5, "button text on the accent {r:.2}:1 ({identity:?})");
             }
@@ -515,7 +515,7 @@ fn tour_text_meets_contrast_in_every_look() {
     // The Gallery cards' primary button: white on the accent.
     for identity in [UiIdentity::Classic, UiIdentity::Eskiz] {
         let gp = crate::theme::palette_for(identity, false);
-        let fill = if identity == UiIdentity::Eskiz { gp.accent_fill } else { gp.accent };
+        let fill = if identity == UiIdentity::Eskiz { gp.primary } else { gp.accent };
         let r = contrast_ratio(onboarding::ink_on(fill), fill);
         assert!(r >= 4.5, "card button text on the accent {r:.2}:1 ({identity:?})");
     }

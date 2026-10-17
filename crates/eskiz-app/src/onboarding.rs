@@ -437,7 +437,7 @@ impl Default for TargetRects {
 /// Fill of the primary button: the accent of the look.
 fn button_fill(pal: &theme::Palette) -> Color32 {
     if pal.identity == theme::UiIdentity::Eskiz {
-        pal.accent_fill
+        pal.primary
     } else {
         pal.accent
     }

@@ -37,6 +37,12 @@ First public preview of Eskiz, a free, open source painting app for macOS, Windo
 - The Dock and Cmd-Tab icon is the right size on macOS: the app keeps its bundle icon, and the icon file uses Apple's icon grid (rounded body with margin and a soft shadow).
 - User guide: the welcome tour is skipped for data folders that already hold artworks; Help > Welcome tour shows it.
 
+### Fixed (second release-candidate smoke test)
+
+- Strokes no longer vanish on a Mac with mouse or trackpad: eframe's 30-second periodic save cancelled a stroke that was open (and rolled the layer back) whenever the drawing had unsaved changes; it now waits for the pen-up. Pinch, scroll, Space and the Fit shortcut during a stroke no longer move the canvas under the pen, a second contact on the trackpad is ignored until the stroke ends, a lost pen-up (window focus lost or minimised, a press with the stroke still open) now finishes the stroke instead of dropping the next one, leaving for the Gallery, saving on exit and suspending commit an open stroke instead of cancelling it, and the GPU canvas refreshes the layer the stroke paints on even if the active layer changed. Set `ESKIZ_TRACE_STROKES=1` to log every stroke begin, commit and cancel with its reason (see Troubleshooting).
+- The Eskiz look is calmer: neutral graphite surfaces with 1 px hairlines and no shadows, neutral slider fills, switches and selections, quieter icons, and the orange accent only on the active tool or tab and the one primary button of a screen. Classic is unchanged.
+- The "Gallery" title and the canvas "Gallery" button have the same size, baseline and left edge, and on macOS both start clear of the window buttons.
+
 ### Known issues
 
 - **Builds are not code-signed.** Your system will warn you the first time you open Eskiz.

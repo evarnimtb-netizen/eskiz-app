@@ -169,7 +169,7 @@ fn fit_text(painter: &egui::Painter, text: &str, font: &FontId, max_w: f32) -> S
 
 /// A pill switch: accent track and a right-hand knob when on.
 pub fn switch(painter: &egui::Painter, pal: &Palette, rect: Rect, on: bool, enabled: bool) {
-    let track = if on { pal.accent } else { pal.separator };
+    let track = if on { pal.accent_fill } else { pal.separator };
     let track = if enabled { track } else { track.gamma_multiply(0.5) };
     painter.rect_filled(rect, CornerRadius::same(12), track);
     let x = if on { rect.right() - 12.0 } else { rect.left() + 12.0 };
@@ -192,9 +192,9 @@ pub fn tab_bar(ui: &mut Ui, pal: &Palette, tabs: &[(IconFn, &str)], selected: us
             clicked = Some(i);
         }
         let active = i == selected;
-        let colour = if active { pal.accent } else if resp.hovered() { pal.text } else { pal.text_dim };
+        let colour = if active { pal.primary_text } else if resp.hovered() { pal.text } else { pal.text_dim };
         if active {
-            painter.rect_filled(cell_rect.shrink2(vec2(4.0, 4.0)), CornerRadius::same(8), pal.accent.gamma_multiply(0.16));
+            painter.rect_filled(cell_rect.shrink2(vec2(4.0, 4.0)), CornerRadius::same(8), pal.selected_bg(0.16));
         }
         icon(&painter, Rect::from_center_size(Pos2::new(cell_rect.center().x, cell_rect.top() + 18.0), vec2(22.0, 22.0)), colour);
         painter.text(

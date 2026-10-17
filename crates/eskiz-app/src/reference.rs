@@ -160,9 +160,9 @@ impl EskizApp {
                 ui.horizontal(|ui| {
                     for (source, label) in [(RefSource::Canvas, "Canvas"), (RefSource::Image, "Image")] {
                         let active = self.reference.source == source;
-                        let text = RichText::new(label).size(12.0).color(if active { Color32::WHITE } else { pal.text });
+                        let text = RichText::new(label).size(12.0).color(if active { pal.on_accent } else { pal.text });
                         let chip = egui::Button::new(text)
-                            .fill(if active { pal.accent } else { pal.row })
+                            .fill(if active { pal.accent_fill } else { pal.row })
                             .corner_radius(CornerRadius::same(12))
                             .min_size(vec2(0.0, 24.0));
                         if ui.add(chip).clicked() {

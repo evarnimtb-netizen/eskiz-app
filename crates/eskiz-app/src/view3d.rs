@@ -710,7 +710,7 @@ impl EskizApp {
 
     /// Show a 3D document in the canvas area, in place of the 2D canvas.
     fn open_three_d(&mut self, doc: ModelDoc, banner: Option<String>) {
-        self.cancel_stroke();
+        self.commit_stroke("a 3D model opened");
         self.adjust_cancel();
         self.exit_edit_mode();
         // The text tool works on the 2D canvas only: finish any typing before the view changes.

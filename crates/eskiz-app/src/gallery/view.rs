@@ -122,7 +122,8 @@ impl EskizApp {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
         // The same macOS inset as the canvas top bar: clear of the traffic-light buttons.
-        let left = if cfg!(target_os = "macos") && !self.fullscreen { 78.0 } else { 24.0 };
+        let left = crate::chrome::title_inset_for(self.mac_insets, self.fullscreen);
+        let title_font = crate::chrome::title_font(ui.ctx(), gp);
         let cy = bar.center().y;
         let sense = if interactive { Sense::click() } else { Sense::hover() };
         let open = self.gal.open_stack.clone();
@@ -133,14 +134,14 @@ impl EskizApp {
         let mut delete_stack = false;
         if let Some(sid) = open.as_ref() {
             // Back to the gallery, then the stack's name.
-            let galley = painter.layout_no_wrap("Gallery".to_owned(), FontId::proportional(15.0), gp.text);
-            let rect = Rect::from_min_size(Pos2::new(bar.left() + left - 12.0, cy - 18.0), Vec2::new(galley.size().x + 44.0, 36.0));
+            let galley = painter.layout_no_wrap("Gallery".to_owned(), title_font.clone(), gp.text);
+            let rect = Rect::from_min_size(Pos2::new(bar.left() + left - 8.0, cy - 18.0), Vec2::new(galley.size().x + 44.0, 36.0));
             let resp = ui.interact(rect, Id::new("gallery-back"), sense);
             crate::a11y::named(&resp, egui::WidgetType::Button, interactive, "Back to gallery");
             if resp.hovered() && interactive {
                 painter.rect_filled(rect, CornerRadius::same(8), gp.row);
             }
-            let c = Pos2::new(rect.left() + 16.0, cy);
+            let c = Pos2::new(rect.left() + 12.0, cy);
             let chevron = Stroke::new(2.0, gp.text);
             painter.line_segment([c + Vec2::new(4.0, -7.0), c + Vec2::new(-3.0, 0.0)], chevron);
             painter.line_segment([c + Vec2::new(-3.0, 0.0), c + Vec2::new(4.0, 7.0)], chevron);
@@ -159,9 +160,9 @@ impl EskizApp {
             self.gal.header.sort = rect;
             clicked.3 = hit;
         } else {
-            painter.text(Pos2::new(bar.left() + left, cy), Align2::LEFT_CENTER, "Gallery", FontId::proportional(24.0), gp.text);
+            self.gal.header.title = painter.text(Pos2::new(bar.left() + left, cy), Align2::LEFT_CENTER, "Gallery", title_font, gp.text);
             if self.gal.select {
-                let (rect, hit) = header_text(ui, gp, &mut x, cy, "Done", gp.accent, "gallery-done", sense);
+                let (rect, hit) = header_text(ui, gp, &mut x, cy, "Done", gp.primary_text, "gallery-done", sense);
                 self.gal.header.select = rect;
                 clicked.0 = hit;
                 x -= 12.0;
@@ -188,14 +189,14 @@ impl EskizApp {
                 let plus = Rect::from_center_size(Pos2::new(x - 18.0, cy), Vec2::splat(36.0));
                 let resp = ui.interact(plus, Id::new("gallery-plus"), sense);
                 crate::a11y::named(&resp, egui::WidgetType::Button, interactive, "New drawing");
-                let fill = if resp.hovered() { gp.accent_fill.gamma_multiply(0.85) } else { gp.accent_fill };
+                let fill = if resp.hovered() { gp.primary.gamma_multiply(0.85) } else { gp.primary };
                 if gp.identity == crate::theme::UiIdentity::Eskiz {
                     // Eskiz: a rounded square tile with dark ink, not the accent circle.
                     painter.rect_filled(plus, CornerRadius::same(10), fill);
                 } else {
                     painter.circle_filled(plus.center(), 18.0, fill);
                 }
-                icons::icon_plus(&painter, Rect::from_center_size(plus.center(), Vec2::splat(22.0)), gp.on_accent);
+                icons::icon_plus(&painter, Rect::from_center_size(plus.center(), Vec2::splat(22.0)), gp.on_primary);
                 self.gal.header.plus = plus;
                 clicked.2 = resp.clicked() && interactive;
                 x = plus.left() - 20.0;
@@ -417,8 +418,8 @@ impl EskizApp {
         if self.gal.select && !tile.stack {
             let c = thumb.left_top() + Vec2::new(18.0, 18.0);
             if selected {
-                painter.circle_filled(c, 11.0, gp.accent);
-                icons::icon_check(&painter, Rect::from_center_size(c, Vec2::splat(18.0)), Color32::WHITE);
+                painter.circle_filled(c, 11.0, gp.accent_fill);
+                icons::icon_check(&painter, Rect::from_center_size(c, Vec2::splat(18.0)), gp.on_accent);
             } else {
                 painter.circle_filled(c, 11.0, Color32::from_black_alpha(90));
                 painter.circle_stroke(c, 11.0, Stroke::new(2.0, Color32::WHITE));

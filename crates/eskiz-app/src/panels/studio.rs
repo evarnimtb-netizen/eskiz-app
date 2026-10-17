@@ -56,11 +56,11 @@ fn pill(ui: &mut Ui, pal: &Palette, rect: Rect, label: &str, style: ButtonStyle,
     crate::a11y::named(&resp, egui::WidgetType::Button, enabled, label);
     crate::a11y::focus_ring(ui.painter(), rect, &resp, pal, 10);
     let (fill, text) = match style {
-        ButtonStyle::Primary => (pal.accent, Color32::WHITE),
+        ButtonStyle::Primary => (pal.primary, pal.on_primary),
         ButtonStyle::Secondary => (if resp.hovered() { pal.separator } else { pal.row }, pal.text),
         ButtonStyle::Danger => (if resp.hovered() { pal.danger.gamma_multiply(0.25) } else { pal.row }, pal.danger),
     };
-    let fill = if style == ButtonStyle::Primary && resp.hovered() { pal.accent.gamma_multiply(0.88) } else { fill };
+    let fill = if style == ButtonStyle::Primary && resp.hovered() { pal.primary.gamma_multiply(0.88) } else { fill };
     let text = if enabled { text } else { pal.text_dim.gamma_multiply(0.5) };
     ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.5), text);
@@ -227,7 +227,7 @@ impl EskizApp {
                 st.layout.sections.push((s, rect));
                 let selected = st.section == s;
                 let fill = if selected {
-                    pal.accent.gamma_multiply(0.2)
+                    pal.selected_bg(0.2)
                 } else if resp.hovered() {
                     pal.row.gamma_multiply(0.7)
                 } else {
@@ -471,8 +471,8 @@ impl EskizApp {
             }
             for (n, id) in set.iter().enumerate() {
                 let active = n == pick;
-                let text = RichText::new(id.label()).size(12.5).color(if active { Color32::WHITE } else { pal.text });
-                let chip = egui::Button::new(text).fill(if active { pal.accent } else { pal.row }).corner_radius(CornerRadius::same(14)).min_size(vec2(0.0, 28.0));
+                let text = RichText::new(id.label()).size(12.5).color(if active { pal.on_accent } else { pal.text });
+                let chip = egui::Button::new(text).fill(if active { pal.accent_fill } else { pal.row }).corner_radius(CornerRadius::same(14)).min_size(vec2(0.0, 28.0));
                 if ui.add(chip).clicked() {
                     st.curve_pick[slot] = n;
                 }
@@ -716,7 +716,7 @@ fn picker_cell(ui: &Ui, pal: &Palette, rect: Rect, resp: &egui::Response, select
     crate::a11y::toggle(resp, egui::WidgetType::SelectableLabel, true, selected, label);
     crate::a11y::focus_ring(ui.painter(), rect, resp, pal, 10);
     let p = ui.painter();
-    let fill = if selected { pal.accent.gamma_multiply(0.18) } else if resp.hovered() { pal.separator } else { pal.row };
+    let fill = if selected { pal.selected_bg(0.18) } else if resp.hovered() { pal.separator } else { pal.row };
     p.rect_filled(rect, CornerRadius::same(10), fill);
     let img = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(rect.width() - 12.0, rect.width() - 12.0));
     // Paint sits on a darker well so the tip reads like ink on paper.
@@ -763,11 +763,11 @@ fn segmented(ui: &mut Ui, pal: &Palette, labels: &[&str], selected: usize, rects
         crate::a11y::toggle(&resp, egui::WidgetType::SelectableLabel, true, i == selected, *label);
         crate::a11y::focus_ring(ui.painter(), r, &resp, pal, 8);
         if i == selected {
-            ui.painter().rect_filled(r, CornerRadius::same(8), pal.accent);
+            ui.painter().rect_filled(r, CornerRadius::same(8), pal.accent_fill);
         } else if resp.hovered() {
             ui.painter().rect_filled(r, CornerRadius::same(8), pal.separator);
         }
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, *label, FontId::proportional(13.0), if i == selected { Color32::WHITE } else { pal.text });
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, *label, FontId::proportional(13.0), if i == selected { pal.on_accent } else { pal.text });
         if resp.clicked() && i != selected {
             out = Some(i);
         }
@@ -834,7 +834,7 @@ fn slider_row(ui: &mut Ui, pal: &Palette, def: &SliderDef, value: f64, enabled: 
     let at = |v: f64| x0 + (x1 - x0) * def.to_unit(v) as f32;
     let cx = at(shown);
     let origin = if def.min < 0.0 && def.max > 0.0 { at(0.0) } else { x0 };
-    let fill = if enabled { pal.accent } else { pal.accent.gamma_multiply(0.35) };
+    let fill = if enabled { pal.accent_fill } else { pal.accent_fill.gamma_multiply(0.35) };
     p.rect_filled(Rect::from_min_max(pos2(origin.min(cx), y - 2.5), pos2(origin.max(cx), y + 2.5)), CornerRadius::same(3), fill);
     // A tick where the default sits, so a double tap has a visible target.
     let dx = at(def.default_value());

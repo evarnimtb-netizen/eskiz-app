@@ -395,7 +395,7 @@ impl EskizApp {
             return false;
         }
         self.adjust_cancel();
-        self.cancel_stroke();
+        self.commit_stroke("liquify opened");
         self.popovers.close();
         let (w, h) = (self.session.doc.width, self.session.doc.height);
         let Some(pixels) = self.session.doc.layer(id).map(|l| l.to_rgba()) else {

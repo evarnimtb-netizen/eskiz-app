@@ -43,9 +43,9 @@ impl EskizApp {
                 ui.horizontal_wrapped(|ui| {
                     for (mode, label) in MODES {
                         let active = s.mode == mode;
-                        let text = RichText::new(label).size(12.5).color(if active { Color32::WHITE } else { pal.text });
+                        let text = RichText::new(label).size(12.5).color(if active { pal.on_accent } else { pal.text });
                         let chip = egui::Button::new(text)
-                            .fill(if active { pal.accent } else { pal.row })
+                            .fill(if active { pal.accent_fill } else { pal.row })
                             .corner_radius(CornerRadius::same(14))
                             .min_size(vec2(0.0, 28.0));
                         if ui.add_enabled(!busy, chip).clicked() {
@@ -69,8 +69,8 @@ impl EskizApp {
                         asks.reset = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let done = egui::Button::new(RichText::new("Done").color(Color32::WHITE).strong())
-                            .fill(pal.accent)
+                        let done = egui::Button::new(RichText::new("Done").color(pal.on_primary).strong())
+                            .fill(pal.primary)
                             .min_size(vec2(68.0, 28.0));
                         asks.done = ui.add_enabled(!busy, done).clicked();
                         asks.cancel = ui.add_enabled(!busy, egui::Button::new("Cancel").min_size(vec2(68.0, 28.0))).clicked();

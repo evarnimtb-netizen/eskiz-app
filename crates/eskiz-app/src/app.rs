@@ -375,6 +375,9 @@ pub struct EskizApp {
     pub(crate) lifecycle: crate::lifecycle::Lifecycle,
     /// Run the suspend/resume policy (Android; tests switch it on to drive it on the host).
     pub(crate) lifecycle_on: bool,
+    /// Lay the headers out for the macOS full-size content view (traffic lights at the top left).
+    /// True on macOS; tests switch it on to snapshot that layout elsewhere.
+    pub(crate) mac_insets: bool,
     /// Window area covered by system bars and cutouts, in points (zero on desktop).
     pub safe: crate::safe_area::SafeArea,
     /// Stroke-to-frame latency samples (debug builds, or `ESKIZ_LATENCY=1`).
@@ -423,6 +426,8 @@ pub struct EskizApp {
     pub(crate) button_ids: Vec<(Panel, egui::Id)>,
     /// The top bar's "Gallery" button from the last frame (it moves with the macOS inset).
     pub(crate) gallery_button: Rect,
+    /// The text of the canvas top bar's "Gallery" button.
+    pub(crate) gallery_title: Rect,
     pub(crate) toast: Option<Toast>,
     pub(crate) now: f64,
     pub(crate) fullscreen: bool,
@@ -573,6 +578,7 @@ impl EskizApp {
             gpu_active: false,
             lifecycle: crate::lifecycle::Lifecycle::default(),
             lifecycle_on: cfg!(target_os = "android"),
+            mac_insets: cfg!(target_os = "macos"),
             safe: crate::safe_area::SafeArea::ZERO,
             latency: crate::gpu_display::Latency::default(),
             view: View::default(),
@@ -606,6 +612,7 @@ impl EskizApp {
             button_rects: Vec::new(),
             button_ids: Vec::new(),
             gallery_button: Rect::NOTHING,
+            gallery_title: Rect::NOTHING,
             toast: None,
             now: 0.0,
             fullscreen: false,
@@ -842,11 +849,64 @@ impl EskizApp {
         }
     }
 
+    /// Throw the stroke in progress away (the layer goes back to before it, no undo step).
+    /// Only for a discard the user asked for or that replaces the document anyway; any other
+    /// interruption must use [`EskizApp::commit_stroke`], so painted pixels never vanish.
     pub(crate) fn cancel_stroke(&mut self) {
+        self.cancel_stroke_for("discard");
+    }
+
+    /// [`EskizApp::cancel_stroke`] with the reason that goes to the stroke trace.
+    pub(crate) fn cancel_stroke_for(&mut self, reason: &str) {
+        if self.session.is_stroking() {
+            let drawn = self.stroke_points.len();
+            crate::stroke_trace::event("cancel", &format!("reason={reason} samples={drawn}"));
+        }
+        let layer = self.session.stroke_layer();
         if let Some(rect) = self.session.cancel_stroke() {
-            self.refresh(rect);
+            self.refresh_stroke(rect, layer);
         }
         self.finish_stroke_state();
+    }
+
+    /// Finish the stroke in progress as if the pen had lifted: its pixels stay and it becomes an
+    /// undo step. Used whenever something other than the user's pen-up ends a stroke (focus
+    /// lost, a save, leaving the canvas, the app suspending, a second press).
+    pub(crate) fn commit_stroke(&mut self, reason: &str) {
+        if self.session.is_stroking() {
+            self.end_stroke_for(reason);
+        } else {
+            self.finish_stroke_state();
+        }
+    }
+
+    /// Canvas rectangle changed by a stroke on `layer` (the layer the stroke runs on, which is
+    /// not necessarily the active one if the active layer changed mid-stroke).
+    fn refresh_stroke(&mut self, rect: PixelRect, layer: Option<u64>) {
+        if self.gpu_active {
+            self.latency.note_input();
+            if let Some(g) = self.gpu.as_mut() {
+                g.canvas_mut().mark_rect(rect, layer.unwrap_or(self.active));
+            }
+            return;
+        }
+        self.refresh(rect);
+    }
+
+    /// The window stopped being the one the user draws in (focus lost, minimised): the pen-up
+    /// may never arrive, so the stroke is finished now and keeps its ink.
+    fn stroke_window_guard(&mut self, ctx: &egui::Context) {
+        if !self.session.is_stroking() {
+            return;
+        }
+        // The focus-lost event (not the focus state: some window systems never report focus).
+        let away = ctx.input(|i| {
+            i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false)))
+                || i.viewport().minimized == Some(true)
+        });
+        if away {
+            self.commit_stroke("window lost focus or minimised");
+        }
     }
 
     /// Palm rejection: when the OS cancels a contact (Android `ACTION_CANCEL` / `FLAG_CANCELED`)
@@ -861,7 +921,7 @@ impl EskizApp {
             input.primary_pressed = false;
         }
         if hit && self.session.is_stroking() {
-            self.cancel_stroke();
+            self.cancel_stroke_for("palm: the OS cancelled the contact");
         }
     }
 
@@ -906,6 +966,10 @@ impl EskizApp {
             }
         };
         if started {
+            crate::stroke_trace::event(
+                "begin",
+                &format!("layer={} tool={:?} touch={touch}", self.active, self.tool),
+            );
             self.stroke_is_touch = touch;
             self.stroke_force = force;
             self.stroke_points.clear();
@@ -940,16 +1004,36 @@ impl EskizApp {
         };
         // The global pressure curve covers touch force and pen pressure.
         let sample = apply_pressure_curve(sample, &self.prefs.pressure_curve);
+        let layer = self.session.stroke_layer();
         if let Some(rect) = self.session.push(sample) {
-            self.refresh(rect);
+            self.refresh_stroke(rect, layer);
         }
     }
 
+    /// The pen lifted.
     fn end_stroke(&mut self) {
+        self.end_stroke_for("pointer released");
+    }
+
+    fn end_stroke_for(&mut self, reason: &str) {
+        if self.session.is_stroking() && self.stroke_points.len() == 1 {
+            // A click without movement is one sample, which the engine turns into no dab at all:
+            // repeat the point so a tap leaves a dot instead of nothing.
+            if let Some(pos) = self.stroke_last {
+                self.stroke_point(pos, self.now + 0.002);
+            }
+        }
         if self.session.is_stroking() {
             let paints_colour = self.tool == Tool::Brush;
-            if let Some(rect) = self.session.end_stroke() {
-                self.refresh(rect);
+            let layer = self.session.stroke_layer();
+            let samples = self.stroke_points.len();
+            let rect = self.session.end_stroke();
+            crate::stroke_trace::event(
+                "commit",
+                &format!("reason={reason} samples={samples} painted={}", rect.is_some()),
+            );
+            if let Some(rect) = rect {
+                self.refresh_stroke(rect, layer);
                 if paints_colour {
                     self.note_colour_used(self.colour);
                 }
@@ -989,7 +1073,7 @@ impl EskizApp {
             self.stroke_points = points;
             return;
         }
-        self.cancel_stroke();
+        self.cancel_stroke_for("hold to shape replaces the stroke");
         let hold = points[points.len() - 1];
         let anchor = hold_shape::anchor(&fit.shape);
         self.shape_edit = Some(ShapeEdit {
@@ -1138,7 +1222,7 @@ impl EskizApp {
     }
 
     pub(crate) fn begin_eyedrop(&mut self, pos: Pos2) {
-        self.cancel_stroke();
+        self.cancel_stroke_for("eyedropper started");
         self.eyedrop = Some(Eyedrop {
             previous: self.colour,
             pos: Some(pos),
@@ -1165,7 +1249,7 @@ impl EskizApp {
         let Some(start) = self.modify_press else {
             return;
         };
-        if !self.prefs.eyedrop_hold || !input.primary_down || self.eyedrop.is_some() || self.shape_edit.is_some() {
+        if !self.prefs.eyedrop_hold || !input.primary_down || self.eyedrop.is_some() || self.shape_edit.is_some() || self.session.is_stroking() {
             return;
         }
         let delay = f64::from(self.prefs.eyedrop_secs);
@@ -1490,7 +1574,7 @@ impl EskizApp {
     /// Two or more fingers: pan, pinch-zoom and rotate, with snapping and a quick-pinch fit.
     fn multi_touch_frame(&mut self, mt: MultiTouchInfo) {
         if self.session.is_stroking() {
-            self.cancel_stroke();
+            self.cancel_stroke_for("second finger: touch navigation takes over a finger stroke");
         }
         let (zoom_before, rot_before) = (self.view.zoom, self.view.rotation);
         if self.shape_edit.is_none() && self.prefs.touch_navigation {
@@ -1555,7 +1639,7 @@ impl EskizApp {
         let settled = (vp.height() - self.fit_height_seen).abs() < 0.5;
         self.fit_height_seen = vp.height();
         self.on_viewport_resize(vp);
-        if self.need_fit && vp.width() > 1.0 && settled {
+        if self.need_fit && vp.width() > 1.0 && settled && !self.session.is_stroking() {
             let inner = Rect::from_min_max(
                 vp.min + Vec2::new(16.0 + self.safe.left, FIT_TOP + self.safe.top),
                 vp.max - Vec2::new(16.0 + self.safe.right, 16.0 + self.safe.bottom),
@@ -1571,6 +1655,7 @@ impl EskizApp {
             // The Brush Bench sheet is modal: the canvas underneath hears nothing.
             input.silence();
         }
+        self.stroke_window_guard(&ctx);
         self.palm_cancel(&mut input);
         let time = input.time;
 
@@ -1588,7 +1673,13 @@ impl EskizApp {
             input.zoom = 1.0;
             input.scroll = Vec2::ZERO;
         }
-        match input.multi.filter(|m| m.num_touches >= 2 && !multi_over_ui) {
+        // A trackpad or mouse stroke, or a pen stroke, is not a finger gesture: a second contact
+        // (a palm) is ignored until the stroke ends. Only a finger stroke gives way to navigation.
+        let multi_ignored = self.session.is_stroking() && (!self.stroke_is_touch || self.pen.stroke_reading.is_some());
+        if multi_ignored && input.multi.is_some_and(|m| m.num_touches >= 2) {
+            crate::stroke_trace::event("ignored", "multi-touch gesture while a stroke is open");
+        }
+        match input.multi.filter(|m| m.num_touches >= 2 && !multi_over_ui && !multi_ignored) {
             Some(mt) => self.multi_touch_frame(mt),
             None => {
                 if let Some((start, scale)) = self.pinch.take() {
@@ -1620,7 +1711,14 @@ impl EskizApp {
         // panel, sheet or the side bar keeps them (it scrolls itself); only the bare canvas
         // pans and zooms.
         let over_chrome = input.hover.is_some_and(|p| over_ui(ctx, p));
-        if over_chrome {
+        let stroking = self.session.is_stroking();
+        if stroking {
+            // A stroke in progress owns the view: pinch, scroll and pan (a palm on the trackpad,
+            // a wheel nudge) wait until the pen lifts, so the ink stays where it was drawn.
+            if input.zoom != 1.0 || input.scroll != Vec2::ZERO || input.space || input.middle {
+                crate::stroke_trace::event("ignored", "zoom, scroll or pan while a stroke is open");
+            }
+        } else if over_chrome {
             // Not for the canvas.
         } else if input.zoom != 1.0 {
             let anchor = input.hover.unwrap_or(viewport.center());
@@ -1628,7 +1726,7 @@ impl EskizApp {
         } else if input.hover.is_some_and(|p| viewport.contains(p)) && input.scroll != Vec2::ZERO {
             self.view.pan(input.scroll);
         }
-        let panning = input.space || input.middle;
+        let panning = (input.space || input.middle) && !stroking;
         if panning && input.primary_down && input.pointer_delta != Vec2::ZERO {
             self.view.pan(input.pointer_delta);
         }
@@ -1669,6 +1767,11 @@ impl EskizApp {
         let finger_paints = input.touch.is_none() || self.prefs.touch_painting;
         if input.primary_pressed && !press_on_ui && !panning && finger_paints {
             self.rotating = input.r_held;
+            if self.session.is_stroking() {
+                // A press with a stroke still open: the release was lost (focus change, drag
+                // lock). The open stroke is kept as it is and the new press starts the next one.
+                self.commit_stroke("a new press arrived before the release");
+            }
             if let Some(pos) = input.press_origin {
                 if self.shape_edit.is_none() && self.eyedrop.is_none() {
                     // Alt/Option starts the eyedropper at once. The Pick Color button waits for its hold (see
@@ -1914,7 +2017,14 @@ impl eframe::App for EskizApp {
         } else {
             self.persist_prefs(storage);
         }
-        self.save_on_exit();
+        // eframe also calls `save` every 30 s while the app runs. A stroke that is open then is
+        // neither cancelled nor saved half drawn: the autosave takes it after the pen lifts
+        // (on exit, `save_on_exit` commits it first).
+        if self.session.is_stroking() {
+            crate::stroke_trace::event("ignored", "periodic save while a stroke is open (deferred)");
+        } else {
+            self.save_on_exit();
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {

@@ -102,6 +102,11 @@ mod android_fix_tests;
 mod rc1_tests;
 #[cfg(test)]
 mod rc2_tests;
+#[cfg(test)]
+mod rc3_tests;
+#[cfg(test)]
+mod rc3_look_tests;
+pub mod stroke_trace;
 pub mod storage;
 pub mod studio;
 pub(crate) mod licenses;
@@ -115,6 +120,8 @@ mod studio_tests;
 #[cfg(test)]
 mod visual_tour_tests;
 pub mod snapshot;
+#[cfg(test)]
+mod qa_capture;
 pub mod tablet;
 pub mod tablet_backend;
 pub mod text_tool;

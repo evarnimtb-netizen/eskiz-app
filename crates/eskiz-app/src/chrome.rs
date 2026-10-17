@@ -29,13 +29,41 @@ fn glyph_button(ui: &mut egui::Ui, icon: IconFn, label: &str, active: bool, enab
     let colour = if !enabled {
         pal.disabled()
     } else if active {
-        pal.accent
+        pal.primary_text
     } else {
-        pal.text
+        pal.glyph_idle()
     };
     icon(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(24.0)), colour);
     a11y::focus_ring(ui.painter(), rect.shrink(4.0), &resp, pal, 10);
     resp
+}
+
+/// Right edge of the macOS traffic-light buttons, measured from the window's left edge: the three
+/// buttons end 70 to 78 pt in at the default title bar height, so 78 is the safe figure.
+pub(crate) const TRAFFIC_LIGHTS_END: f32 = 78.0;
+/// Clear space between the traffic lights and the title.
+pub(crate) const TRAFFIC_LIGHTS_GAP: f32 = 14.0;
+/// Left margin of the title on every other platform (and in full screen).
+pub(crate) const TITLE_MARGIN: f32 = 16.0;
+
+/// Where the "Gallery" title starts, from the window's left edge. The gallery header and the
+/// canvas top bar both use it, so the word does not move when the screen changes.
+pub(crate) fn title_inset_for(mac_insets: bool, fullscreen: bool) -> f32 {
+    if mac_insets && !fullscreen {
+        TRAFFIC_LIGHTS_END + TRAFFIC_LIGHTS_GAP
+    } else {
+        TITLE_MARGIN
+    }
+}
+
+/// The font of the "Gallery" title and of the canvas button that leads to it: one size in both
+/// screens (the heading face in the Eskiz look).
+pub(crate) fn title_font(ctx: &egui::Context, pal: &Palette) -> egui::FontId {
+    if pal.identity == crate::theme::UiIdentity::Eskiz {
+        crate::fonts::heading_font(ctx, 17.0).unwrap_or_else(|| egui::FontId::proportional(17.0))
+    } else {
+        egui::FontId::proportional(17.0)
+    }
 }
 
 /// A rounded text row used for notes and banners.
@@ -178,7 +206,7 @@ impl EskizApp {
         let bar = Rect::from_min_size(screen.min, Vec2::new(screen.width(), BAR_HEIGHT));
         // On macOS the traffic-light buttons sit over the top-left corner. Keep the first
         // buttons clear of them, except in full-screen mode where the bar is hidden.
-        let left_inset = if cfg!(target_os = "macos") && !self.fullscreen { 78.0 } else { 12.0 };
+        let left_inset = title_inset_for(self.mac_insets, self.fullscreen);
         let fullscreen = self.fullscreen;
         self.button_rects.clear();
         self.button_ids.clear();
@@ -197,8 +225,20 @@ impl EskizApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(left_inset);
-                    let gallery = ui.add_sized([72.0, BUTTON], egui::Button::new("Gallery").frame(false));
+                    // The label starts exactly at the inset, in the gallery header's font; the hover
+                    // pill reaches 8 pt to each side of the word.
+                    let title = title_font(ctx, &pal);
+                    let galley = ui.painter().layout_no_wrap("Gallery".to_owned(), title, pal.text);
+                    ui.add_space((left_inset - 8.0).max(0.0));
+                    let (gallery_rect, gallery) = ui.allocate_exact_size(Vec2::new(galley.size().x + 16.0, BUTTON), Sense::click());
+                    a11y::named(&gallery, egui::WidgetType::Button, true, "Gallery");
+                    if gallery.hovered() {
+                        ui.painter().rect_filled(gallery_rect.shrink2(Vec2::new(0.0, 2.0)), CornerRadius::same(8), pal.row);
+                    }
+                    let title_pos = Pos2::new(gallery_rect.left() + 8.0, gallery_rect.center().y - galley.size().y / 2.0);
+                    self.gallery_title = Rect::from_min_size(title_pos, galley.size());
+                    ui.painter().galley(title_pos, galley, pal.text);
+                    a11y::focus_ring(ui.painter(), gallery_rect.shrink2(Vec2::new(0.0, 4.0)), &gallery, &pal, 8);
                     self.gallery_button = gallery.rect;
                     if gallery.clicked() {
                         self.open_gallery(ctx);
@@ -364,7 +404,7 @@ impl EskizApp {
                     redo_rect = Rect::from_min_size(undo_rect.left_bottom(), Vec2::new(width, BUTTON));
                     for pill in [size_pill, modify_rect, opacity_rect, undo_rect.union(redo_rect)] {
                         ui.painter().rect_filled(pill, CornerRadius::same(22), pal.panel);
-                        ui.painter().rect_stroke(pill, CornerRadius::same(22), Stroke::new(1.0, pal.edge.gamma_multiply(0.5)), StrokeKind::Inside);
+                        ui.painter().rect_stroke(pill, CornerRadius::same(22), Stroke::new(1.0, pal.hairline), StrokeKind::Inside);
                     }
                 } else {
                     let capsule = CornerRadius::same(22);
@@ -415,7 +455,7 @@ impl EskizApp {
                     self.modify_press = Some(self.now);
                 }
                 self.modify_rect = modify_rect;
-                let mcol = if held { pal.accent } else { pal.text };
+                let mcol = if held { pal.primary_text } else { pal.glyph_idle() };
                 icons::icon_modify(ui.painter(), Rect::from_center_size(modify_rect.center(), Vec2::splat(22.0)), mcol);
 
                 // Opacity: linear, shown as a percentage.

@@ -123,16 +123,16 @@ pub(crate) fn icon_button(ui: &mut egui::Ui, icon: IconFn, selected: bool, enabl
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(TOOL_BUTTON), sense);
     let painter = ui.painter();
     if selected {
-        painter.rect_filled(rect, CornerRadius::same(10), pal.accent.gamma_multiply(0.16));
+        painter.rect_filled(rect, CornerRadius::same(10), pal.selected_bg(0.16));
     } else if enabled && resp.hovered() {
         painter.rect_filled(rect, CornerRadius::same(10), pal.row);
     }
     let colour = if !enabled {
         pal.disabled()
     } else if selected {
-        pal.accent
+        pal.primary_text
     } else {
-        pal.text
+        pal.glyph_idle()
     };
     icon(painter, Rect::from_center_size(rect.center(), Vec2::splat(24.0)), colour);
     let resp = resp.on_hover_text(tip);

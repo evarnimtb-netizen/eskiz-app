@@ -128,8 +128,8 @@ impl EskizApp {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(kind.name()).size(15.0).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let apply_btn = egui::Button::new(RichText::new("Apply").color(Color32::WHITE).strong())
-                                .fill(pal.accent)
+                            let apply_btn = egui::Button::new(RichText::new("Apply").color(pal.on_primary).strong())
+                                .fill(pal.primary)
                                 .min_size(vec2(68.0, 32.0));
                             apply = ui.add_enabled(!applying, apply_btn).clicked();
                             cancel = ui.add_enabled(!applying, egui::Button::new("Cancel").min_size(vec2(68.0, 32.0))).clicked();
@@ -282,7 +282,7 @@ fn banner_slider(ui: &mut egui::Ui, pal: &Palette, rect: Rect, min: f64, max: f6
     painter.rect_filled(track, CornerRadius::same(3), pal.row);
     let origin = if min < 0.0 { (x0 + x1) / 2.0 } else { x0 };
     let fill = Rect::from_min_max(Pos2::new(origin.min(cx), y - 2.5), Pos2::new(origin.max(cx), y + 2.5));
-    painter.rect_filled(fill, CornerRadius::same(3), pal.accent);
+    painter.rect_filled(fill, CornerRadius::same(3), pal.accent_fill);
     if min < 0.0 {
         painter.line_segment([Pos2::new(origin, y - 7.0), Pos2::new(origin, y + 7.0)], Stroke::new(1.0, pal.text_dim));
     }

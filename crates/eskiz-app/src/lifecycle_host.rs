@@ -33,7 +33,7 @@ struct AppHost<'a> {
 
 impl Host for AppHost<'_> {
     fn stop_stroke(&mut self) {
-        self.app.cancel_stroke();
+        self.app.commit_stroke("the app is going to the background");
     }
 
     fn write_journal(&mut self) -> Result<(), String> {

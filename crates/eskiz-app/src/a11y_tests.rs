@@ -273,6 +273,7 @@ fn eskiz_identity_meets_wcag_aa_on_every_pair() {
             ("text_dim", pal.text_dim),
             ("disabled", pal.disabled()),
             ("accent", pal.accent),
+            ("primary_text", pal.primary_text),
             ("danger", pal.danger),
             ("warning", pal.warning),
             ("success", pal.success),
@@ -285,6 +286,8 @@ fn eskiz_identity_meets_wcag_aa_on_every_pair() {
         }
         let r = contrast_ratio(pal.on_accent, pal.accent_fill);
         assert!(r >= 4.5, "on_accent on accent_fill is {r:.2}:1 ({mode})");
+        let r = contrast_ratio(pal.on_primary, pal.primary);
+        assert!(r >= 4.5, "on_primary on primary is {r:.2}:1 ({mode})");
         // Non-text: the accent fill as an indicator, outlines, focus ring and halo.
         for (what, fg, bg, min) in [
             ("accent_fill on panel", pal.accent_fill, pal.panel, 3.0),
