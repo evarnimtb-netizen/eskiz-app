@@ -1,0 +1,12 @@
+[package]
+name = "eskiz-icon-gen"
+version = "0.1.0"
+edition = "2021"
+description = "Draws the Eskiz app icon in code and writes PNG, ICNS and ICO files."
+publish = false
+
+[dependencies]
+png = "0.18"
+
+# Own workspace root, so this tool stays out of the app workspace and the app binary.
+[workspace]

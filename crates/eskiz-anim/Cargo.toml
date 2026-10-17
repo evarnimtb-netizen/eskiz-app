@@ -1,0 +1,13 @@
+[package]
+name = "eskiz-anim"
+description = "Frames: frames from the layer stack, playback clock, onion skins and export sequencing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eskiz-core = { path = "../eskiz-core" }
+# Frames and timing only: no encoder, so no OpenH264 build.
+eskiz-media = { path = "../eskiz-media", default-features = false }
+thiserror = "2.0.21"

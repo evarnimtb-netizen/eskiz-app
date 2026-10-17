@@ -1,0 +1,16 @@
+[package]
+name = "eskiz-core"
+description = "CPU brush engine: input geometry, brush settings, dab rasteriser and layer compositing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Text layers keep their attributed source here (see `Document::texts`).
+eskiz-text = { path = "../eskiz-text" }
+eskiz-filters = { path = "../eskiz-filters" }
+# Colour spaces (sRGB, Display P3) and the conversion between them.
+eskiz-guides = { path = "../eskiz-guides" }
+# Safe byte views of 16-bit tile storage.
+bytemuck = "1"

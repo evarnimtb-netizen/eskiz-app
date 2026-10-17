@@ -1,0 +1,22 @@
+[package]
+name = "eskiz-gpu"
+description = "Headless wgpu backend for Eskiz: tiled GPU layers, 26-mode compositor and adjustment shaders."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eskiz-core = { path = "../eskiz-core" }
+eskiz-filters = { path = "../eskiz-filters" }
+# Same major as egui-wgpu 0.36 (wgpu 30). Backends are selected here so the crate works
+# headless; eframe's own wgpu feature unifies with these.
+wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12"] }
+bytemuck = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"

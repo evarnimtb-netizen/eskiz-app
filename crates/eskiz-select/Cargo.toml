@@ -1,0 +1,9 @@
+[package]
+name = "eskiz-select"
+description = "Selection masks, transform sessions, clipboard and canvas operations for Eskiz (pure algorithms, no UI)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

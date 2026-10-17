@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Eskiz
+GenericName=Painting app
+Comment=Paint, draw and sketch with brushes, layers and selections
+Exec=eskiz %F
+Icon=eskiz
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=paint;painting;drawing;sketch;brush;layers;
+MimeType=application/x-eskiz-document;application/x-eskiz-brush;application/x-eskiz-swatches;image/vnd.adobe.photoshop;
+StartupNotify=true

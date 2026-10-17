@@ -1,0 +1,11 @@
+[package]
+name = "eskiz-brushlib"
+description = "Eskiz's built-in brush library: procedural tip and grain textures, roadmap presets and stroke previews."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+eskiz-core = { path = "../eskiz-core" }
+image = { version = "0.25", default-features = false, features = ["png"] }

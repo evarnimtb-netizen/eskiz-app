@@ -1,0 +1,25 @@
+[package]
+name = "eskiz-media"
+description = "Eskiz animation and video export: animated GIF, APNG, H.264 MP4 (openh264) and timelapse recording."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# No encoder by default: OpenH264 and the MP4 muxer are not linked unless one of the two below is on.
+default = []
+# Internal: the H.264 / MP4 code. Enabled by `source` and `libloading`.
+h264 = ["dep:openh264", "dep:mp4"]
+# Compile OpenH264 from source (BSD-2-Clause).
+source = ["h264", "openh264/source"]
+# Load a shared OpenH264 library at runtime, for example Cisco's prebuilt binary.
+libloading = ["h264", "openh264/libloading"]
+
+[dependencies]
+color_quant = "1.1"
+gif = "0.14"
+mp4 = { version = "0.14", optional = true }
+openh264 = { version = "0.9", default-features = false, optional = true }
+png = "0.18"
+thiserror = "2.0.21"

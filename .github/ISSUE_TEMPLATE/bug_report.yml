@@ -1,0 +1,68 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not attach artwork you do not want to share publicly.
+        For security problems, do not use this form: see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Eskiz version
+      description: Shown in About, or in the file name you downloaded (for example 0.1.0).
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Android (experimental)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: e.g. macOS 15.1, Windows 11 23H2, Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: Graphics card and driver
+      description: If you know it. Run `eskiz --diagnose` for a summary you can paste below.
+      placeholder: e.g. Apple M2, NVIDIA RTX 3060 (driver 560), Intel UHD 620 (Mesa 24.2)
+    validations:
+      required: true
+  - type: input
+    id: input-device
+    attributes:
+      label: Pen or tablet
+      description: Leave empty if you use a mouse or touchpad.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. New canvas 2048 x 2048
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Logs, screenshots or a small file that shows the problem
+      description: Drag files into this box. Only share files you are allowed to share.

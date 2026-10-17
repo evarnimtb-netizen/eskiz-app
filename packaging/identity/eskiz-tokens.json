@@ -1,0 +1,327 @@
+{
+ "meta": {
+  "name": "Eskiz identity tokens (checked-in copy)",
+  "note": "Eskiz palette: nib orange accent and blueprint blue from the v5 icon, navy-graphite chrome, neutral canvas surround, Atkinson Hyperlegible Next. Supersedes the Direction A colours of the proposal; shape, type and elevation values come from it. theme.rs must match this file (test identity_tokens_match_the_checked_in_json).",
+  "contrast": "WCAG 2.x relative luminance ratio; bar composited at its alpha over the backdrop",
+  "units": "logical points (egui points)"
+ },
+ "palette": {
+  "dark": {
+   "backdrop": "#242424",
+   "bar": "#121829",
+   "panel": "#1A2133",
+   "row": "#242D45",
+   "hover": "#303B59",
+   "separator": "#2B3552",
+   "track": "#6A779A",
+   "edge": "#7A88AD",
+   "text": "#EEF2FA",
+   "text_dim": "#A9B5CE",
+   "accent": "#FF8A60",
+   "accent_fill": "#FF5A1F",
+   "on_accent": "#0B1020",
+   "danger": "#FF8F8F",
+   "warning": "#FFC247",
+   "success": "#5FD6A0",
+   "blueprint": "#8FB9F2",
+   "focus_ring": "#8FB9F2",
+   "focus_halo": "#0B1020",
+   "bar_alpha": 235
+  },
+  "light": {
+   "backdrop": "#D4D4D4",
+   "bar": "#F3F4F8",
+   "panel": "#FAFBFD",
+   "row": "#ECEEF4",
+   "hover": "#DBDFEA",
+   "separator": "#D5D9E4",
+   "track": "#9AA3BC",
+   "edge": "#7580A0",
+   "text": "#141A2B",
+   "text_dim": "#454F68",
+   "accent": "#A33008",
+   "accent_fill": "#FF5A1F",
+   "on_accent": "#0B1020",
+   "danger": "#A5211A",
+   "warning": "#7A4F00",
+   "success": "#0B5E3D",
+   "blueprint": "#1D5195",
+   "focus_ring": "#1E4F96",
+   "focus_halo": "#FFFFFF",
+   "bar_alpha": 235
+  }
+ },
+ "overlay": {
+  "ants": {
+   "a": "#000000",
+   "b": "#FFFFFF",
+   "width": 1.0,
+   "dash": 4.0,
+   "speed_px_per_s": 8.0,
+   "worst_case_ratio_on_any_grey": 4.61,
+   "note": "values equal the current constants in easel-select outline.rs; kept because black/white is hue independent"
+  },
+  "handle": {
+   "fill": "#FFFFFF",
+   "outline": "#000000",
+   "outline_width": 1.0,
+   "size": 10.0,
+   "hover_fill": "accent_fill",
+   "hover_ink": "on_accent"
+  },
+  "brush_cursor": {
+   "ring": "#FFFFFF",
+   "outline": "#000000",
+   "width": 1.0
+  },
+  "scrim": {
+   "modal": "#000000",
+   "modal_alpha": 0.5
+  }
+ },
+ "typography": {
+  "ui_family": {
+   "recommended": "Atkinson Hyperlegible Next",
+   "licence": "SIL OFL 1.1",
+   "file": "AtkinsonHyperlegibleNext[wght].ttf",
+   "bytes": 114552,
+   "fallback_static": [
+    "AtkinsonHyperlegible-Regular.ttf (54348 bytes)",
+    "AtkinsonHyperlegible-Bold.ttf (55256 bytes)"
+   ],
+   "cjk_arabic_etc": "fall back to egui default and system fonts",
+   "source": "https://github.com/google/fonts/tree/main/ofl/atkinsonhyperlegiblenext"
+  },
+  "alternatives": [
+   {
+    "name": "Inter",
+    "bytes": 876576,
+    "licence": "OFL 1.1"
+   },
+   {
+    "name": "IBM Plex Sans",
+    "bytes": 537244,
+    "licence": "OFL 1.1"
+   },
+   {
+    "name": "Source Sans 3",
+    "bytes": 646340,
+    "licence": "OFL 1.1"
+   }
+  ],
+  "egui_default": {
+   "family": "Ubuntu-Light + Hack + NotoEmoji + emoji-icon-font",
+   "bytes": 1392000,
+   "licence": "UFL / OFL / MIT"
+  },
+  "weights": {
+   "regular": 400,
+   "medium": 500,
+   "semibold": 600
+  },
+  "scale": {
+   "caption": {
+    "size": 11,
+    "weight": 500,
+    "line": 14
+   },
+   "label": {
+    "size": 12,
+    "weight": 500,
+    "line": 16
+   },
+   "body": {
+    "size": 13,
+    "weight": 400,
+    "line": 18
+   },
+   "body_touch": {
+    "size": 15,
+    "weight": 400,
+    "line": 21
+   },
+   "title": {
+    "size": 16,
+    "weight": 600,
+    "line": 22
+   },
+   "heading": {
+    "size": 20,
+    "weight": 600,
+    "line": 26
+   },
+   "display": {
+    "size": 28,
+    "weight": 600,
+    "line": 34
+   },
+   "numeric": {
+    "size": 13,
+    "weight": 500,
+    "figures": "tabular via fixed digit cells (egui 0.36 cannot switch OpenType features)"
+   }
+  },
+  "min_size_pt": 11
+ },
+ "shape": {
+  "radius": {
+   "xs": 2,
+   "sm": 4,
+   "md": 8,
+   "lg": 12,
+   "pill": "full"
+  },
+  "radius_use": {
+   "xs": "slider rails, ticks",
+   "sm": "buttons, fields, checkboxes, chips",
+   "md": "rows, popovers, docks",
+   "lg": "modal sheets",
+   "pill": "size chip, Show UI pill"
+  },
+  "stroke": {
+   "hairline": 1.0,
+   "control_edge": 1.0,
+   "icon": 1.5,
+   "focus_ring": 2.0,
+   "focus_halo": 1.0,
+   "slider_rail": 3.0,
+   "slider_thumb": 18.0
+  },
+  "spacing": {
+   "0": 0,
+   "1": 2,
+   "2": 4,
+   "3": 8,
+   "4": 12,
+   "5": 16,
+   "6": 24,
+   "7": 32
+  },
+  "icon": {
+   "grid": 24,
+   "stroke": 1.5,
+   "padding": 2,
+   "render": {
+    "compact": 20,
+    "regular": 24,
+    "touch": 28
+   }
+  },
+  "eskiz_radius": {
+   "panel": 8,
+   "window": 8,
+   "menu": 8,
+   "widget": 4,
+   "checkbox": 2,
+   "banner": 4,
+   "bubble": 4,
+   "toast": 6,
+   "sidebar_pill": "full",
+   "text_field": 4
+  },
+  "eskiz_shadow": {
+   "offset": [
+    0,
+    4
+   ],
+   "blur": 16,
+   "alpha": 0.35
+  }
+ },
+ "elevation": {
+  "e0": {
+   "use": "canvas backdrop",
+   "shadow": null
+  },
+  "e1": {
+   "use": "top bar, docks",
+   "fill": "bar",
+   "alpha": 0.92,
+   "shadow": null,
+   "edge": "hairline"
+  },
+  "e2": {
+   "use": "popovers, panels",
+   "fill": "panel",
+   "alpha": 1.0,
+   "shadow": {
+    "offset": [
+     0,
+     4
+    ],
+    "blur": 16,
+    "alpha": 0.35
+   },
+   "edge": "hairline"
+  },
+  "e3": {
+   "use": "modal sheets",
+   "fill": "panel",
+   "alpha": 1.0,
+   "shadow": {
+    "offset": [
+     0,
+     8
+    ],
+    "blur": 32,
+    "alpha": 0.45
+   },
+   "scrim": 0.5
+  },
+  "rules": [
+   "Only e1 may be translucent, and never below 0.92 alpha",
+   "No backdrop blur (egui cannot); translucency is a tint only",
+   "Panels are opaque so text contrast is computed on a known colour"
+  ]
+ },
+ "density": {
+  "compact": {
+   "hit": 36,
+   "icon": 20,
+   "row": 32,
+   "item_spacing": 6,
+   "button_padding": [
+    8,
+    4
+   ],
+   "bar_height": 40,
+   "body": 13,
+   "note": "desktop opt-in, fine pointer"
+  },
+  "regular": {
+   "hit": 44,
+   "icon": 24,
+   "row": 40,
+   "item_spacing": 8,
+   "button_padding": [
+    10,
+    6
+   ],
+   "bar_height": 48,
+   "body": 13,
+   "note": "default; equals current BUTTON=44, BAR_HEIGHT=48"
+  },
+  "touch": {
+   "hit": 48,
+   "icon": 28,
+   "row": 48,
+   "item_spacing": 12,
+   "button_padding": [
+    12,
+    8
+   ],
+   "bar_height": 56,
+   "body": 15,
+   "note": "Android and any device with touch input as primary"
+  },
+  "min_target_floor": 24,
+  "floor_source": "WCAG 2.2 SC 2.5.8 (AA)"
+ },
+ "motion": {
+  "fast_ms": 100,
+  "base_ms": 150,
+  "slow_ms": 250,
+  "easing": "cubic-out",
+  "reduce_motion": "all durations 0, no slide"
+ }
+}

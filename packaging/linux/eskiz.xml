@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared MIME database entries for Eskiz's file types. Installed as
+  share/mime/packages/eskiz.xml; desktop environments then run update-mime-database.
+  image/vnd.adobe.photoshop (.psd) is already defined by shared-mime-info and is not repeated.
+  All three Eskiz formats are zip containers, hence the application/zip parent.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-eskiz-document">
+    <comment>Eskiz painting</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.procreate"/>
+  </mime-type>
+  <mime-type type="application/x-eskiz-brush">
+    <comment>Eskiz brush set</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.brush"/>
+  </mime-type>
+  <mime-type type="application/x-eskiz-swatches">
+    <comment>Eskiz swatch set</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.swatches"/>
+  </mime-type>
+</mime-info>

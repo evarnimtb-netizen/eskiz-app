@@ -1,0 +1,114 @@
+[package]
+name = "eskiz-app"
+description = "Eskiz: egui/eframe painting app with the .procreate reader and the eskiz-core brush engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+# A cdylib target is needed for Android (`android_main` is exported from the shared library).
+# See the note in the report about whether it builds cleanly on desktop.
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "eskiz"
+path = "src/main.rs"
+
+[features]
+default = ["tablet", "gl-fallback", "native-dialogs", "usd"]
+# MP4 export: OpenH264 compiled from source (`eskiz-media/source`). Off by default (distributed
+# 0.1 builds ship without it: the codec patent licence of a self-built OpenH264 is not wanted);
+# MP4 export then reports that it is unavailable and the timelapse keeps small pictures.
+# Developers turn it on with `--features mp4`.
+mp4 = ["eskiz-media/source"]
+# Import .usdz/.usda/.usdc models (the pre-1.0 `openusd` crate). Turn off with `--no-default-features`.
+usd = ["eskiz-3d/usd"]
+# Keep eframe's OpenGL (glow) renderer compiled in next to wgpu. The window opens with wgpu;
+# if wgpu cannot start (no adapter, no surface) and nothing has been created yet, Eskiz
+# retries once with glow and the CPU compositor. `ESKIZ_RENDERER=gl` selects glow directly.
+# Build with `--no-default-features --features tablet` for a wgpu-only binary.
+gl-fallback = ["eframe/glow"]
+# Pen tablet pressure, tilt and azimuth through the `octotablet` crate (Windows Ink and
+# Wayland). `cargo check` passes with it on for x86_64-unknown-linux-gnu,
+# x86_64-pc-windows-msvc and aarch64-apple-darwin (where it is a no-op).
+tablet = ["dep:octotablet"]
+# Native open/save/folder dialogs through `rfd` (IFileDialog on Windows, NSOpenPanel on macOS,
+# the xdg-desktop-portal on Linux, so no GTK build dependency). Android builds use
+# `--no-default-features` and a later SAF backend behind the same `FileAccess` trait.
+native-dialogs = ["dep:rfd"]
+# Android entry point (`android_main`). Only enable when building for an Android target.
+android = ["eframe/android-native-activity", "dep:android-activity"]
+
+[dependencies]
+directories = "6.0.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+eskiz-brushlib = { path = "../eskiz-brushlib" }
+eskiz-anim = { path = "../eskiz-anim" }
+eskiz-core = { path = "../eskiz-core" }
+eskiz-gpu = { path = "../eskiz-gpu" }
+# The H.264 encoder is the `mp4` feature below (OpenH264 compiled from C++).
+eskiz-media = { path = "../eskiz-media", default-features = false }
+eskiz-format = { path = "../eskiz-format" }
+eskiz-guides = { path = "../eskiz-guides" }
+eskiz-select = { path = "../eskiz-select" }
+eskiz-3d = { path = "../eskiz-3d", default-features = false }
+eskiz-filters = { path = "../eskiz-filters" }
+rayon = "1.12"
+glam = "0.30"
+serde_json = "1"
+eskiz-text = { path = "../eskiz-text" }
+# wgpu renderer (Metal on macOS, DX12 or Vulkan on Windows, Vulkan or GL on Linux); glow is
+# added by the `gl-fallback` feature. No GTK or native dialog crates. Accesskit is left out
+# because it is incompatible with the native-activity Android backend.
+eframe = { version = "0.36", default-features = false, features = [
+    "wgpu",
+    "default_fonts",
+    "links",
+    "wayland",
+    "x11",
+    "web_screen_reader",
+    "persistence",
+] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+jpeg-encoder = "0.6"
+gif = "0.14"
+png = "0.18"
+android-activity = { version = "0.6.1", optional = true, default-features = false, features = ["native-activity"] }
+zune-core = "0.5.3"
+zune-jpeg = "0.5.15"
+
+# AccessKit, the screen-reader bridge, on every target except Android. The Android backend
+# (native activity) does not work with it, so the gate keeps it off there, whatever features are
+# enabled. The base eframe entry above stays free of it.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# Native file dialogs (feature `native-dialogs`). Default features give the xdg-portal and
+# wayland backends on Linux; Windows and macOS use their native dialogs.
+rfd = { version = "0.17", optional = true }
+eframe = { version = "0.36", default-features = false, features = ["accesskit"] }
+
+# octotablet 0.1 has backends for Windows (Ink) and Wayland/X11 Linux only, and does not
+# compile on macOS, so it is only a dependency where it builds. On other targets the
+# `tablet` feature is accepted and does nothing.
+[target.'cfg(any(windows, all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "redox")))))'.dependencies]
+octotablet = { version = "0.1.0", optional = true }
+
+# Android only: route `log` records (wgpu adapter info, eframe) to logcat.
+[target.'cfg(target_os = "android")'.dependencies]
+log = "0.4"
+android_logger = "0.15"
+
+# Linux only: the dlopen check of the libraries winit loads at run time (linux_runtime.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
+
+[build-dependencies]
+winresource = "0.1.34"
+
+[dev-dependencies]
+eskiz-filters = { path = "../eskiz-filters" }
+# Accessibility-tree tests (AccessKit nodes queried by name, keyboard focus, activation).
+egui_kittest = { version = "0.36", default-features = false, features = ["eframe"] }
+# Checksums of the bundled font files (fonts.rs test).
+sha2 = "0.10"

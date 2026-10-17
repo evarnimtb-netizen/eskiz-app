@@ -1,0 +1,12 @@
+[package]
+name = "eskiz-text"
+description = "Text layers: attributed runs, font library with fallback, cosmic-text layout, premultiplied RGBA8 rasterisation and attribute storage keys."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cosmic-text = "0.19.0"
+swash = "0.2.10"
+thiserror = "2.0.21"

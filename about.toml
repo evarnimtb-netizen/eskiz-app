@@ -1,0 +1,27 @@
+# cargo-about config for THIRD_PARTY_NOTICES.md. Regenerate from eskiz/:
+#   tools/gen_notices.sh   (default desktop build and the Android variant)
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "IJG",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+private = { ignore = true }
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]

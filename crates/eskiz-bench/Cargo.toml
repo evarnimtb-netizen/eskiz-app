@@ -1,0 +1,28 @@
+[package]
+name = "eskiz-bench"
+description = "Large-canvas performance benchmark for Eskiz: painting, compositing, display, adjustments, layer ops, undo, files and memory, measured through the same engine paths the app uses."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "eskiz-bench"
+path = "src/main.rs"
+
+[dependencies]
+eskiz-app = { path = "../eskiz-app" }
+eskiz-core = { path = "../eskiz-core" }
+eskiz-gpu = { path = "../eskiz-gpu" }
+eskiz-filters = { path = "../eskiz-filters" }
+eskiz-format = { path = "../eskiz-format" }
+eskiz-select = { path = "../eskiz-select" }
+eskiz-brushlib = { path = "../eskiz-brushlib" }
+# The egui texture upload and the textured canvas quad, drawn headlessly the way the window
+# draws them. Same version as eskiz-app's eframe.
+eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
+
+# `malloc_trim`, so peak-RSS readings cover one scenario and not what earlier ones left in
+# the allocator.
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"

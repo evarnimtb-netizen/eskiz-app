@@ -1,0 +1,10 @@
+[package]
+name = "eskiz-filters"
+description = "CPU implementations of Eskiz's adjustments and Liquify; ground truth for GPU shaders."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rayon = "1.12"

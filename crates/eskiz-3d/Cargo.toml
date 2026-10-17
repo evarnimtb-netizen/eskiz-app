@@ -1,0 +1,25 @@
+[package]
+name = "eskiz-3d"
+description = "3D painting core for Eskiz: model loading and checks, orbit camera, screen-to-UV lookup, UV-space painting, PBR reference shading and glTF export (CPU, headless)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["usd"]
+# USD/USDA/USDC/USDZ import (pulls in the pre-1.0 `openusd` crate).
+usd = ["dep:openusd"]
+
+[dependencies]
+openusd = { version = "0.8", optional = true }
+eskiz-core = { path = "../eskiz-core" }
+glam = "0.30"
+gltf = "1.4"
+tobj = "4.0"
+png = "0.18"
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+openusd = "0.8"
