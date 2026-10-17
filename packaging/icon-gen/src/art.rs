@@ -297,6 +297,43 @@ pub fn render(view: View, layers: Layers) -> Vec<u8> {
     out
 }
 
+/// Apple's icon grid: the rounded-rectangle body is 824 of the 1024 canvas, centred, with the
+/// rest transparent margin that holds the soft shadow.
+pub const MACOS_BODY: f32 = 824.0;
+/// Shadow: blur sigma and downward offset (1024 canvas units), and peak opacity.
+const MACOS_SHADOW_SIGMA: f32 = 14.0;
+const MACOS_SHADOW_DY: f32 = 12.0;
+const MACOS_SHADOW_ALPHA: f32 = 0.32;
+
+/// The macOS flavour of the full icon: the artwork scaled to the 824/1024 body, centred, with a
+/// soft shadow below it in the margin. Dock and Cmd-Tab show the image as is, so without the
+/// margin the icon looks larger than every other app's.
+pub fn render_macos(size: u32) -> Vec<u8> {
+    let n = size as usize;
+    let k = size as f32 / CANVAS;
+    let scale = k * MACOS_BODY / CANVAS;
+    let margin = (CANVAS - MACOS_BODY) / 2.0 * k;
+    let body = render(View { size, scale, offset: (margin, margin) }, Layers::Full);
+    let alpha: Vec<f32> = body.chunks_exact(4).map(|p| f32::from(p[3]) / 255.0).collect();
+    let mut shadow = blur(&alpha, n, MACOS_SHADOW_SIGMA * k);
+    let dy = (MACOS_SHADOW_DY * k).round() as usize;
+    let mut out = Vec::with_capacity(n * n * 4);
+    for y in 0..n {
+        for x in 0..n {
+            let sa = if y >= dy { shadow[(y - dy) * n + x] } else { 0.0 } * MACOS_SHADOW_ALPHA;
+            let i = (y * n + x) * 4;
+            let b = [f32::from(body[i]) / 255.0, f32::from(body[i + 1]) / 255.0, f32::from(body[i + 2]) / 255.0, f32::from(body[i + 3]) / 255.0];
+            let c = over([0.0, 0.0, 0.0, sa], b);
+            for v in &c[..3] {
+                out.push((v * 255.0).round().clamp(0.0, 255.0) as u8);
+            }
+            out.push((c[3] * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+    }
+    shadow.clear();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +369,31 @@ mod tests {
         let mono = render(v, Layers::Monochrome);
         assert!(mono.chunks_exact(4).all(|p| p[3] == 0 || (p[0], p[1], p[2]) == (255, 255, 255)));
         assert!(mono.chunks_exact(4).any(|p| p[3] == 255));
+    }
+
+    #[test]
+    fn macos_icon_body_is_80_percent_centred_with_a_soft_shadow() {
+        let size = 256usize;
+        let img = render_macos(size as u32);
+        let a = |x: usize, y: usize| img[(y * size + x) * 4 + 3];
+        let (mut x0, mut y0, mut x1, mut y1) = (size, size, 0, 0);
+        for y in 0..size {
+            for x in 0..size {
+                if a(x, y) >= 250 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        let ratio = (x1 - x0) as f32 / size as f32;
+        assert!((ratio - 824.0 / 1024.0).abs() < 0.01, "{ratio}");
+        assert_eq!(x0 + x1, size, "centred horizontally");
+        assert_eq!(y0 + y1, size, "centred vertically");
+        // Shadow below the body, none at the very edge.
+        assert!(a(size / 2, y1 + 2) > 0 && a(size / 2, y1 + 2) < 120);
+        assert_eq!(a(0, 0), 0);
+        assert_eq!(a(size / 2, size - 1), 0);
     }
 }

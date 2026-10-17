@@ -515,15 +515,42 @@ pub fn over_ui(ctx: &egui::Context, pos: Pos2) -> bool {
 
 /// The Eskiz v5 icon (drawn in code by `packaging/icon-gen`, 512 px) for the window and the
 /// Dock / taskbar while the app runs, so eframe does not fall back to egui's own logo.
-pub fn window_icon() -> egui::IconData {
-    const PNG: &[u8] = include_bytes!("../../../packaging/icons/png/eskiz-512.png");
-    match image::load_from_memory(PNG) {
+fn decode_icon(png: &[u8]) -> egui::IconData {
+    match image::load_from_memory(png) {
         Ok(img) => {
             let img = img.to_rgba8();
             egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
         }
         Err(_) => egui::IconData::default(),
     }
+}
+
+/// The icon in Apple's grid: the rounded body is 824/1024 of the image, centred, with
+/// transparent margin and a soft shadow (icon-gen's macOS layout, the same art as the .icns).
+/// macOS shows an image set at runtime as is, so a full-bleed one looks too big in the Dock.
+pub fn macos_icon() -> egui::IconData {
+    decode_icon(include_bytes!("../../../packaging/icons/png/eskiz-macos-512.png"))
+}
+
+/// Whether `exe` lives inside an application bundle (`Eskiz.app/Contents/MacOS/eskiz`).
+pub fn is_app_bundle_exe(exe: &std::path::Path) -> bool {
+    let parts: Vec<_> = exe.components().rev().take(4).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    parts.len() == 4 && parts[1] == "MacOS" && parts[2] == "Contents" && parts[3].ends_with(".app")
+}
+
+/// The runtime window icon. On macOS the bundle's own .icns is used when running from the
+/// app (an empty `IconData` makes eframe leave the Dock icon alone); a bare `cargo run`
+/// binary gets the padded image. Windows and Linux use the full-size artwork.
+pub fn window_icon() -> egui::IconData {
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::current_exe().is_ok_and(|e| is_app_bundle_exe(&e)) {
+            return egui::IconData::default();
+        }
+        macos_icon()
+    }
+    #[cfg(not(target_os = "macos"))]
+    decode_icon(include_bytes!("../../../packaging/icons/png/eskiz-512.png"))
 }
 
 fn dist(a: P, b: P) -> f64 {
@@ -1555,7 +1582,13 @@ impl EskizApp {
         }
 
         // Pinch and rotate, or a single pointer.
-        match input.multi.filter(|m| m.num_touches >= 2) {
+        // A two-finger pinch that starts over a popover, panel or sheet is theirs, not the canvas's.
+        let multi_over_ui = self.pinch.is_none() && input.multi.is_some_and(|m| over_ui(&ctx, m.center_pos));
+        if multi_over_ui {
+            input.zoom = 1.0;
+            input.scroll = Vec2::ZERO;
+        }
+        match input.multi.filter(|m| m.num_touches >= 2 && !multi_over_ui) {
             Some(mt) => self.multi_touch_frame(mt),
             None => {
                 if let Some((start, scale)) = self.pinch.take() {
@@ -1583,7 +1616,13 @@ impl EskizApp {
                 }
             }
         }
-        if input.zoom != 1.0 {
+        // Wheel, trackpad scroll and pinch belong to whatever is under the pointer: a popover,
+        // panel, sheet or the side bar keeps them (it scrolls itself); only the bare canvas
+        // pans and zooms.
+        let over_chrome = input.hover.is_some_and(|p| over_ui(ctx, p));
+        if over_chrome {
+            // Not for the canvas.
+        } else if input.zoom != 1.0 {
             let anchor = input.hover.unwrap_or(viewport.center());
             self.view.zoom_at(viewport, anchor, input.zoom);
         } else if input.hover.is_some_and(|p| viewport.contains(p)) && input.scroll != Vec2::ZERO {
@@ -2195,8 +2234,39 @@ mod tests {
 
     /// The window carries the Eskiz icon, not eframe's default (which is egui's logo).
     #[test]
+    fn macos_icon_follows_the_dock_grid_and_the_bundle_icon_is_kept() {
+        let icon = macos_icon();
+        assert_eq!((icon.width, icon.height), (512, 512));
+        let n = 512usize;
+        let (mut x0, mut y0, mut x1, mut y1) = (n, n, 0, 0);
+        for y in 0..n {
+            for x in 0..n {
+                if icon.rgba[(y * n + x) * 4 + 3] >= 250 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        let ratio = (x1 - x0) as f32 / n as f32;
+        assert!((0.78..=0.82).contains(&ratio), "opaque box is {ratio} of the image");
+        assert!((x0 + x1).abs_diff(n) <= 1 && (y0 + y1).abs_diff(n) <= 1, "centred");
+        // Inside a bundle the runtime icon is left to the .icns.
+        use std::path::Path;
+        assert!(is_app_bundle_exe(Path::new("/Applications/Eskiz.app/Contents/MacOS/eskiz")));
+        assert!(!is_app_bundle_exe(Path::new("/home/me/eskiz/target/release/eskiz")));
+        assert!(!is_app_bundle_exe(Path::new("/Applications/Eskiz.app/Contents/Resources/eskiz")));
+        // An empty IconData is what eframe treats as "no icon override".
+        assert_eq!(egui::IconData::default().width, 0);
+    }
+
+    #[test]
     fn window_icon_is_the_eskiz_icon() {
         let icon = window_icon();
+        if cfg!(target_os = "macos") {
+            return; // padded or the bundle's own, covered by the macOS-grid test
+        }
         assert_eq!((icon.width, icon.height), (512, 512));
         assert_eq!(icon.rgba.len(), 512 * 512 * 4);
         // Rounded square: corners transparent, centre opaque and not egui's white.

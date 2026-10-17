@@ -176,7 +176,8 @@ pub fn ease_out(t: f32) -> f32 {
 /// title itself, so Brush Library can add its "+" beside it). Returns the body's rectangle.
 pub fn draw(ctx: &egui::Context, pal: &Palette, vis: Visible, body: impl FnOnce(&mut egui::Ui)) -> Rect {
     let screen = ctx.content_rect();
-    let width = vis.panel.width();
+    // Never wider than the window minus its margins.
+    let width = vis.panel.width().min((screen.width() - 16.0).max(200.0));
     // Room below the button: the 12 px gap, the frame's 24 px of margin and an 8 px edge.
     let max_h = (screen.height() - (vis.anchor.bottom() - screen.top()) - 46.0).clamp(220.0, 600.0);
     let left = (vis.anchor.center().x - width / 2.0).clamp(screen.left() + 8.0, screen.right() - width - 8.0);
@@ -189,9 +190,22 @@ pub fn draw(ctx: &egui::Context, pal: &Palette, vis: Visible, body: impl FnOnce(
             ui.set_opacity(vis.ease);
             ui.set_max_width(width);
             theme::panel_frame(pal).show(ui, |ui| {
-                ui.set_width(width - 24.0);
+                let inner_w = width - 24.0;
+                ui.set_width(inner_w);
                 ui.set_max_height(max_h);
-                body(ui);
+                // The body is laid out in a child of exactly this width: whatever it holds is
+                // clipped to it and cannot widen the panel (a long unwrapped label once made the
+                // Actions popover 150 points wider than its rows).
+                let area = Rect::from_min_size(ui.cursor().min, egui::vec2(inner_w, max_h));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(*ui.layout()));
+                let clip = child.clip_rect();
+                child.set_clip_rect(Rect::from_min_max(
+                    egui::pos2(clip.left().max(area.left() - 3.0), clip.top()),
+                    egui::pos2(clip.right().min(area.right() + 3.0), clip.bottom()),
+                ));
+                body(&mut child);
+                let used = child.min_rect().height().min(max_h);
+                ui.allocate_space(egui::vec2(inner_w, used));
             });
         });
     let rect = out.response.rect;

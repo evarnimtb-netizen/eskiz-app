@@ -100,6 +100,8 @@ mod recovery_tests;
 mod android_fix_tests;
 #[cfg(test)]
 mod rc1_tests;
+#[cfg(test)]
+mod rc2_tests;
 pub mod storage;
 pub mod studio;
 pub(crate) mod licenses;

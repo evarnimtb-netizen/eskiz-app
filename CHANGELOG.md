@@ -32,6 +32,9 @@ First public preview of Eskiz, a free, open source painting app for macOS, Windo
 - A stroke can no longer vanish while it is drawn: the eyedropper hold never cancels a stroke that has moved, and Hold to Shape puts your own stroke back if the shape would paint nothing.
 - The Actions popover is compact on desktop (touch devices keep large targets); long row titles wrap or shorten instead of running under the switch, and subtitles wrap to two lines. "Eskiz look" has its own icon.
 - The running app shows the Eskiz icon in the Dock, taskbar and window, not the default egui logo.
+- The Actions popover is now as wide as its rows on macOS: a long pen/tablet status message in Settings no longer stretches the whole panel, and no popover can grow wider than its width or the window.
+- Scrolling, trackpad swiping or pinching over a popover, panel, sheet or the side bar no longer also pans or zooms the canvas behind it.
+- The Dock and Cmd-Tab icon is the right size on macOS: the app keeps its bundle icon, and the icon file uses Apple's icon grid (rounded body with margin and a soft shadow).
 - User guide: the welcome tour is skipped for data folders that already hold artworks; Help > Welcome tour shows it.
 
 ### Known issues

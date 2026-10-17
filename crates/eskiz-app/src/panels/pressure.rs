@@ -111,7 +111,8 @@ impl EskizApp {
                 self.prefs.pressure_curve = PressureCurve::default();
             }
             let status = self.pen.status_line();
-            ui.label(egui::RichText::new(status).size(12.0).color(pal.text_dim));
+            // A long backend message wraps inside the panel instead of widening it.
+            ui.add(egui::Label::new(egui::RichText::new(status).size(12.0).color(pal.text_dim)).wrap());
         });
     }
 }

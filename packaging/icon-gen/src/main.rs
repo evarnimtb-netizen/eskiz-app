@@ -1,7 +1,8 @@
 //! Draws the Eskiz app icon in code and writes the packaging icon set:
 //!
 //! * `png/eskiz-<N>.png` for each size in `PNG_SIZES`;
-//! * `eskiz.icns`, an ICNS container with PNG-based elements;
+//! * `png/eskiz-macos-<N>.png`, the same icon in Apple's grid (body 824/1024, centred, soft shadow);
+//! * `eskiz.icns`, an ICNS container with PNG-based elements, built from the macOS layout;
 //! * `eskiz.ico`, a multi-size ICO with PNG-based entries.
 //!
 //! The artwork is the Eskiz v5 icon (a navy rounded square, a blueprint corner bracket and an
@@ -70,9 +71,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         rendered.push((size, data));
     }
 
+    // The macOS layout (824/1024 body, centred, soft shadow): runtime Dock icon and the .icns.
+    let mut macos: Vec<(u32, Vec<u8>)> = Vec::new();
+    for size in PNG_SIZES {
+        let data = encode_png(size, &art::render_macos(size))?;
+        fs::write(png_dir.join(format!("eskiz-macos-{size}.png")), &data)?;
+        macos.push((size, data));
+    }
+
     let icns_items: Vec<([u8; 4], &[u8])> = ICNS_ENTRIES
         .iter()
-        .map(|(ty, size)| (**ty, png_of(&rendered, *size)))
+        .map(|(ty, size)| (**ty, png_of(&macos, *size)))
         .collect();
     fs::write(out_dir.join("eskiz.icns"), icns(&icns_items))?;
 

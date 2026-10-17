@@ -131,7 +131,7 @@ impl EskizApp {
                         let button_w = 70.0;
                         let edit = egui::TextEdit::singleline(text)
                             .hint_text(hint_text)
-                            .desired_width(ui.available_width() - button_w - 8.0)
+                            .desired_width(ui.available_width() - button_w - 8.0 - 16.0)
                             .margin(Margin::symmetric(8, 6));
                         let resp = ui.add(edit);
                         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
