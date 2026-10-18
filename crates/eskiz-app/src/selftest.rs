@@ -60,7 +60,9 @@ fn run_stroke(session: &mut Session, layer: usize, settings: &StrokeSettings, pt
     }
 }
 
-/// Paint three strokes, undo and redo them, then write `selftest.png` to the temp dir.
+/// Paint three strokes, undo and redo them, then write `selftest.png` and `selftest.procreate` to
+/// the temp dir. The `.procreate` file is a ready-made document for smoke tests that open the
+/// window on a canvas (`packaging/windows/smoke.ps1`).
 pub fn run() -> Result<String, String> {
     let mut session = Session::new(Document::new(WIDTH, HEIGHT));
     let blank = session.flatten();
@@ -124,6 +126,15 @@ pub fn run() -> Result<String, String> {
 
     let out = std::env::temp_dir().join("selftest.png");
     write_png(&out, WIDTH, HEIGHT, &painted)?;
+    let sample = crate::export::export_with(
+        &session.doc,
+        crate::export::ExportFormat::Procreate,
+        &std::env::temp_dir().join("selftest"),
+        &crate::export::ExportSettings::default(),
+    )?;
+    if checksum(&Session::new(open_procreate(&sample)?).flatten()) != painted_sum {
+        return Err(format!("{} does not read back as the painted canvas", sample.display()));
+    }
 
     let mut lines = vec![
         "selftest: ok".to_owned(),
@@ -133,6 +144,7 @@ pub fn run() -> Result<String, String> {
     lines.push(format!("  pixels changed from paper: {changed}"));
     lines.push("  undo x3 -> blank paper: ok; redo x3 -> same checksum: ok; single undo/redo: ok".to_owned());
     lines.push(format!("  wrote {}", out.display()));
+    lines.push(format!("  wrote {} (reads back with the same checksum)", sample.display()));
     lines.push(format!("  checksum fnv1a64: 0x{painted_sum:016x}"));
     lines.extend(ui_checks()?);
     lines.extend(reference_and_edit_shape_check()?);

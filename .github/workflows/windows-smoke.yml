@@ -1,0 +1,87 @@
+name: Windows smoke
+
+# Builds the release app on a GitHub-hosted Windows runner and uses it like a person would:
+# `--selftest`, `--diagnose` and `--diagnose --window`, then the real window on a sample document,
+# one stroke painted with real mouse input, Ctrl+Z, and closing the window
+# (packaging/windows/smoke.ps1). The runner has no GPU, so wgpu runs on the WARP software adapter.
+# Screenshots, logs and the report are uploaded as the `windows-smoke` artifact; the report is also
+# the job summary.
+#
+# GitHub-hosted runners only and no secrets. It does not run on pull requests (a cold build takes
+# about 25 minutes); start it by hand on any branch from the Actions tab.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      strict_input:
+        description: Fail when the synthetic stroke or Ctrl+Z changes no pixels (otherwise a warning)
+        type: boolean
+        default: false
+      qa_capture:
+        description: Also run the headless QA capture (about 20 more minutes, an 80 MB artifact)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Smoke script parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/packaging/windows/smoke.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { Write-Host "::error::$($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
+      # The toolchain version comes from rust-toolchain.toml.
+      - name: Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Release build
+        run: cargo build --release --locked -p eskiz-app
+      - name: Smoke test (self-test, diagnose, real window, stroke, undo, close)
+        shell: pwsh
+        env:
+          STRICT_INPUT: ${{ inputs.strict_input }}
+        run: |
+          $strict = $env:STRICT_INPUT -eq 'true'
+          ./packaging/windows/smoke.ps1 -OutDir target/windows-smoke -StrictInput:$strict
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: windows-smoke
+          path: |
+            target/windows-smoke
+            !target/windows-smoke/data
+          if-no-files-found: warn
+          retention-days: 30
+      - name: QA capture (headless, software rendering)
+        if: inputs.qa_capture
+        shell: bash
+        env:
+          ESKIZ_QA_OUT: target/qa
+        run: cargo test --locked -p eskiz-app --release qa_capture -- --ignored --test-threads=1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && inputs.qa_capture
+        with:
+          name: windows-qa-capture
+          path: target/qa
+          if-no-files-found: warn
+          retention-days: 14

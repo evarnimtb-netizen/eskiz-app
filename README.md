@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/evarnimtb-netizen/eskiz-app/releases/latest"><b>Download Eskiz</b></a>
+  <a href="https://github.com/evarnimtb-netizen/eskiz-app/releases"><b>Download Eskiz</b></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml"><b>Report a bug</b></a>
   &nbsp;·&nbsp;
@@ -19,7 +19,7 @@
 
 ## Download and install
 
-1. Open the **[Downloads page](https://github.com/evarnimtb-netizen/eskiz-app/releases/latest)**.
+1. Open the **[Downloads page](https://github.com/evarnimtb-netizen/eskiz-app/releases)** and pick the newest release at the top.
 2. Under **Assets**, click the file for your computer:
 
    | Your computer | File to download |

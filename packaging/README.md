@@ -91,6 +91,20 @@ The script builds `x86_64-pc-windows-msvc`, runs `eskiz --selftest`, and writes
 `winresource`. The check is on the target OS, so non-Windows builds skip it. The resource
 compiler is `rc.exe` (Windows SDK) on MSVC, and `windres` on `windows-gnu`.
 
+Smoke test of the real window (no Windows PC needed: the public repo's `Windows smoke` workflow
+runs it on a GitHub-hosted `windows-latest` runner and uploads the screenshots):
+
+```
+pwsh -File packaging\windows\smoke.ps1 [-Exe target\release\eskiz.exe] [-OutDir target\windows-smoke] [-StrictInput]
+```
+
+It runs `--version`, `--selftest` (which also writes `%TEMP%\selftest.procreate`), `--diagnose`
+and `--diagnose --window`, then opens the window on `selftest.procreate`, takes screenshots
+(desktop and `PrintWindow`), paints one stroke with real mouse input, presses Ctrl+Z and closes the
+window. It fails when a command fails, the window does not appear, or the app exits by itself. A
+stroke or undo that changes no pixels is a warning unless `-StrictInput` is given. The report is
+`smoke-report.md` in the output folder.
+
 Cross-build from macOS (mingw-w64 is installed):
 
 ```
