@@ -1408,6 +1408,7 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "block2 0.6.2",
  "chrono",
  "directories",
  "eframe",
@@ -1429,6 +1430,8 @@ dependencies = [
  "jpeg-encoder",
  "libloading",
  "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "octotablet",
  "png",
  "rayon",

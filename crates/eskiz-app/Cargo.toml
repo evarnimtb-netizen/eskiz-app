@@ -94,6 +94,13 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit"] 
 [target.'cfg(any(windows, all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "redox")))))'.dependencies]
 octotablet = { version = "0.1.0", optional = true }
 
+# macOS only: the native tablet reader (`tablet_mac.rs`, feature `tablet`). All of these are
+# already in the lock file through winit; only NSEvent, NSWindow and NSView are needed.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSEvent", "NSResponder", "NSWindow", "NSView"] }
+
 # Android only: route `log` records (wgpu adapter info, eframe) to logcat.
 [target.'cfg(target_os = "android")'.dependencies]
 log = "0.4"

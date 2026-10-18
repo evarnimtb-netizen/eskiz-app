@@ -444,6 +444,29 @@ Tiles are 256x256 RGBA8 (256 KiB each; 512 KiB at 16 bit) and only allocated whe
 | files | 2803 MiB | 397 MiB | 617.8 | one process per scenario |
 | adjust | 3763 MiB | 507 MiB | 120.4 | 8000² adjustments, `--no-gpu --budget-fraction 0.8` |
 
+### 9. Drag interactions: Pour Fill threshold drag, Edit Shape drag, Frames timeline (rc5)
+
+`eskiz-bench --only interact --sizes 2048,4096 --no-gpu` (release, 2 cores, no GPU). One row is one step of the drag on the thread that draws the window; the display refresh that follows is the same before and after and is not included. Run on the 2-core cloud server, so a laptop is about twice as fast.
+
+| canvas | interaction | median ms | p95 ms |
+|---|---|---|---|
+| 4096² | Pour Fill threshold step, **before** the change (fill + write + a layer clone on the UI thread, measured before rc5) | 150 to 171 | 190 |
+| 4096² | same, synchronous path today (the final exact fill on release still uses it): the write skips tiles that did not change | 119.5 | 148.9 |
+| 4096² | Pour Fill step **after**: plan on the UI thread | 0.006 | 0.008 |
+| 4096² | Pour Fill step **after**: write the finished fill into the layer (UI thread, once per finished fill; only changed tiles are copied) | 18.2 | 19.6 |
+| 4096² | Pour Fill step **after**: the flood fill itself (worker thread, newest request wins) | 95.2 | 106.0 |
+| 4096² | Edit Shape drag frame, **before** (undo the stroke + re-rasterize a r = n/4 ellipse with a 30 px brush) | 149.8 | 172.4 |
+| 4096² | Edit Shape drag frame, **after** (vector outline for the preview) | 0.050 | 0.060 |
+| 4096² | Edit Shape release (rasterize once, per drag not per frame) | 144.8 | 219.0 |
+| 2048² | Pour Fill step before / after (plan + write on the UI thread) | 22.5 / 3.5 | 23.5 / 3.6 |
+| 2048² | Edit Shape drag frame before / after | 74.1 / 0.055 | 114.0 / 0.071 |
+
+Cause and fix. Pour Fill: every 1% of threshold (2 px of pointer movement) re-ran `flood_fill` on the layer, cloned it, and wrote the whole region on the UI thread. Now `Session::pour_fill_plan` snapshots the layer (a few `Arc` clones), `PourPlan::compute` runs on a worker thread (`PourPreviewer`, one job at a time, newest request wins), and `pour_fill_apply` writes the result over the preview already shown, so `Layer::write_rect` leaves tiles that did not change alone (no copy-on-write, no new memory). Releasing makes one exact fill at the final threshold. Edit Shape: every pointer move undid the shape's stroke and painted a new one; now the drag only moves a vector outline, and the shape is painted once on release, as the same single "Stroke" undo step.
+
+B9, the Frames timeline toggle (test `b9_toggling_the_timeline_renders_no_thumbnail_on_the_ui_thread`, 1536 x 1024, 4 frames, unoptimised test build): the first frame after turning the timeline on composited the Frames canvas view (488 ms in the test build; 19 ms in the QA round's measurement) and two full-canvas thumbnails on the UI thread. Now the first view and all thumbnails are composited on worker threads and the regular canvas stays on screen until the view arrives: the UI thread spends 0.02 ms (frame list) + 0.10 ms (canvas view hand-off) + 0.02 ms (start thumbnails) on the toggle.
+
+Not measured here (no Mac with a real GPU): the stroke path with `ESKIZ_TRACE_STROKES=1`, frame pacing (present mode, repaint during strokes, tile uploads per frame, any CPU composite fallback) and `eskiz-bench --quick` on a real GPU. Run them on the maintainer's Mac and add the numbers here.
+
 ## 4. Ranked bottlenecks
 
 **Update for 0.1: all twelve are fixed or addressed** (#9 partly). The `Status` line under each heading gives the measured result; the original analysis below is kept as measured before the work. The after-numbers come from a 2-vCPU x86 box with a software GPU, so they are not comparable to the table in section 3 digit for digit.

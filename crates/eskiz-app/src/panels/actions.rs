@@ -312,6 +312,17 @@ impl EskizApp {
         if list_row(ui, &pal, ia::icon_flip_v, "Flip canvas vertically", Some("Mirrors every layer"), !busy, Trailing::None).clicked() {
             self.flip_canvas_action(false);
         }
+        // View rotation (not a document change): quarter turns and back to upright.
+        let tilted = self.view.rotation != 0.0;
+        if list_row(ui, &pal, ia::icon_canvas, "Rotate canvas 90\u{b0} left", Some("Turns the view; the picture is not changed"), true, Trailing::None).clicked() {
+            self.rotate_view_quarter(-1);
+        }
+        if list_row(ui, &pal, ia::icon_canvas, "Rotate canvas 90\u{b0} right", Some("Turns the view; the picture is not changed"), true, Trailing::None).clicked() {
+            self.rotate_view_quarter(1);
+        }
+        if list_row(ui, &pal, ia::icon_canvas, "Reset rotation", Some("Turn the view upright again"), tilted, Trailing::None).clicked() {
+            self.reset_view_rotation();
+        }
         // Convert the pixels to the other colour space. One undo step.
         let other = match space {
             ColourSpace::Srgb => ColourSpace::DisplayP3,

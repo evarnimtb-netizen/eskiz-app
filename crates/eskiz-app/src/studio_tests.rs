@@ -603,7 +603,7 @@ fn tablet_tilt_and_azimuth_reach_the_stroke_engine() {
     let run = |tilt: [f32; 2]| {
         let mut s = Stroke::new(brush.clone(), StrokeOptions::default());
         for i in 0..30 {
-            let pose = PenPose { pos: [20.0 + i as f32 * 3.0, 40.0], pressure: Some(0.7), tilt: Some(tilt), time: None };
+            let pose = PenPose { pos: [20.0 + i as f32 * 3.0, 40.0], pressure: Some(0.7), tilt: Some(tilt), roll: None, time: None };
             let sample = sample_from_pen(f64::from(pose.pos[0]), f64::from(pose.pos[1]), f64::from(i) / 120.0, reading_from_pose(&pose));
             s.add_sample(apply_pressure_curve(sample, &PressureCurve::default()));
         }

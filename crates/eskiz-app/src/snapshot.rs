@@ -133,7 +133,9 @@ impl Headless {
     /// A window of `size` points running an app built by `make`.
     pub fn from_app(size: Vec2, make: impl FnOnce(&egui::Context) -> EskizApp) -> Self {
         let ctx = egui::Context::default();
-        let app = make(&ctx);
+        let mut app = make(&ctx);
+        // Deterministic frames: the Frames view is composited inline, not on a worker thread.
+        app.anim.sync_first_view = true;
         let mut h = Self {
             ctx,
             app,

@@ -23,7 +23,7 @@ Options:
 |---|---|
 | `--quick` | 2048² for every scenario, 4096² for the stroke, compositing and display measurements; two timed iterations; no 100-layer document |
 | `--sizes 2048,4096,...` | canvas edges to run (any list) |
-| `--only paint,composite,display,adjust,ops,undo,files` | run a subset of the scenarios |
+| `--only paint,composite,display,adjust,ops,undo,files,interact` | run a subset of the scenarios |
 | `--out PATH` | where to write the Markdown report (default `target/bench-report.md`) |
 | `--no-gpu` | skip every GPU and display measurement |
 | `--budget-fraction 0.55` | the share of available memory a scenario's pixel data may take before it is skipped |
@@ -65,6 +65,7 @@ time with `--only`.
    output sizes.
 8. **Memory**: tile bytes per layer (sparse and full), the working buffers each path allocates,
    and the peak RSS of every scenario.
+9. **Interactions** (`--only interact`): one step of the Pour Fill threshold drag (the UI-thread plan and write, and the worker-thread fill) and one frame of an Edit Shape drag (re-rasterize versus the vector preview).
 
 Inputs are deterministic: fixed pattern seeds, fixed stroke paths, fixed brush seeds. Every
 measurement runs once to warm up, then 2 (quick) or 5 (full) times; slow measurements get

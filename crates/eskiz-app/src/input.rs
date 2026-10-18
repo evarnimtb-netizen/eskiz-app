@@ -28,6 +28,8 @@ pub struct PenReading {
     pub altitude: Option<f64>,
     /// Azimuth in radians.
     pub azimuth: Option<f64>,
+    /// Barrel rotation in radians, when the device reports it.
+    pub roll: Option<f64>,
 }
 
 /// One raw pointer reading, with the position already in canvas pixels.
@@ -93,6 +95,7 @@ pub fn sample_from_pen(x: f64, y: f64, time: f64, pen: PenReading) -> Sample {
         has_pressure: Some(pressure.is_some()),
         tilt: pen.altitude.filter(|a| a.is_finite()),
         azimuth: pen.azimuth.filter(|a| a.is_finite()),
+        roll: pen.roll.filter(|r| r.is_finite()).unwrap_or(0.0),
         pointer: PointerType::Pen,
         ..Sample::default()
     }
@@ -169,12 +172,13 @@ mod tests {
 
     #[test]
     fn pen_reading_fills_pressure_tilt_and_azimuth() {
-        let pen = PenReading { pressure: Some(0.25), altitude: Some(0.9), azimuth: Some(2.0) };
+        let pen = PenReading { pressure: Some(0.25), altitude: Some(0.9), azimuth: Some(2.0), roll: Some(0.5) };
         let s = sample_from_pen(3.0, 4.0, 0.5, pen);
         assert_eq!(s.pointer, PointerType::Pen);
         assert_eq!(s.has_pressure, Some(true));
         assert_eq!((s.x, s.y, s.t), (3.0, 4.0, 0.5));
         assert_eq!((s.pressure, s.tilt, s.azimuth), (Some(0.25), Some(0.9), Some(2.0)));
+        assert_eq!(s.roll, 0.5);
         let n = normalise_sample(&s, &NormEnv::default());
         assert!(n.has_pressure && (n.p - 0.25).abs() < 1e-12);
     }

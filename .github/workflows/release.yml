@@ -90,6 +90,11 @@ jobs:
       - name: x86_64 (MSVC) release build, self-test, zip
         shell: pwsh
         run: ./packaging/windows/build.ps1
+      - name: The exe has no Visual C++ runtime imports (static CRT)
+        shell: pwsh
+        run: |
+          python packaging/windows/test_check_imports.py
+          python packaging/windows/check-imports.py target/x86_64-pc-windows-msvc/release/eskiz.exe --list
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-zip
@@ -221,6 +226,7 @@ jobs:
           cat >> release-notes.md <<'NOTES'
 
           These builds are not code-signed. See "Install" in the README for how to open them on your system.
+          Windows: extract the whole zip first (Extract All), then run eskiz.exe; if SmartScreen says "Windows protected your PC", choose More info, then Run anyway. If nothing appears, `%LOCALAPPDATA%\Eskiz\logs` explains why.
           The Android APK is experimental. Verify downloads with `SHA256SUMS`.
           NOTES
           cat release-notes.md

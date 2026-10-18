@@ -650,9 +650,23 @@ fn reference_and_edit_shape_check() -> Result<Vec<String>, String> {
     for k in 1..=10 {
         h.move_to(from + (to - from) * (k as f32 / 10.0));
         h.step();
+        if k == 5 {
+            // Mid-drag the shape is only a vector preview: it is off the layer and out of the history.
+            let editing = h.app.shape_edit.as_ref().ok_or("hold_shape v2: Edit Shape closed mid-drag")?;
+            if !editing.previewing || h.app.session.undo_steps() != undo_before {
+                return Err(format!(
+                    "hold_shape v2: mid-drag the shape must be a preview (previewing {}, undo steps {} vs {undo_before})",
+                    editing.previewing,
+                    h.app.session.undo_steps()
+                ));
+            }
+        }
     }
     h.press(to, false);
     h.step();
+    if h.app.shape_edit.as_ref().is_some_and(|e| e.previewing) || h.app.session.undo_steps() != undo_before + 1 {
+        return Err("hold_shape v2: releasing the handle must paint the shape once (one undo step)".into());
+    }
     let moved = h.app.shape_edit.as_ref().ok_or("hold_shape v2: Edit Shape closed while dragging a handle")?.current.clone();
     let QShape::Polygon { pts, .. } = moved else {
         return Err("hold_shape v2: the handle drag changed the shape kind".into());
@@ -906,7 +920,7 @@ fn pen_and_pressure_check() -> Result<String, String> {
     // A pen stroke of light pressure (0.2), tilted, from fake events.
     let paint = |curve: &PressureCurve| -> Result<usize, String> {
         let mut tracker = PenTracker::new();
-        let pose = |x: f32| PenPose { pos: [x, 40.0], pressure: Some(0.2), tilt: Some([0.3, 0.1]), time: None };
+        let pose = |x: f32| PenPose { pos: [x, 40.0], pressure: Some(0.2), tilt: Some([0.3, 0.1]), roll: None, time: None };
         let mut events = vec![PenEvent::Enter { eraser: false }, PenEvent::Pose(pose(10.0)), PenEvent::Down];
         events.extend((0..80).map(|i| PenEvent::Pose(pose(12.0 + i as f32))));
         events.push(PenEvent::Up);

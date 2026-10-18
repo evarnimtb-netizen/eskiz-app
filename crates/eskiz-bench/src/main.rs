@@ -17,6 +17,7 @@ mod ctx;
 mod files;
 mod fixtures;
 mod gfx;
+mod interact;
 mod ops;
 mod paint;
 mod report;
@@ -27,7 +28,7 @@ use ctx::Ctx;
 use report::{gib, mem_available, mem_total, mib, reset_peak, rss, Iters, Report};
 
 const USAGE: &str = "\
-eskiz-bench [--quick] [--sizes 2048,4096,...] [--only paint,composite,display,adjust,ops,undo,files]
+eskiz-bench [--quick] [--sizes 2048,4096,...] [--only paint,composite,display,adjust,ops,undo,files,interact]
             [--out PATH] [--no-gpu] [--budget-fraction 0.55]
 
   --quick    sizes 2048² and 4096², fewer iterations (about a minute on a laptop)
@@ -168,6 +169,7 @@ fn main() {
         ("adjust", adjust::run),
         ("ops", ops::layer_ops),
         ("undo", ops::undo),
+        ("interact", interact::run),
         ("files", files::run),
     ];
     let mut peaks = Vec::new();

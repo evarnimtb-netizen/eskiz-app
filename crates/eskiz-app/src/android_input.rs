@@ -225,6 +225,7 @@ impl Translator {
             pos: [p.x, p.y],
             pressure,
             tilt: tilt_xy(p.tilt, p.orientation),
+            roll: None,
             time: Some(time_ms as f64 / 1000.0),
         })
     }

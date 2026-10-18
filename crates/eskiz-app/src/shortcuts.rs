@@ -11,10 +11,15 @@ use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
 /// Command plus Shift, spelled as a constant (`|` is not `const`).
 const COMMAND_SHIFT: Modifiers = Modifiers { shift: true, ..Modifiers::COMMAND };
+/// Command plus Alt/Option.
+const COMMAND_ALT: Modifiers = Modifiers { alt: true, ..Modifiers::COMMAND };
 
 pub const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 pub const REDO: KeyboardShortcut = KeyboardShortcut::new(COMMAND_SHIFT, Key::Z);
 pub const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
+pub const ROTATE_LEFT: KeyboardShortcut = KeyboardShortcut::new(COMMAND_ALT, Key::ArrowLeft);
+pub const ROTATE_RIGHT: KeyboardShortcut = KeyboardShortcut::new(COMMAND_ALT, Key::ArrowRight);
+pub const RESET_ROTATION: KeyboardShortcut = KeyboardShortcut::new(COMMAND_ALT, Key::Num0);
 pub const CLEAR_LAYER: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Backspace);
 pub const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
 pub const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::X);
@@ -65,6 +70,16 @@ pub const KEYBOARD: &[Entry] = &[
         keys: "{cmd}+0",
         action: "Fit canvas to window",
         bindings: &[Binding::Chord(FIT)],
+    },
+    Entry {
+        keys: "{cmd}+Alt+Left, {cmd}+Alt+Right",
+        action: "Rotate the canvas 90 degrees left, right",
+        bindings: &[Binding::Chord(ROTATE_LEFT), Binding::Chord(ROTATE_RIGHT)],
+    },
+    Entry {
+        keys: "{cmd}+Alt+0",
+        action: "Reset canvas rotation",
+        bindings: &[Binding::Chord(RESET_ROTATION)],
     },
     Entry {
         keys: "{cmd}+Backspace",
@@ -128,7 +143,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen.len(), 7, "undo, redo, fit, clear, copy, cut, paste");
+        assert_eq!(seen.len(), 10, "undo, redo, fit, rotate x3, clear, copy, cut, paste");
     }
 
     #[test]

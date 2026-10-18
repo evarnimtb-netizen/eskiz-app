@@ -5,7 +5,7 @@
 //! [`crate::hold_shape`]. A reshape undoes the shape's stroke and paints the new one, so the
 //! history only ever holds the final shape as a single "Stroke" step.
 
-use eframe::egui::{vec2, Color32, Painter, Stroke};
+use eframe::egui::{self, vec2, Color32, Painter, Stroke};
 
 use crate::app::{EskizApp, FrameInput};
 use crate::hold_shape::{self, HandleKind};
@@ -58,6 +58,8 @@ impl EskizApp {
             return;
         };
         if !input.primary_down {
+            // Released: rasterize the dragged shape once.
+            self.settle_shape_preview();
             if let Some(e) = self.shape_edit.as_mut() {
                 e.drag = None;
             }
@@ -76,23 +78,39 @@ impl EskizApp {
         if next == edit.current {
             return;
         }
-        if let Some(refresh) = self.session.undo() {
-            self.apply_refresh(refresh);
-        }
-        self.paint_shape(&next, input.time);
-        let edits = self.session.edits();
+        // Dragging only moves the vector preview; the shape is rasterized on release.
+        self.begin_shape_preview();
         if let Some(e) = self.shape_edit.as_mut() {
             e.current = next;
-            e.edits = edits;
         }
+    }
+
+    /// The shape as a vector line in the brush colour and size, drawn while it is dragged.
+    fn draw_shape_preview(&self, painter: &Painter, shape: &hold_shape::Shape) {
+        let params = self.tool_params[self.tool.index()];
+        let width = (f64::from(params.size) * f64::from(self.view.zoom)).clamp(1.5, 400.0) as f32;
+        let [r, g, b] = self.colour;
+        let alpha = (params.opacity.clamp(0.1, 1.0) * 255.0) as u8;
+        let colour = Color32::from_rgba_unmultiplied(r, g, b, alpha);
+        let points: Vec<_> = hold_shape::outline(shape, 2.0)
+            .into_iter()
+            .map(|(x, y)| self.view.canvas_to_screen(self.viewport, x, y))
+            .collect();
+        painter.add(egui::Shape::line(points, Stroke::new(width, colour)));
     }
 
     /// The handles of the shape being edited. Called after the canvas is drawn.
     pub(crate) fn draw_shape_handles(&self, painter: &Painter) {
-        let Some(edit) = self.shape_edit.as_ref().filter(|e| !e.live) else {
+        let Some(edit) = self.shape_edit.as_ref() else {
             return;
         };
         let pal = self.pal;
+        if edit.previewing {
+            self.draw_shape_preview(painter, &edit.current);
+        }
+        if edit.live {
+            return;
+        }
         let handles = hold_shape::handles(&edit.current);
         // Thin guide lines from the centre-like move handle are left out: the handles alone
         // read clearly on any artwork.

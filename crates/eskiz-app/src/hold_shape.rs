@@ -270,6 +270,92 @@ fn wrap(a: f64) -> f64 {
     a
 }
 
+/// Drop the points the pen wandered through while it was being held: the run at the end of the
+/// stroke that stays within `3 * tol` of where the pen came to rest (`tol` is the base drift
+/// tolerance the [`StillTimer`] used). One point of the cluster stays, and at least three
+/// points are kept.
+pub fn trim_hold_tail(points: &[P], tol: f64) -> Vec<P> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let n = points.len().min(10);
+    let tail = &points[points.len() - n..];
+    let rest = (
+        tail.iter().map(|p| p.0).sum::<f64>() / n as f64,
+        tail.iter().map(|p| p.1).sum::<f64>() / n as f64,
+    );
+    let mut keep = points.len();
+    while keep > 3 && dist(points[keep - 1], rest) <= 3.0 * tol {
+        keep -= 1;
+    }
+    let end = (keep + 1).min(points.len());
+    points[..end].to_vec()
+}
+
+/// Resample the path at an even spacing of `step` (a polyline through the points).
+fn resample(pts: &[P], step: f64) -> Vec<P> {
+    let mut out = vec![pts[0]];
+    let mut carry = 0.0;
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let seg = dist(a, b);
+        let mut at = step - carry;
+        while at <= seg {
+            let t = at / seg;
+            out.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+            at += step;
+        }
+        carry = seg - (at - step);
+    }
+    let last = pts[pts.len() - 1];
+    if dist(out[out.len() - 1], last) > step * 0.25 {
+        out.push(last);
+    }
+    out
+}
+
+/// Smooth a hand-drawn (or jittery) stroke before its corners are looked for: resample it evenly,
+/// then average each point with its neighbours. The ends stay where they are, and a real corner
+/// (a sharp turn over several samples) survives well enough for the corner finder.
+fn smooth(pts: &[P], diag: f64) -> Vec<P> {
+    if pts.len() < 5 {
+        return pts.to_vec();
+    }
+    let step = (diag / 100.0).max(1.0);
+    let mut cur = resample(pts, step);
+    if cur.len() < 5 {
+        return cur;
+    }
+    for _ in 0..1 {
+        let n = cur.len();
+        let mut next = cur.clone();
+        for (i, slot) in next.iter_mut().enumerate().take(n - 1).skip(1) {
+            let k = 2.min(i).min(n - 1 - i);
+            let (a, b) = (i - k, i + k);
+            let cnt = (b - a + 1) as f64;
+            *slot = cur[a..=b].iter().fold((0.0, 0.0), |(x, y), p| (x + p.0 / cnt, y + p.1 / cnt));
+        }
+        cur = next;
+    }
+    cur
+}
+
+/// How jittery the stroke is: the 90th percentile of the distance of its points from the
+/// smoothed path (the few corners the smoothing rounds off do not count).
+fn jitter_level(pts: &[P], smooth_pts: &[P]) -> f64 {
+    if smooth_pts.len() < 2 {
+        return 0.0;
+    }
+    let stride = (pts.len() / 300).max(1);
+    let mut devs: Vec<f64> = pts
+        .iter()
+        .step_by(stride)
+        .map(|&p| smooth_pts.windows(2).map(|w| segment_dist(p, w[0], w[1])).fold(f64::MAX, f64::min))
+        .collect();
+    devs.sort_by(f64::total_cmp);
+    devs[(devs.len() * 9 / 10).min(devs.len() - 1)]
+}
+
 /// Snap a stroke to the best shape, or `None` when it is not clean enough (a scribble,
 /// too short, or too irregular).
 pub fn classify(raw: &[P]) -> Option<Fit> {
@@ -282,19 +368,24 @@ pub fn classify(raw: &[P]) -> Option<Fit> {
     if len < MIN_LENGTH || diag < 8.0 {
         return None;
     }
+    // Jitter adds corners. The stroke is smoothed to measure that jitter and to judge how round a
+    // loop is; corner positions come from the raw points, found with a tolerance that grows with it.
+    let sm = smooth(&pts, diag);
+    let noise = jitter_level(&pts, &sm);
     let first = pts[0];
     let last = pts[pts.len() - 1];
     let gap = dist(first, last);
     let closed = gap < 0.15 * diag;
-    let eps = (0.035 * diag).max(3.5);
+    let eps = (0.035 * diag).max(3.5).max(2.5 * noise);
     // The corners of a closed loop. A loop with only a few corners is a polygon even when it
     // is round enough to pass for an ellipse (a pentagon).
     let ring_verts = closed.then(|| ring_vertices(&pts, eps));
 
     if !closed {
         // Straight line: the ends are nearly the whole path length apart.
-        if gap >= 0.9 * len {
-            let tol = (0.03 * gap).max(3.0);
+        // The smoothed length: jitter makes the raw path longer than the line it wanders along.
+        if gap >= 0.9 * path_length(&sm) {
+            let tol = (0.03 * gap).max(3.0).max(2.5 * noise);
             let dev = pts.iter().map(|&p| segment_dist(p, first, last)).fold(0.0, f64::max);
             if dev <= tol {
                 return Some(Fit {
@@ -305,8 +396,8 @@ pub fn classify(raw: &[P]) -> Option<Fit> {
         }
     } else if let Some((c, a, b, rot)) = fit_ellipse(&pts) {
         // Smooth closed loop: an ellipse, or a circle when it is nearly round.
-        let (mean, worst, gap_angle) = ellipse_error(&pts, c, a, b, rot);
-        let few_corners = ring_verts.as_ref().is_some_and(|v| (3..=5).contains(&v.len()));
+        let (mean, worst, gap_angle) = ellipse_error(&sm, c, a, b, rot);
+        let few_corners = ring_verts.as_ref().is_some_and(|v| (3..=6).contains(&v.len()));
         if mean <= 0.06 && worst <= 0.25 && gap_angle <= 1.3 && !(few_corners && mean > 0.03) {
             let (kind, shape) = if b / a >= 0.85 {
                 let r = (a + b) / 2.0;
@@ -353,7 +444,7 @@ pub fn classify(raw: &[P]) -> Option<Fit> {
                     wrap(t1 - t0)
                 })
                 .sum();
-            if worst <= (0.04 * r).max(3.0) && r <= 3.0 * diag && sweep.abs() >= 25f64.to_radians() {
+            if worst <= (0.04 * r).max(3.0).max(2.5 * noise) && r <= 3.0 * diag && sweep.abs() >= 25f64.to_radians() {
                 return Some(Fit {
                     kind: Kind::Arc,
                     shape: Shape::Arc {
@@ -390,6 +481,18 @@ fn ring_vertices(pts: &[P], eps: f64) -> Vec<P> {
     ring.push(pts[far]);
     let mut verts = simplify(&ring, eps);
     verts.pop();
+    // Two corners closer than this are one corner seen through jitter.
+    while verts.len() > 3 {
+        let n = verts.len();
+        match (0..n).min_by(|&i, &j| dist(verts[i], verts[(i + 1) % n]).total_cmp(&dist(verts[j], verts[(j + 1) % n]))) {
+            Some(i) if dist(verts[i], verts[(i + 1) % n]) < 1.5 * eps => {
+                let (a, b) = (verts[i], verts[(i + 1) % n]);
+                verts[i] = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+                verts.remove((i + 1) % n);
+            }
+            _ => break,
+        }
+    }
     // The loop's start may sit in the middle of an edge: drop corners that barely turn.
     let barely = 25f64.to_radians();
     while verts.len() > 3 {
@@ -753,10 +856,17 @@ pub fn hit_handle(shape: &Shape, p: P, radius: f64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Stays still for `secs` (within `radius` px): the Hold to Shape trigger.
-#[derive(Clone, Copy, Debug)]
+/// The Hold to Shape trigger: the pen stays put for `secs`, give or take drift.
+///
+/// A glass tablet lets the pen creep and jitter a little during the hold, so a strict standstill
+/// (the position never leaves a small circle around where it stopped) restarts again and again.
+/// This keeps the samples of the last `secs` and fires when they all lie within a tolerance of
+/// their centre. The tolerance is the caller's base (a few screen points, see
+/// [`StillTimer::update_with_tolerance`]) and grows with the measured jitter, up to three times
+/// the base.
+#[derive(Clone, Debug)]
 pub struct StillTimer {
-    anchor: P,
+    samples: std::collections::VecDeque<(f64, P)>,
     since: f64,
     fired: bool,
     radius: f64,
@@ -771,14 +881,34 @@ impl StillTimer {
 
     /// A timer that fires after `secs` of stillness (the Preferences slider).
     pub fn with_secs(p: P, t: f64, secs: f64) -> Self {
-        Self { anchor: p, since: t, fired: false, radius: 6.0, secs }
+        let mut samples = std::collections::VecDeque::new();
+        samples.push_back((t, p));
+        Self { samples, since: t, fired: false, radius: 6.0, secs }
     }
 
-    /// Feed the pointer position at time `t`. Returns true once, when the pointer has
-    /// been still long enough.
+    /// Feed the pointer position at time `t`, with the default tolerance (6 canvas px). Returns
+    /// true once, when the pointer has been still long enough.
     pub fn update(&mut self, p: P, t: f64) -> bool {
-        if dist(p, self.anchor) > self.radius {
-            self.anchor = p;
+        self.update_with_tolerance(p, t, self.radius)
+    }
+
+    /// As [`StillTimer::update`], with the base tolerance `tol` in canvas px (the caller converts
+    /// from screen points with the zoom). Jitter in the window widens it, up to `3 * tol`.
+    pub fn update_with_tolerance(&mut self, p: P, t: f64, tol: f64) -> bool {
+        self.samples.push_back((t, p));
+        while self.samples.len() > 2 && self.samples.front().is_some_and(|&(t0, _)| t0 < t - self.secs) {
+            self.samples.pop_front();
+        }
+        let n = self.samples.len() as f64;
+        let (cx, cy) = self.samples.iter().fold((0.0, 0.0), |(x, y), &(_, q)| (x + q.0 / n, y + q.1 / n));
+        let spread = self.samples.iter().map(|&(_, q)| dist(q, (cx, cy))).fold(0.0, f64::max);
+        // Measured jitter: the mean step between consecutive samples in the window.
+        let steps: Vec<f64> = self.samples.iter().zip(self.samples.iter().skip(1)).map(|(a, b)| dist(a.1, b.1)).collect();
+        let jitter = if steps.is_empty() { 0.0 } else { steps.iter().sum::<f64>() / steps.len() as f64 };
+        let allowed = (4.0 * jitter).clamp(tol, 3.0 * tol);
+        if spread > allowed {
+            self.samples.clear();
+            self.samples.push_back((t, p));
             self.since = t;
             self.fired = false;
             return false;
@@ -1230,5 +1360,159 @@ mod tests {
         // Moving again re-arms it.
         assert!(!t.update((40.0, 10.0), 1.0));
         assert!(t.update((40.0, 10.0), 1.7));
+    }
+
+    /// Seeded noise (xorshift), uniform in [-1, 1].
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        }
+    }
+
+    /// Add pen jitter: white noise of `amp` px plus a slow random-walk drift of `amp` px in total.
+    fn noisy(pts: &[P], amp: f64, seed: u64) -> Vec<P> {
+        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let (mut dx, mut dy) = (0.0, 0.0);
+        pts.iter()
+            .map(|&(x, y)| {
+                dx += rng.next() * amp * 0.15;
+                dy += rng.next() * amp * 0.15;
+                (x + rng.next() * amp + dx, y + rng.next() * amp + dy)
+            })
+            .collect()
+    }
+
+    /// Points along a closed polygon at about `gap` px spacing.
+    fn polygon_pts(corners: &[P], gap: f64, closed: bool) -> Vec<P> {
+        let n = corners.len();
+        let edges = if closed { n } else { n - 1 };
+        let mut out = Vec::new();
+        for i in 0..edges {
+            let (a, b) = (corners[i], corners[(i + 1) % n]);
+            let k = (dist(a, b) / gap).round().max(1.0) as usize;
+            for j in 0..k {
+                let t = j as f64 / k as f64;
+                out.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+            }
+        }
+        out.push(if closed { corners[0] } else { corners[n - 1] });
+        out
+    }
+
+    /// Jitter amplitudes as a fraction of the shape's size: 0.5 %, 1 %, 2 % and 3 %.
+    const NOISE: [f64; 4] = [0.005, 0.01, 0.02, 0.03];
+
+    #[test]
+    fn noisy_circles_come_out_as_circles() {
+        for (k, frac) in NOISE.iter().enumerate() {
+            for seed in 1..=20u64 {
+                let r = 90.0;
+                let pts = noisy(&with_ring(ellipse_pts((300.0, 300.0), r, r, 0.0, 120)), frac * 2.0 * r, seed + 100 * k as u64);
+                let fit = classify(&pts).unwrap_or_else(|| panic!("circle amp {frac} seed {seed}: no shape"));
+                assert_eq!(fit.kind, Kind::Circle, "circle amp {frac} seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn noisy_ellipses_come_out_as_ellipses() {
+        for (k, frac) in NOISE.iter().enumerate() {
+            for seed in 1..=20u64 {
+                let rot = seed as f64 * 0.31;
+                let pts = noisy(&with_ring(ellipse_pts((300.0, 300.0), 140.0, 60.0, rot, 140)), frac * 120.0, seed + 100 * k as u64);
+                let fit = classify(&pts).unwrap_or_else(|| panic!("ellipse amp {frac} seed {seed}: no shape"));
+                assert_eq!(fit.kind, Kind::Ellipse, "ellipse amp {frac} seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn noisy_rectangles_and_triangles_stay_polygons() {
+        let rect = polygon_pts(&[(100.0, 100.0), (320.0, 100.0), (320.0, 240.0), (100.0, 240.0)], 4.0, true);
+        let tri = polygon_pts(&[(100.0, 300.0), (320.0, 300.0), (210.0, 110.0)], 4.0, true);
+        for (k, frac) in NOISE.iter().take(3).enumerate() {
+            for seed in 1..=20u64 {
+                let sd = seed + 100 * k as u64;
+                let fit = classify(&noisy(&rect, frac * 140.0, sd)).unwrap_or_else(|| panic!("rect amp {frac} seed {seed}: no shape"));
+                assert_eq!(fit.kind, Kind::Rectangle, "rectangle amp {frac} seed {seed}");
+                let fit = classify(&noisy(&tri, frac * 190.0, sd)).unwrap_or_else(|| panic!("triangle amp {frac} seed {seed}: no shape"));
+                assert_eq!(fit.kind, Kind::Triangle, "triangle amp {frac} seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn noisy_zigzags_stay_polylines_and_noisy_lines_stay_lines() {
+        let zig = polygon_pts(&[(100.0, 100.0), (200.0, 260.0), (300.0, 100.0), (400.0, 260.0)], 4.0, false);
+        let line = polygon_pts(&[(100.0, 100.0), (420.0, 180.0)], 4.0, false);
+        for (k, frac) in NOISE.iter().take(3).enumerate() {
+            for seed in 1..=20u64 {
+                let sd = seed + 100 * k as u64;
+                let fit = classify(&noisy(&zig, frac * 160.0, sd)).unwrap_or_else(|| panic!("zigzag amp {frac} seed {seed}: no shape"));
+                assert_eq!(fit.kind, Kind::Polyline, "zigzag amp {frac} seed {seed}");
+                let fit = classify(&noisy(&line, frac * 100.0, sd)).unwrap_or_else(|| panic!("line amp {frac} seed {seed}: no shape"));
+                assert_eq!(fit.kind, Kind::Line, "line amp {frac} seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_pentagon_is_still_a_polygon_after_smoothing() {
+        let c: Vec<P> = (0..5).map(|i| (300.0 + 100.0 * (TAU * i as f64 / 5.0).cos(), 300.0 + 100.0 * (TAU * i as f64 / 5.0).sin())).collect();
+        for seed in 1..=10u64 {
+            let fit = classify(&noisy(&polygon_pts(&c, 4.0, true), 3.0, seed)).expect("pentagon");
+            assert_eq!(fit.kind, Kind::Polygon, "pentagon seed {seed}");
+        }
+    }
+
+    #[test]
+    fn a_hold_tail_does_not_add_corners() {
+        // A circle drawn by hand, then the pen drifts around the end point for the hold.
+        let mut pts = noisy(&with_ring(ellipse_pts((300.0, 300.0), 90.0, 90.0, 0.0, 120)), 2.0, 7);
+        let end = *pts.last().unwrap();
+        let mut rng = Rng(99);
+        for _ in 0..40 {
+            pts.push((end.0 + rng.next() * 6.0, end.1 + rng.next() * 6.0));
+        }
+        let trimmed = trim_hold_tail(&pts, 6.0);
+        assert!(trimmed.len() < pts.len() - 30, "the cluster is cut off");
+        assert_eq!(classify(&trimmed).map(|f| f.kind), Some(Kind::Circle));
+    }
+
+    #[test]
+    fn a_drifting_pen_still_triggers_the_hold() {
+        // 1 px of white noise plus a creep of 4 px over the hold: a strict standstill never fires.
+        let mut rng = Rng(5);
+        let mut t = StillTimer::with_secs((100.0, 100.0), 0.0, 0.65);
+        let mut fired_at = None;
+        for i in 1..120 {
+            let time = i as f64 / 120.0;
+            let p = (100.0 + time * 6.0 + rng.next(), 100.0 + rng.next());
+            if t.update_with_tolerance(p, time, 6.0) && fired_at.is_none() {
+                fired_at = Some(time);
+            }
+        }
+        let at = fired_at.expect("the hold fires despite the drift");
+        assert!((0.64..0.8).contains(&at), "fires after the hold time, not much later: {at}");
+        // A steady creep of 15 px/s (about 10 px in the hold): the old strict standstill (6 px around the
+        // point where the pen stopped) restarted every 0.4 s and never fired.
+        let mut t = StillTimer::with_secs((0.0, 0.0), 0.0, 0.65);
+        assert!((1..240).any(|i| t.update_with_tolerance((i as f64 / 120.0 * 15.0, 0.0), i as f64 / 120.0, 6.0)), "slow creep still holds");
+        // A pen that is really moving never fires.
+        let mut t = StillTimer::with_secs((0.0, 0.0), 0.0, 0.65);
+        assert!(!(1..240).any(|i| t.update_with_tolerance((i as f64 * 0.8, 0.0), i as f64 / 120.0, 6.0)));
+    }
+
+    #[test]
+    fn a_noisy_hexagon_is_still_a_polygon() {
+        let c: Vec<P> = (0..6).map(|i| (300.0 + 100.0 * (TAU * i as f64 / 6.0).cos(), 300.0 + 100.0 * (TAU * i as f64 / 6.0).sin())).collect();
+        for seed in 1..=10u64 {
+            let fit = classify(&noisy(&polygon_pts(&c, 4.0, true), 2.0, seed)).expect("hexagon");
+            assert_eq!(fit.kind, Kind::Polygon, "hexagon seed {seed}");
+        }
     }
 }

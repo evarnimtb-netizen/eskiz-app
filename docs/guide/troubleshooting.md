@@ -10,13 +10,33 @@ Eskiz also needs OpenGL and Vulkan drivers to draw the window: `libgl1 libvulkan
 
 ## The window opens, but nothing draws, or the graphics fail
 
-Eskiz draws with the graphics card through wgpu (Metal, DirectX 12 or Vulkan). If that fails when the window opens, Eskiz retries once with OpenGL. You can choose the path yourself with the **ESKIZ_RENDERER** environment variable:
+Eskiz draws with the graphics card through wgpu (Metal, DirectX 12 or Vulkan). If that fails or panics while the window opens, Eskiz retries once with OpenGL, and it logs the adapter and backend it chose (see the Windows section above for where the log is). You can choose the path yourself with the **ESKIZ_RENDERER** environment variable:
 
 - `gpu`, or not set: the default, with the GPU compositor.
 - `cpu`: the same window, with the compositor on the processor. Use this if the picture looks wrong.
 - `gl`: an OpenGL window, with the compositor on the processor.
 
 Values are not case-sensitive. An unknown value means the default.
+
+## Windows: double-clicking eskiz.exe does nothing
+
+Work through these in order.
+
+1. **Extract the zip first.** Right-click the `.zip`, choose **Extract All**, and run `eskiz.exe` from the new folder. Running it from inside the zip window does not work.
+2. **SmartScreen.** The download is not code-signed, so Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
+3. **Read the log.** Open `%LOCALAPPDATA%\Eskiz\logs` (paste it into the Explorer address bar). `startup.log` lists each start-up step, the graphics adapter and backend that were chosen, and "first frames drawn" when the window came up. `startup.prev.log` is the run before. If Eskiz crashed, `panic-<number>.txt` holds the message, the place in the code and a backtrace. When the start fails, Eskiz also shows a message box with the reason and this folder.
+4. **Graphics.** If the previous start never drew its first frames (a graphics driver can end the process without any message), Eskiz notices the next time and tries a safer renderer: first DirectX 12 only, then OpenGL. Check `startup.log` for lines starting `renderer attempt`. You can also force it: set `ESKIZ_RENDERER=gl` (OpenGL) or `ESKIZ_RENDERER=cpu`. Updating the graphics driver usually fixes it for good.
+5. **Terminal output.** Start `eskiz.exe --version`, `--selftest` or `--diagnose` from PowerShell or Command Prompt; the result prints in that window. Please send the `--diagnose` output and the files from the logs folder when you report a problem.
+
+Eskiz is built with the C runtime inside, so the Visual C++ Redistributable is not needed.
+
+## A pen tablet has no pressure (macOS)
+
+On macOS, Eskiz reads tablet events directly: a Wacom-style tablet, or an iPad with an Apple Pencil used through Sidecar, gives pressure, tilt and barrel rotation, and the eraser end erases. A mouse or trackpad is not changed.
+
+To check what the tablet sends, open Actions, then **Settings**, and look at the pressure curve at the bottom. Hover the pen over the window and press: the dot on the curve moves with the pressure and the line under the curve reads `Live: pen end, touching, pressure=0.62 altitude=.. azimuth=.. roll=..`. A dash means the device reports no such value. The status line next to Reset says "Pen detected (macOS tablet events)" once a pen has been seen.
+
+If there is still no pressure, start Eskiz from a terminal with **ESKIZ_TRACE_STROKES=1**. Every pen stroke then prints `eskiz-stroke: pen pressure=...` lines. If they show `pressure=-` or the lines never appear, the tablet driver (or Sidecar) is sending plain mouse events; send us the lines. Windows uses Windows Ink and Wayland the tablet protocol; X11 has no pen support yet.
 
 ## Where the library is kept
 

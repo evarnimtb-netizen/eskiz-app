@@ -1,16 +1,15 @@
 //! The OS half of pen tablet input: a [`PenSource`] over the `octotablet` crate.
 //!
 //! Support in octotablet 0.1: Windows (Windows Ink RealTimeStylus) and Linux Wayland
-//! (`tablet_unstable_v2`). X11 and macOS are not supported by the crate; there `connect`
-//! returns an error and the app keeps using mouse and touch. The crate itself does not
-//! compile on macOS, so it is only a dependency on Windows and Unix-without-macOS, and
-//! the whole module is behind the `tablet` cargo feature on those targets. Elsewhere
-//! `connect` reports why there is no pen.
+//! (`tablet_unstable_v2`). X11 is not supported by the crate; there `connect` returns an error
+//! and the app keeps using mouse and touch. macOS uses its own reader (`tablet_mac.rs`), because
+//! the crate does not compile there. Elsewhere `connect` reports why there is no pen.
 
 /// Connect to the OS tablet API using the window's raw handles. On any failure the error
 /// text is meant for the preferences panel; the app carries on without a pen.
 #[cfg(not(any(
     target_os = "android",
+    all(target_os = "macos", feature = "tablet"),
     all(
         feature = "tablet",
         any(windows, all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "redox"))))
@@ -22,6 +21,13 @@ pub fn connect(_cc: &eframe::CreationContext<'_>) -> Result<Box<dyn crate::table
     } else {
         "not built in (cargo feature `tablet`)".to_owned()
     })
+}
+
+/// macOS: an `NSEvent` local monitor for tablet point and proximity events (Wacom-style
+/// tablets, Sidecar with an Apple Pencil); see `tablet_mac.rs`.
+#[cfg(all(target_os = "macos", feature = "tablet"))]
+pub fn connect(_cc: &eframe::CreationContext<'_>) -> Result<Box<dyn crate::tablet::PenSource>, String> {
+    Ok(Box::new(crate::tablet_mac::MacSource::new()?))
 }
 
 /// Android: the Java shim (`EskizActivity`) forwards `MotionEvent`s over JNI; see
@@ -115,6 +121,7 @@ mod imp {
                                 pos: p.position,
                                 pressure: p.pressure.get(),
                                 tilt: p.tilt,
+                                roll: None,
                                 time: ts.map(|t| (t - FrameTimestamp::epoch()).as_secs_f64()),
                             }));
                         }

@@ -32,14 +32,28 @@ $version = $match.Groups[1].Value
 Push-Location $eskizDir
 try {
     if (-not $SkipBuild) {
-        Write-Host "== cargo build ($target)"
+        Write-Host "== cargo build ($target, static CRT)"
         & rustup target add $target
+        # The static CRT is set in .cargo/config.toml; a RUSTFLAGS in the environment replaces that
+        # setting, so make sure the flag is there either way.
+        if ($env:RUSTFLAGS -and $env:RUSTFLAGS -notmatch 'crt-static') {
+            $env:RUSTFLAGS = "$env:RUSTFLAGS -C target-feature=+crt-static"
+        }
         & cargo build --release --locked -p eskiz-app --target $target
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
     }
 
     $exe = Join-Path $eskizDir "target\$target\release\eskiz.exe"
     if (-not (Test-Path $exe)) { throw "missing $exe (build first)" }
+
+    Write-Host "== imports (no Visual C++ runtime allowed)"
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) { $python = Get-Command python3 -ErrorAction SilentlyContinue }
+    if (-not $python) { throw "python is needed for packaging\windows\check-imports.py" }
+    & $python.Source (Join-Path $here 'test_check_imports.py')
+    if ($LASTEXITCODE -ne 0) { throw "check-imports tests failed" }
+    & $python.Source (Join-Path $here 'check-imports.py') $exe --list
+    if ($LASTEXITCODE -ne 0) { throw "eskiz.exe imports the Visual C++ runtime (build with the static CRT)" }
 
     Write-Host "== self-test"
     & $exe --selftest
@@ -56,6 +70,18 @@ try {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -Path $exe -Destination (Join-Path $stage 'eskiz.exe')
     Copy-Item -Path (Join-Path $eskizDir 'packaging\icons\eskiz.ico') -Destination (Join-Path $stage 'eskiz.ico')
+    Set-Content -Path (Join-Path $stage 'README-Windows.txt') -Encoding utf8 -Value @"
+Eskiz $version for Windows
+
+1. Extract the whole zip first (right-click the zip, Extract All...). Do not run eskiz.exe from
+   inside the zip window.
+2. Double-click eskiz.exe. If Windows says "Windows protected your PC" (SmartScreen), click
+   "More info", then "Run anyway". The download is not code-signed.
+3. If nothing appears, or a message box names a problem, look in
+   %LOCALAPPDATA%\Eskiz\logs  (paste that into the Explorer address bar).
+   startup.log lists what happened; panic-*.txt has the details of a crash. Please send them.
+4. In a terminal, eskiz.exe --version, --selftest and --diagnose print their result there.
+"@
     foreach ($f in 'THIRD_PARTY_NOTICES.md', 'LICENSE-MIT', 'LICENSE-APACHE') {
         $src = Join-Path $eskizDir $f
         if (-not (Test-Path $src)) { throw "missing $src" }

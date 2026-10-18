@@ -65,7 +65,8 @@ pub fn cheat_rows(prefs: &Prefs, cmd: &str) -> Vec<(&'static str, Vec<CheatRow>)
             "CANVAS AND PEN",
             vec![
                 ("Space + drag".to_owned(), "Pan", true),
-                ("R + drag".to_owned(), "Rotate the view", true),
+                ("R + drag sideways".to_owned(), "Rotate the view with a pen or mouse; it snaps at 0, 90, 180 and 270 degrees", true),
+                ("Trackpad twist".to_owned(), "Rotate the view (macOS trackpad rotate gesture)", true),
                 ("Wheel, Ctrl + wheel".to_owned(), "Pan; with Ctrl, zoom", true),
                 ("Alt + click, pen button".to_owned(), "Pick a color", true),
                 ("Hold still at a stroke's end".to_owned(), "Hold to Shape", prefs.hold_shape),

@@ -18,6 +18,12 @@ use crate::theme::Palette;
 /// Fade time for hiding and showing the bars, seconds.
 const FADE_SECS: f32 = 0.15;
 const BUTTON: f32 = 44.0;
+/// Side bar: gap from the pill's top edge to the grab handle (and, by `SB_REDO_DROP`, from the
+/// redo glyph to the bottom edge), and where the first slider starts.
+const SB_INSET: f32 = 11.0;
+const SB_TOP: f32 = 30.0;
+/// How far the redo glyph sits below its button's centre so its bottom inset matches the handle's.
+const SB_REDO_DROP: f32 = 1.0;
 /// Gap between the colour circle's button and the right edge of the window.
 pub(crate) const COLOUR_MARGIN: f32 = 16.0;
 
@@ -396,14 +402,14 @@ impl EskizApp {
                 ui.set_opacity(alpha);
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
                 let eskiz = pal.identity == crate::theme::UiIdentity::Eskiz;
-                let grip = Rect::from_min_size(rect.min, Vec2::new(width, 22.0));
+                let grip = Rect::from_min_size(rect.min, Vec2::new(width, 26.0));
                 let (size_rect, modify_rect, opacity_rect, undo_rect, redo_rect);
                 if eskiz {
                     // Eskiz: separate pills, one for size and one for opacity, with the Modify
                     // button and undo/redo as their own small pills between and below them.
                     const GAP: f32 = 6.0;
-                    let body_top = rect.top() + 26.0;
-                    let slider_h = ((rect.height() - 26.0) - 3.0 * BUTTON - 3.0 * GAP) / 2.0;
+                    let body_top = rect.top() + SB_TOP;
+                    let slider_h = ((rect.height() - SB_TOP) - 3.0 * BUTTON - 3.0 * GAP) / 2.0;
                     size_rect = Rect::from_min_size(Pos2::new(rect.left(), body_top), Vec2::new(width, slider_h));
                     let size_pill = Rect::from_min_max(rect.min, size_rect.right_bottom());
                     modify_rect = Rect::from_min_size(Pos2::new(rect.left(), size_pill.bottom() + GAP), Vec2::new(width, BUTTON));
@@ -418,8 +424,8 @@ impl EskizApp {
                     let capsule = CornerRadius::same(22);
                     ui.painter().rect_filled(rect, capsule, pal.panel);
                     ui.painter().rect_stroke(rect, capsule, Stroke::new(1.0, pal.hairline), StrokeKind::Inside);
-                    let body_top = rect.top() + 26.0;
-                    let fixed = 3.0 * BUTTON + 6.0;
+                    let body_top = rect.top() + SB_TOP;
+                    let fixed = 3.0 * BUTTON;
                     let slider_h = ((rect.bottom() - body_top) - fixed) / 2.0;
                     size_rect = Rect::from_min_size(Pos2::new(rect.left(), body_top), Vec2::new(width, slider_h));
                     modify_rect = Rect::from_min_size(size_rect.left_bottom(), Vec2::new(width, BUTTON));
@@ -435,7 +441,7 @@ impl EskizApp {
                     grip_moved = g.drag_delta().y;
                 }
                 ui.painter().rect_filled(
-                    Rect::from_center_size(grip.center(), Vec2::new(22.0, 4.0)),
+                    Rect::from_center_size(Pos2::new(grip.center().x, rect.top() + SB_INSET + 2.0), Vec2::new(22.0, 4.0)),
                     CornerRadius::same(2),
                     pal.text_dim,
                 );
@@ -489,7 +495,7 @@ impl EskizApp {
                 a11y::named(&redo, egui::WidgetType::Button, can_redo, "Redo");
                 a11y::focus_ring(ui.painter(), redo_rect, &redo, &pal, 8);
                 let redo_col = if can_redo { pal.text } else { pal.disabled() };
-                icons::icon_redo(ui.painter(), Rect::from_center_size(redo_rect.center(), Vec2::splat(24.0)), redo_col);
+                icons::icon_redo(ui.painter(), Rect::from_center_size(redo_rect.center() + Vec2::new(0.0, SB_REDO_DROP), Vec2::splat(24.0)), redo_col);
                 if redo.clicked() {
                     self.redo_action();
                 }
@@ -556,7 +562,11 @@ impl EskizApp {
                     .stroke(Stroke::new(1.0, pal.hairline))
                     .inner_margin(Margin::symmetric(14, 8))
                     .show(ui, |ui| {
-                        ui.label(RichText::new(toast.text).size(13.0).color(pal.text));
+                        // Laid out with an explicit wrap width: the Area is anchored, so its width is
+                        // unknown before layout and a plain label wraps at a sliver on the first frame.
+                        let galley = toast_galley(ui, &toast.text, pal.text, ctx.content_rect().width());
+                        let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+                        ui.painter().galley(rect.min, galley, pal.text);
                     });
             });
     }
@@ -590,6 +600,22 @@ impl EskizApp {
             EditMode::Off => {}
         }
     }
+}
+
+/// Widest a toast gets before it wraps at word boundaries.
+pub(crate) const TOAST_MAX_WIDTH: f32 = 360.0;
+
+/// Toast text on one line up to `TOAST_MAX_WIDTH` (or the window width less margins), wrapping
+/// only between words beyond that.
+pub(crate) fn toast_galley(ui: &egui::Ui, text: &str, colour: egui::Color32, screen_w: f32) -> std::sync::Arc<egui::Galley> {
+    let wrap = TOAST_MAX_WIDTH.min((screen_w - 60.0).max(120.0));
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(egui::FontId::proportional(13.0), colour),
+    );
+    job.wrap.max_width = wrap;
+    job.wrap.break_anywhere = false;
+    ui.fonts_mut(|f| f.layout_job(job))
 }
 
 #[cfg(test)]

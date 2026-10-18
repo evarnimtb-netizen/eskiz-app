@@ -23,7 +23,7 @@ use crate::export::default_export_path;
 use crate::gesture::{self, Gesture, Recognizer, RepeatClock};
 use crate::history::PixelRect;
 use crate::import::open_procreate;
-use crate::input::{apply_pressure_curve, sample_from, sample_from_pen, PointerKind, RawPointer};
+use crate::input::{apply_pressure_curve, sample_from, sample_from_pen, PenReading, PointerKind, RawPointer};
 use crate::paint::StrokeSettings;
 use crate::panels::colour::ColourUi;
 use crate::popover::{Panel, Popovers};
@@ -34,6 +34,9 @@ use crate::session::Session;
 use crate::tablet::{PenFrame, PenSample, PenSource, PenState};
 use crate::theme::{self, Palette};
 use crate::view::{self, View};
+
+/// How far (screen points) the pen may drift or jitter during the Hold to Shape hold.
+const HOLD_DRIFT_PT: f32 = 6.0;
 
 const TEX_OPTIONS: TextureOptions = TextureOptions::LINEAR;
 
@@ -298,6 +301,8 @@ pub struct FrameInput {
     pub hover: Option<Pos2>,
     /// Pinch or ctrl/cmd+wheel factor, 1.0 when idle.
     pub zoom: f32,
+    /// Trackpad rotate gesture this frame, radians clockwise (0 when idle).
+    pub rotate: f32,
     pub scroll: Vec2,
     pub multi: Option<MultiTouchInfo>,
     pub time: f64,
@@ -323,6 +328,7 @@ impl FrameInput {
         self.hover = None;
         self.pointer_delta = Vec2::ZERO;
         self.zoom = 1.0;
+        self.rotate = 0.0;
         self.scroll = Vec2::ZERO;
         self.multi = None;
         self.touch = None;
@@ -360,6 +366,10 @@ pub struct ShapeEdit {
     /// `Session::edits` right after the shape was painted. A different value means something
     /// else changed the document, which ends Edit Shape.
     pub edits: u64,
+    /// A drag is in progress: the shape's stroke has been taken off the layer and `current` is
+    /// only drawn as a light vector preview. It is rasterized once, on release
+    /// ([`EskizApp::settle_shape_preview`]).
+    pub previewing: bool,
 }
 
 pub struct EskizApp {
@@ -466,6 +476,8 @@ pub struct EskizApp {
     stroke_last: Option<Pos2>,
     /// R held: a drag rotates the view.
     rotating: bool,
+    /// The unsnapped angle of a rotate gesture or R-drag in progress (see `rotate_view_by`).
+    rotate_raw: Option<f32>,
     /// The Gallery screen, document storage and autosave (see [`crate::gallery`]).
     pub(crate) gal: crate::gallery::Gallery,
     /// Colour panel state (tab, hex field, HSV being edited).
@@ -476,6 +488,8 @@ pub struct EskizApp {
     pub(crate) colour_store: ColourStore,
     /// A Pour Fill being dragged.
     pub(crate) pour_fill: Option<DropState>,
+    /// Runs the Pour Fill preview off the UI thread.
+    pub(crate) pour_previewer: crate::pour_fill::PourPreviewer,
     /// Pen tablet state.
     pub(crate) pen: PenState,
     /// The adjustment that is open, if any (see [`crate::adjust`]).
@@ -641,11 +655,13 @@ impl EskizApp {
             stroke_force: None,
             stroke_last: None,
             rotating: false,
+            rotate_raw: None,
             gal: crate::gallery::Gallery::default(),
             colour_ui: ColourUi::default(),
             colour_prev: [30, 60, 140],
             colour_store: ColourStore::default(),
             pour_fill: None,
+            pour_previewer: Default::default(),
             pen: PenState::default(),
             adjust: None,
             liquify: None,
@@ -760,6 +776,7 @@ impl EskizApp {
             return;
         }
         // Undo while Edit Shape is open takes the shape back.
+        self.settle_shape_preview();
         self.shape_edit = None;
         let name = self.session.undo_name().unwrap_or("Stroke");
         let size = (self.session.doc.width, self.session.doc.height);
@@ -780,6 +797,7 @@ impl EskizApp {
         if self.transform.is_some() {
             return;
         }
+        self.settle_shape_preview();
         self.shape_edit = None;
         let name = self.session.redo_name().unwrap_or("Stroke");
         let size = (self.session.doc.width, self.session.doc.height);
@@ -815,6 +833,55 @@ impl EskizApp {
 
     pub(crate) fn fit(&mut self) {
         self.need_fit = true;
+    }
+
+    /// Turn the view to `target` radians about the middle of the canvas area, with the rotation toast.
+    fn turn_view_to(&mut self, target: f32) {
+        let viewport = self.viewport;
+        let delta = target - self.view.rotation;
+        self.view.rotate_at(viewport, viewport.center(), delta);
+        self.view.rotation = view::wrap_angle(target);
+        self.show_rotation_toast(false);
+    }
+
+    /// Rotate the view a quarter turn: `dir` +1 clockwise (Rotate 90 right), -1 counter-clockwise.
+    pub(crate) fn rotate_view_quarter(&mut self, dir: i32) {
+        let target = view::quarter_turn(self.view.rotation, dir);
+        self.turn_view_to(target);
+    }
+
+    /// Put the view upright again (rotation 0), keeping zoom and the centre of the canvas area.
+    pub(crate) fn reset_view_rotation(&mut self) {
+        self.turn_view_to(0.0);
+    }
+
+    /// "Rotation N°" (or the snapped message at 0), the toast the touch gesture also shows.
+    fn show_rotation_toast(&mut self, snapped: bool) {
+        let deg = self.view.rotation.to_degrees().rem_euclid(360.0).round() % 360.0;
+        if snapped || deg == 0.0 {
+            self.show_toast("Rotation 0°", 1.0);
+        } else {
+            self.show_toast(format!("Rotation {deg:.0}°"), 1.0);
+        }
+    }
+
+    /// Rotate by a trackpad gesture or an R-drag step `delta` (radians) about `anchor`. The turn is
+    /// tracked unsnapped in `rotate_raw` and the view sticks to quarter turns (see
+    /// [`view::sticky_rotation`]). Returns whether the view moved.
+    fn rotate_view_by(&mut self, anchor: Pos2, delta: f32) -> bool {
+        let before = self.view.rotation;
+        let raw = self.rotate_raw.unwrap_or(before) + delta;
+        self.rotate_raw = Some(raw);
+        let (target, snapped) = view::sticky_rotation(raw);
+        if (target - before).abs() < 1e-6 {
+            return false;
+        }
+        let viewport = self.viewport;
+        self.view.rotate_at(viewport, anchor, target - before);
+        self.view.rotation = target;
+        let entered = snapped && !view::sticky_rotation(before).1;
+        self.show_rotation_toast(entered);
+        true
     }
 
     pub(crate) fn toggle_fullscreen(&mut self) {
@@ -1002,7 +1069,14 @@ impl EskizApp {
             self.stroke_points.push((x, y));
         }
         let sample = match self.pen.stroke_reading {
-            Some(reading) => sample_from_pen(x, y, time, reading),
+            Some(reading) => {
+                // Pen strokes log their raw readings (every 8th sample) so a tester can see
+                // whether a tablet delivers pressure, tilt and roll: `ESKIZ_TRACE_STROKES=1`.
+                if crate::stroke_trace::enabled() && self.stroke_points.len() % 8 == 1 {
+                    crate::stroke_trace::event("pen", &pen_reading_text(&reading));
+                }
+                sample_from_pen(x, y, time, reading)
+            }
             None => sample_from(raw),
         };
         // The global pressure curve covers touch force and pen pressure.
@@ -1057,10 +1131,12 @@ impl EskizApp {
             return;
         }
         let p = self.view.screen_to_canvas(self.viewport, pointer);
+        // Drift tolerance: a few screen points, as canvas pixels at this zoom.
+        let tol = f64::from(HOLD_DRIFT_PT / self.view.zoom.max(0.01));
         let Some(timer) = self.still.as_mut() else {
             return;
         };
-        if timer.update(p, time) {
+        if timer.update_with_tolerance(p, time, tol) {
             self.try_hold_shape(time);
         }
     }
@@ -1068,7 +1144,9 @@ impl EskizApp {
     /// Replace the stroke in progress with the best-fit shape, if it has one.
     fn try_hold_shape(&mut self, time: f64) {
         let points = std::mem::take(&mut self.stroke_points);
-        let Some(fit) = hold_shape::classify(&points) else {
+        // The pen wandered a little during the hold: that tail is not part of the shape.
+        let tol = f64::from(HOLD_DRIFT_PT / self.view.zoom.max(0.01));
+        let Some(fit) = hold_shape::classify(&hold_shape::trim_hold_tail(&points, tol)) else {
             self.stroke_points = points;
             return;
         };
@@ -1089,6 +1167,7 @@ impl EskizApp {
             live: true,
             drag: None,
             edits: 0,
+            previewing: false,
         });
         if !self.paint_shape(&fit.shape, time) {
             // The shape painted nothing: put the user's own stroke back rather than lose it.
@@ -1126,7 +1205,12 @@ impl EskizApp {
 
     /// Paint a shape as one stroke with the current brush. Refreshes the canvas.
     pub(crate) fn paint_shape(&mut self, shape: &hold_shape::Shape, time: f64) -> bool {
-        let settings = self.stroke_settings();
+        let mut settings = self.stroke_settings();
+        // A snapped shape has an even line: the brush's start taper would thin its first segment
+        // to a hairline (a closed shape hides its end taper under the overrun below, but an open
+        // polyline's start has nothing to cover it).
+        settings.brush.taper.pencil.start_length = 0.0;
+        settings.brush.taper.finger.start_length = 0.0;
         if !self.session.begin_stroke(self.active, &settings) {
             return false;
         }
@@ -1185,13 +1269,38 @@ impl EskizApp {
         if next == edit.current {
             return;
         }
+        self.begin_shape_preview();
+        if let Some(e) = self.shape_edit.as_mut() {
+            e.current = next;
+        }
+    }
+
+    /// First moved frame of a shape drag: take the shape's stroke off the layer once. The drag
+    /// then only changes `current` (drawn as a vector preview) until [`Self::settle_shape_preview`].
+    pub(crate) fn begin_shape_preview(&mut self) {
+        if self.shape_edit.as_ref().is_none_or(|e| e.previewing) {
+            return;
+        }
         if let Some(refresh) = self.session.undo() {
             self.apply_refresh(refresh);
         }
-        self.paint_shape(&next, input.time);
         let edits = self.session.edits();
         if let Some(e) = self.shape_edit.as_mut() {
-            e.current = next;
+            e.previewing = true;
+            e.edits = edits;
+        }
+    }
+
+    /// End of a shape drag: rasterize the shape once, as the single "Stroke" history step.
+    pub(crate) fn settle_shape_preview(&mut self) {
+        let Some(shape) = self.shape_edit.as_ref().filter(|e| e.previewing).map(|e| e.current.clone()) else {
+            return;
+        };
+        let time = self.now;
+        self.paint_shape(&shape, time);
+        let edits = self.session.edits();
+        if let Some(e) = self.shape_edit.as_mut() {
+            e.previewing = false;
             e.edits = edits;
         }
     }
@@ -1353,6 +1462,13 @@ impl EskizApp {
         } else if ctx.input_mut(|i| i.consume_shortcut(&sc::UNDO)) {
             self.undo_action();
         }
+        if ctx.input_mut(|i| i.consume_shortcut(&sc::RESET_ROTATION)) {
+            self.reset_view_rotation();
+        } else if ctx.input_mut(|i| i.consume_shortcut(&sc::ROTATE_LEFT)) {
+            self.rotate_view_quarter(-1);
+        } else if ctx.input_mut(|i| i.consume_shortcut(&sc::ROTATE_RIGHT)) {
+            self.rotate_view_quarter(1);
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&sc::FIT)) {
             self.fit();
             self.show_toast("Fit to screen", 1.0);
@@ -1383,6 +1499,7 @@ impl EskizApp {
             self.toggle_fullscreen();
         }
         if ctx.input(|i| i.key_pressed(sc::ESCAPE)) && self.shape_edit.as_ref().is_some_and(|e| !e.live) {
+            self.settle_shape_preview();
             self.shape_edit = None;
         }
         if ctx.input(|i| i.key_pressed(sc::ESCAPE)) && !(self.popovers.open_panel() == Some(Panel::Layers) && self.layers_ui.wants_escape()) {
@@ -1504,6 +1621,7 @@ impl EskizApp {
                 hover: i.pointer.hover_pos(),
                 pointer_delta: i.pointer.delta(),
                 zoom: i.zoom_delta(),
+                rotate: if i.multi_touch().is_some() { 0.0 } else { i.rotation_delta() },
                 scroll: i.smooth_scroll_delta,
                 multi: i.multi_touch(),
                 time: i.time,
@@ -1599,11 +1717,8 @@ impl EskizApp {
                 let pct = self.view.zoom * 100.0;
                 self.show_toast(format!("Zoom {pct:.0}%"), 1.0);
             }
-            if rot_snapped {
-                self.show_toast("Rotation 0°", 1.0);
-            } else if self.view.rotation != rot_before {
-                let deg = self.view.rotation.to_degrees().rem_euclid(360.0);
-                self.show_toast(format!("Rotation {deg:.0}°"), 1.0);
+            if rot_snapped || self.view.rotation != rot_before {
+                self.show_rotation_toast(rot_snapped);
             }
         }
         let pinch = self.pinch.get_or_insert((self.now, 1.0));
@@ -1721,16 +1836,25 @@ impl EskizApp {
         if stroking {
             // A stroke in progress owns the view: pinch, scroll and pan (a palm on the trackpad,
             // a wheel nudge) wait until the pen lifts, so the ink stays where it was drawn.
-            if input.zoom != 1.0 || input.scroll != Vec2::ZERO || input.space || input.middle {
+            if input.zoom != 1.0 || input.rotate != 0.0 || input.scroll != Vec2::ZERO || input.space || input.middle {
                 crate::stroke_trace::event("ignored", "zoom, scroll or pan while a stroke is open");
             }
         } else if over_chrome {
             // Not for the canvas.
-        } else if input.zoom != 1.0 {
+        } else if input.rotate != 0.0 || input.zoom != 1.0 {
             let anchor = input.hover.unwrap_or(viewport.center());
-            self.view.zoom_at(viewport, anchor, input.zoom);
+            // Trackpad rotate gesture (macOS delivers it; egui turns it into `Event::Rotate`).
+            if input.rotate != 0.0 {
+                self.rotate_view_by(anchor, input.rotate);
+            }
+            if input.zoom != 1.0 {
+                self.view.zoom_at(viewport, anchor, input.zoom);
+            }
         } else if input.hover.is_some_and(|p| viewport.contains(p)) && input.scroll != Vec2::ZERO {
             self.view.pan(input.scroll);
+        }
+        if input.rotate == 0.0 && !self.rotating {
+            self.rotate_raw = None;
         }
         let panning = (input.space || input.middle) && !stroking;
         if panning && input.primary_down && input.pointer_delta != Vec2::ZERO {
@@ -1798,9 +1922,9 @@ impl EskizApp {
         }
         if self.rotating {
             if input.primary_down && input.pointer_delta.x != 0.0 {
-                if let Some(p) = input.pointer {
-                    self.view.rotate_at(viewport, p, input.pointer_delta.x * 0.01);
-                }
+                // About the middle of the canvas area (not the pointer, which would swing the
+                // canvas around the pen), snapping to quarter turns like the gestures do.
+                self.rotate_view_by(viewport.center(), input.pointer_delta.x * 0.01);
             }
             if input.primary_released || !input.primary_down {
                 self.rotating = false;
@@ -1834,7 +1958,8 @@ impl EskizApp {
                 return;
             }
             if live {
-                // The pen lifted: the shape stays open for Edit Shape.
+                // The pen lifted: rasterize the dragged shape; it stays open for Edit Shape.
+                self.settle_shape_preview();
                 if let Some(e) = self.shape_edit.as_mut() {
                     e.live = false;
                 }
@@ -1997,6 +2122,7 @@ fn time_of(input: &FrameInput) -> f64 {
 
 impl eframe::App for EskizApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        crate::startup::frame_drawn();
         if !self.gallery_active() && self.three_d.is_none() {
             let dt = f64::from(ui.ctx().input(|i| i.stable_dt)).min(0.25);
             self.session.add_time_spent(dt);
@@ -2052,6 +2178,18 @@ impl eframe::App for EskizApp {
     fn on_exit(&mut self) {
         self.shut_down();
     }
+}
+
+/// One line of raw pen readings for the stroke trace and the Settings pressure pad.
+pub(crate) fn pen_reading_text(r: &PenReading) -> String {
+    let deg = |v: Option<f64>| v.map_or_else(|| "-".to_owned(), |v| format!("{:.0}", v.to_degrees()));
+    format!(
+        "pressure={} altitude={} azimuth={} roll={}",
+        r.pressure.map_or_else(|| "-".to_owned(), |p| format!("{p:.3}")),
+        deg(r.altitude),
+        deg(r.azimuth),
+        deg(r.roll),
+    )
 }
 
 impl EskizApp {
@@ -2444,6 +2582,7 @@ mod tests {
             pos: [x, 350.0],
             pressure: Some(p),
             tilt: Some([0.4, 0.0]),
+            roll: None,
             time: None,
         });
         let mut now = 1.0;

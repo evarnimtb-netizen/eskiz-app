@@ -26,6 +26,11 @@ thread_local! {
     static RECORD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
+/// True when `ESKIZ_TRACE_STROKES` is set (or in tests): lets callers skip building a detail string.
+pub fn enabled() -> bool {
+    env_on() || cfg!(test)
+}
+
 /// Log one event. `what` is `begin`, `commit`, `cancel` or `ignored`; `detail` says why and where.
 pub fn event(what: &str, detail: &str) {
     let on = env_on();

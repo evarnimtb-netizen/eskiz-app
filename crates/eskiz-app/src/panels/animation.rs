@@ -17,8 +17,6 @@ use eskiz_media::Quality;
 
 /// Width of a timeline thumbnail, in points.
 const THUMB_W: f32 = 84.0;
-/// Thumbnails drawn per UI frame. Each one is a full composite, so the rest wait for later frames.
-const THUMBS_PER_FRAME: usize = 2;
 
 fn mode_name(mode: PlaybackMode) -> &'static str {
     match mode {
@@ -189,28 +187,50 @@ impl EskizApp {
     }
 
     /// Draws up to [`THUMBS_PER_FRAME`] missing thumbnails, and asks for more frames until all exist.
-    fn anim_thumbs(&mut self, ctx: &egui::Context) {
+    /// Timeline thumbnails. Each is a full composite of its frame, so they are rendered on a
+    /// worker thread (one job per frame cache, in order) and only the small result image becomes a
+    /// texture here. Toggling the timeline on therefore costs the frame list and the canvas view,
+    /// not a composite per thumbnail on the UI thread.
+    pub(crate) fn anim_thumbs(&mut self, ctx: &egui::Context) {
         let Some(cache) = self.anim.cache.as_ref() else {
             return;
         };
-        let (w, h) = cache.frames.size();
-        let mut drawn = 0;
-        for i in 0..cache.frames.len() {
-            if self.anim.thumbs.get(i).is_some_and(Option::is_some) {
-                continue;
+        let edits = cache.edits;
+        if let Some(rx) = &self.anim.thumb_rx {
+            while let Ok((job_edits, i, image)) = rx.try_recv() {
+                if job_edits != edits {
+                    continue;
+                }
+                let tex = ctx.load_texture(format!("anim_thumb_{i}"), image, egui::TextureOptions::LINEAR);
+                if let Some(slot) = self.anim.thumbs.get_mut(i) {
+                    *slot = Some(tex);
+                }
             }
-            if drawn == THUMBS_PER_FRAME {
-                ctx.request_repaint();
-                break;
-            }
-            let rgba = cache.frames.render(i);
-            let image = thumb_image(&rgba, w, h, (THUMB_W * 2.0) as usize);
-            let tex = ctx.load_texture(format!("anim_thumb_{i}"), image, egui::TextureOptions::LINEAR);
-            if let Some(slot) = self.anim.thumbs.get_mut(i) {
-                *slot = Some(tex);
-            }
-            drawn += 1;
         }
+        let missing: Vec<usize> = (0..cache.frames.len())
+            .filter(|&i| self.anim.thumbs.get(i).is_some_and(Option::is_none))
+            .collect();
+        if missing.is_empty() || self.anim.thumb_job == Some(edits) {
+            return;
+        }
+        let frames = cache.frames.clone();
+        let (w, h) = frames.size();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            for i in missing {
+                let rgba = frames.render(i);
+                let image = thumb_image(&rgba, w, h, (THUMB_W * 2.0) as usize);
+                // The receiver is gone when the document changed: stop early.
+                if tx.send((edits, i, image)).is_err() {
+                    return;
+                }
+                repaint.request_repaint();
+            }
+        });
+        // Replacing the receiver ends any older job at its next send.
+        self.anim.thumb_rx = Some(rx);
+        self.anim.thumb_job = Some(edits);
     }
 
     fn animation_settings_window(&mut self, ctx: &egui::Context) {

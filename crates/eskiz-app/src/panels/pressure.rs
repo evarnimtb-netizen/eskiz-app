@@ -104,6 +104,17 @@ impl EskizApp {
             pal.text_dim,
         );
 
+        // Numbers for the live pen, so a tester can see what the tablet sends without drawing.
+        let readout = match self.pen.tracker.last_pose() {
+            Some(pose) => {
+                let end = if self.pen.frame.eraser { "eraser end" } else { "pen end" };
+                let touch = if self.pen.frame.down { "touching" } else { "hovering" };
+                format!("Live: {end}, {touch}, {}", crate::app::pen_reading_text(&crate::tablet::reading_from_pose(pose)))
+            }
+            None => "Live: no pen in range (hover the pen over the window)".to_owned(),
+        };
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(egui::RichText::new(readout).size(12.0).color(pal.text_dim)).wrap());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let changed = !self.prefs.pressure_curve.is_identity();

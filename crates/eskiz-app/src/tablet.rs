@@ -21,6 +21,8 @@ pub struct PenPose {
     pub pressure: Option<f32>,
     /// Tilt from perpendicular in the X and Y directions, radians (W3C `tiltX`/`tiltY`).
     pub tilt: Option<[f32; 2]>,
+    /// Barrel rotation in radians (Apple Pencil Pro, Wacom art pens), when the device reports it.
+    pub roll: Option<f32>,
     /// Device timestamp in seconds, on the device's own clock.
     pub time: Option<f64>,
 }
@@ -92,6 +94,7 @@ pub fn reading_from_pose(pose: &PenPose) -> PenReading {
         pressure: pose.pressure.filter(|p| p.is_finite()).map(|p| f64::from(p.clamp(0.0, 1.0))),
         altitude: tilt.map(|t| t.0),
         azimuth: tilt.map(|t| t.1),
+        roll: pose.roll.filter(|r| r.is_finite()).map(f64::from),
     }
 }
 
@@ -121,6 +124,11 @@ impl PenTracker {
     /// A pen has reported anything yet.
     pub fn seen(&self) -> bool {
         self.seen
+    }
+
+    /// The latest pose, while the pen is in range (for the Settings readout).
+    pub fn last_pose(&self) -> Option<&PenPose> {
+        self.last.as_ref()
     }
 
     /// The latest raw pressure, while the pen is in range.
@@ -285,12 +293,12 @@ mod tests {
     use super::*;
 
     fn pose(x: f32, y: f32, pressure: f32, time: Option<f64>) -> PenPose {
-        PenPose { pos: [x, y], pressure: Some(pressure), tilt: None, time }
+        PenPose { pos: [x, y], pressure: Some(pressure), tilt: None, roll: None, time }
     }
 
     #[test]
     fn pose_maps_pressure_and_tilt() {
-        let p = PenPose { pos: [1.0, 2.0], pressure: Some(0.4), tilt: Some([0.0, 0.0]), time: None };
+        let p = PenPose { pos: [1.0, 2.0], pressure: Some(0.4), tilt: Some([0.0, 0.0]), roll: None, time: None };
         let r = reading_from_pose(&p);
         assert!((r.pressure.unwrap() - 0.4).abs() < 1e-6);
         assert!((r.altitude.unwrap() - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
@@ -313,9 +321,9 @@ mod tests {
 
     #[test]
     fn missing_axes_stay_none() {
-        let p = PenPose { pos: [0.0, 0.0], pressure: None, tilt: None, time: None };
+        let p = PenPose { pos: [0.0, 0.0], pressure: None, tilt: None, roll: None, time: None };
         assert_eq!(reading_from_pose(&p), PenReading::default());
-        let p = PenPose { pos: [0.0, 0.0], pressure: Some(f32::NAN), tilt: Some([f32::NAN, 0.0]), time: None };
+        let p = PenPose { pos: [0.0, 0.0], pressure: Some(f32::NAN), tilt: Some([f32::NAN, 0.0]), roll: None, time: None };
         assert_eq!(reading_from_pose(&p), PenReading::default());
     }
 

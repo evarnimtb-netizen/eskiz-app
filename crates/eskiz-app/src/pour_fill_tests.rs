@@ -64,6 +64,19 @@ fn drag_to(h: &mut Headless, to: Pos2) {
     }
 }
 
+/// Step frames until the worker thread has delivered every requested preview.
+fn settle(h: &mut Headless) {
+    let start = std::time::Instant::now();
+    loop {
+        h.step();
+        if !h.app.pour_previewer.busy() {
+            return;
+        }
+        assert!(start.elapsed().as_secs() < 30, "the Pour Fill worker never finished");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 fn pixel(h: &Headless, x: usize, y: usize) -> [u8; 4] {
     h.app.session.doc.layer_at(0).unwrap().pixel(x, y)
 }
@@ -82,7 +95,9 @@ fn dwell_then_horizontal_drag_sets_the_threshold_and_release_commits() {
         }
         other => panic!("expected a preview, got {other:?}"),
     }
-    // The preview is already on the layer, but nothing is in the undo history yet.
+    // The preview is computed on a worker thread; once it has arrived it is on the layer,
+    // but nothing is in the undo history yet.
+    settle(&mut h);
     assert_eq!(pixel(&h, 1000, 500), [226, 84, 60, 255]);
     assert_eq!(h.app.session.undo_steps(), 2);
     h.render().save_png(&snapshot_dir().join("pour_fill_preview_dark.png")).unwrap();
@@ -94,6 +109,7 @@ fn dwell_then_horizontal_drag_sets_the_threshold_and_release_commits() {
         Some(DropPhase::Dropped { percent, .. }) => assert_eq!(percent, 70),
         other => panic!("{other:?}"),
     }
+    settle(&mut h);
     h.render().save_png(&snapshot_dir().join("pour_fill_threshold_dark.png")).unwrap();
 
     h.press(target + Vec2::new(40.0, 0.0), false);

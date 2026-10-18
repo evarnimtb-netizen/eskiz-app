@@ -178,6 +178,15 @@ pub(crate) struct AnimationUi {
     pub selected: Option<usize>,
     /// One thumbnail per frame. `None` until it is drawn.
     pub thumbs: Vec<Option<TextureHandle>>,
+    /// Thumbnails rendered on a worker thread: `(frame cache edits, frame, image)`.
+    pub(crate) thumb_rx: Option<Receiver<(u64, usize, egui::ColorImage)>>,
+    /// The frame cache (by `edits`) the running or finished thumbnail job renders.
+    pub(crate) thumb_job: Option<u64>,
+    /// The first canvas view after the timeline is turned on, rendered on a worker thread.
+    canvas_rx: Option<Receiver<(CanvasKey, egui::ColorImage)>>,
+    /// Composite the first view on the UI thread (the headless test harness sets this, so its
+    /// frames are deterministic; the window never does).
+    pub(crate) sync_first_view: bool,
     canvas: Option<TextureHandle>,
     pub(crate) canvas_key: Option<CanvasKey>,
     pub settings_open: bool,
@@ -208,6 +217,9 @@ impl EskizApp {
         match FrameList::build(snapshot) {
             Ok(frames) => {
                 self.anim.thumbs = vec![None; frames.len()];
+                // New frames: the old thumbnail job is stale (dropping its receiver stops it).
+                self.anim.thumb_rx = None;
+                self.anim.thumb_job = None;
                 self.anim.cache = Some(FrameCache { edits, frames, ids });
             }
             Err(_) => self.anim.cache = None,
@@ -266,6 +278,41 @@ impl EskizApp {
         }
         if self.session.is_stroking() && self.anim.canvas.is_some() {
             return;
+        }
+        // The very first view (the timeline was just turned on) is composited on a worker thread:
+        // until it arrives the ordinary canvas stays on screen, so the toggle does not hitch. Later
+        // updates (an edit, a new frame while playing) replace a view that exists, so they stay in step.
+        if self.anim.canvas.is_none() && !playing && !self.anim.sync_first_view {
+            if let Some(rx) = &self.anim.canvas_rx {
+                match rx.try_recv() {
+                    Ok((done, image)) => {
+                        self.anim.canvas_rx = None;
+                        self.anim.canvas = Some(ctx.load_texture("animation_canvas", image, TextureOptions::LINEAR));
+                        // A key that no longer matches is redrawn by the next call.
+                        self.anim.canvas_key = Some(done);
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => self.anim.canvas_rx = None,
+                }
+                if self.anim.canvas_rx.is_some() || self.anim.canvas.is_some() {
+                    return;
+                }
+            } else {
+                let frames = cache.frames.clone();
+                let (settings, space, job_key) = (settings.clone(), self.session.doc.colour_space, key);
+                let (tx, rx) = channel();
+                let repaint = ctx.clone();
+                std::thread::spawn(move || {
+                    let skins = onion_skins(&settings, &frames, frame, false);
+                    let mut rgba = render_with_onion(&frames, frame, &skins, settings.onion_blend_mode());
+                    crate::colour_management::apply_display_rgba8(space, &mut rgba);
+                    let (w, h) = frames.size();
+                    let _ = tx.send((job_key, ColorImage::from_rgba_unmultiplied([w, h], &rgba)));
+                    repaint.request_repaint();
+                });
+                self.anim.canvas_rx = Some(rx);
+                return;
+            }
         }
         let skins = onion_skins(settings, &cache.frames, frame, playing);
         let mut rgba = render_with_onion(&cache.frames, frame, &skins, settings.onion_blend_mode());
@@ -645,6 +692,70 @@ mod tests {
         let out = dir.join("animation_timeline.png");
         image.save_png(&out).unwrap();
         assert!(out.exists());
+    }
+
+    /// B9: turning the Frames timeline on used to cost one frame of 19 ms or more because two
+    /// full-canvas thumbnails were composited on the UI thread per frame. They are rendered on a
+    /// worker thread now: the toggle frame creates no thumbnail, and they arrive later.
+    #[test]
+    fn b9_toggling_the_timeline_renders_no_thumbnail_on_the_ui_thread() {
+        use crate::snapshot::Headless;
+        use eframe::egui::Vec2;
+        let (w, h) = (1536usize, 1024usize);
+        let mut doc = eskiz_core::Document::empty(w, h);
+        for i in 0..4u8 {
+            let mut px = vec![0u8; w * h * 4];
+            for y in 100..900 {
+                for x in (100 + 90 * usize::from(i))..(700 + 90 * usize::from(i)) {
+                    px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[40 + 50 * i, 90, 200 - 40 * i, 255]);
+                }
+            }
+            doc.push_layer(None, eskiz_core::Props::new(format!("Frame {}", i + 1)), None, px);
+        }
+        let mut hl = Headless::new(Vec2::new(1000.0, 640.0), doc, crate::app::Prefs::default());
+        hl.app.anim.sync_first_view = false;
+        for _ in 0..3 {
+            hl.render();
+        }
+        hl.app.session.doc.animation.frames_enabled = true;
+        let t0 = std::time::Instant::now();
+        hl.render();
+        let toggle_ms = t0.elapsed().as_secs_f64() * 1e3;
+        assert!(hl.app.anim.cache.is_some(), "the toggle frame builds the frame list");
+        assert_eq!(hl.app.anim.thumbs.len(), 4);
+        assert!(hl.app.anim.thumbs.iter().all(Option::is_none), "no thumbnail is composited on the toggle frame");
+        assert!(hl.app.anim.canvas().is_none(), "the first Frames view is not composited on the toggle frame either");
+        let start = std::time::Instant::now();
+        while !hl.app.anim.thumbs.iter().all(Option::is_some) {
+            hl.render();
+            assert!(start.elapsed().as_secs() < 30, "thumbnails never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // The UI-thread parts of the toggle, measured on their own (the headless frame also paints the whole window in software).
+        let mut doc2 = hl.app.session.doc.clone();
+        doc2.animation.frames_enabled = false;
+        let mut fresh = Headless::new(Vec2::new(1000.0, 640.0), doc2, crate::app::Prefs::default());
+        fresh.app.anim.sync_first_view = false;
+        fresh.render();
+        fresh.app.session.doc.animation.frames_enabled = true;
+        let ctx = egui::Context::default();
+        let t1 = std::time::Instant::now();
+        fresh.app.ensure_frames();
+        let build_ms = t1.elapsed().as_secs_f64() * 1e3;
+        let t2 = std::time::Instant::now();
+        fresh.app.anim_sync(&ctx);
+        let sync_ms = t2.elapsed().as_secs_f64() * 1e3;
+        let t3 = std::time::Instant::now();
+        fresh.app.anim_thumbs(&ctx);
+        let thumbs_ms = t3.elapsed().as_secs_f64() * 1e3;
+        let t4 = std::time::Instant::now();
+        while fresh.app.anim.canvas().is_none() {
+            fresh.app.anim_sync(&ctx);
+            assert!(t4.elapsed().as_secs() < 30, "the first Frames view never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        eprintln!("B9: UI thread on toggle: frame list {build_ms:.2} ms, canvas view {sync_ms:.2} ms, thumbnails (start worker) {thumbs_ms:.3} ms");
+        eprintln!("B9: timeline toggle frame {toggle_ms:.1} ms (1536x1024, 4 frames); thumbnails ready after {:.0} ms", start.elapsed().as_secs_f64() * 1e3);
     }
 
     #[test]

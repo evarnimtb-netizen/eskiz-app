@@ -131,14 +131,54 @@ pub fn snap_zoom(prev: f32, next: f32) -> (f32, bool) {
     }
 }
 
-/// Snap a rotation change: entering the 0-degree band lands exactly on 0.
+/// Rotation `r` wrapped into [-pi, pi).
+pub fn wrap_angle(r: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    if (-PI..PI).contains(&r) {
+        return r;
+    }
+    (r + PI).rem_euclid(TAU) - PI
+}
+
+/// Distance in radians from `r` to the nearest quarter turn (0, 90, 180, 270 degrees), and that quarter.
+fn nearest_quarter(r: f32) -> (f32, f32) {
+    let q = std::f32::consts::FRAC_PI_2;
+    let k = (r / q).round();
+    ((r - k * q).abs(), k * q)
+}
+
+/// Snap a rotation change: entering the band around 0, 90, 180 or 270 degrees lands exactly on it.
+/// Returns the new rotation and whether it snapped.
 pub fn snap_rotation(prev: f32, next: f32) -> (f32, bool) {
-    let inside = |r: f32| r.abs() <= ROTATION_SNAP;
-    if inside(next) && !inside(prev) {
-        (0.0, true)
+    let (d_prev, _) = nearest_quarter(prev);
+    let (d_next, quarter) = nearest_quarter(next);
+    if d_next <= ROTATION_SNAP && d_prev > ROTATION_SNAP {
+        (wrap_angle(quarter), true)
     } else {
         (next, false)
     }
+}
+
+/// A rotation being dragged: `raw` is the unsnapped angle the hand has turned to. Within the snap
+/// band of a quarter turn the view sits exactly on it (so the canvas "sticks" until the hand
+/// leaves the band); outside it follows `raw`. Returns the view rotation and whether it is snapped.
+pub fn sticky_rotation(raw: f32) -> (f32, bool) {
+    let (d, quarter) = nearest_quarter(raw);
+    if d <= ROTATION_SNAP {
+        (wrap_angle(quarter), true)
+    } else {
+        (wrap_angle(raw), false)
+    }
+}
+
+/// The rotation one quarter turn from `r`: `dir` is +1 for clockwise (Rotate 90 right) or -1 for
+/// counter-clockwise. From a rotation that is not on a quarter, it goes to the next quarter in
+/// that direction. The result is wrapped into [-pi, pi).
+pub fn quarter_turn(r: f32, dir: i32) -> f32 {
+    let q = std::f32::consts::FRAC_PI_2;
+    let steps = r / q;
+    let k = if dir >= 0 { (steps + 1e-3).floor() + 1.0 } else { (steps - 1e-3).ceil() - 1.0 };
+    wrap_angle(k * q)
 }
 
 #[cfg(test)]
@@ -277,5 +317,46 @@ mod tests {
         let mut v = View::default();
         v.pan(Vec2::new(5.0, -3.0));
         assert_eq!(v.offset, Vec2::new(5.0, -3.0));
+    }
+
+    #[test]
+    fn rotation_snaps_to_every_quarter_turn() {
+        let q = std::f32::consts::FRAC_PI_2;
+        let (r, snapped) = snap_rotation(q - 0.3, q - 0.05);
+        assert!(snapped);
+        assert!((r - q).abs() < 1e-6);
+        let (r, snapped) = snap_rotation(3.0, std::f32::consts::PI + 0.04);
+        assert!(snapped && (r.abs() - std::f32::consts::PI).abs() < 1e-5, "180 degrees wraps to -pi: {r}");
+        assert_eq!(snap_rotation(0.7, 0.8), (0.8, false));
+    }
+
+    #[test]
+    fn sticky_rotation_holds_a_quarter_until_the_hand_leaves_the_band() {
+        let q = std::f32::consts::FRAC_PI_2;
+        assert_eq!(sticky_rotation(0.05), (0.0, true));
+        let (r, snapped) = sticky_rotation(q + 0.07);
+        assert!(snapped && (r - q).abs() < 1e-6);
+        let (r, snapped) = sticky_rotation(q + 0.2);
+        assert!(!snapped && (r - (q + 0.2)).abs() < 1e-6);
+        // Unbounded raw angles wrap.
+        let (r, _) = sticky_rotation(2.0 * std::f32::consts::TAU + 0.5);
+        assert!((r - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn quarter_turns_go_to_the_next_quarter_in_the_direction() {
+        let q = std::f32::consts::FRAC_PI_2;
+        assert!((quarter_turn(0.0, 1) - q).abs() < 1e-5);
+        assert!((quarter_turn(0.0, -1) + q).abs() < 1e-5);
+        assert!((quarter_turn(0.3, 1) - q).abs() < 1e-5);
+        assert!(quarter_turn(0.3, -1).abs() < 1e-5);
+        assert!((quarter_turn(q, 1).abs() - std::f32::consts::PI).abs() < 1e-5);
+        assert!(quarter_turn(-q, 1).abs() < 1e-5);
+        // Four turns come back to upright, whichever way.
+        let mut r = 0.0;
+        for _ in 0..4 {
+            r = quarter_turn(r, -1);
+        }
+        assert!(r.abs() < 1e-4);
     }
 }

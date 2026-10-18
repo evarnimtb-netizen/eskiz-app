@@ -97,6 +97,59 @@ struct DropPreview {
     before: Layer,
 }
 
+/// A Pour Fill preview, copied out of the [`Session`] so it can be computed on another thread.
+pub struct PourPlan {
+    id: u64,
+    layer: Layer,
+    alpha_lock: bool,
+    selection: Option<Arc<Selection>>,
+    seed: (i64, i64),
+    threshold: f32,
+    colour: [u8; 3],
+}
+
+/// The pixels a Pour Fill would write (alpha lock and selection already applied).
+pub struct PourFilled {
+    id: u64,
+    pub rect: PixelRect,
+    pixels: PourPixels,
+}
+
+enum PourPixels {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+}
+
+impl PourPlan {
+    /// Run the flood fill. `None` when the seed is outside the layer.
+    pub fn compute(self) -> Option<PourFilled> {
+        let Self { id, layer, alpha_lock, selection, seed, threshold, colour } = self;
+        if layer.depth() == Depth::U16 {
+            let mut fill = flood_fill16(&layer, seed, threshold, colour)?;
+            let rect = fill.rect;
+            if alpha_lock {
+                eskiz_core::filters::keep_alpha_t(&layer.read_rect16(rect.x, rect.y, rect.w, rect.h), &mut fill.pixels);
+            }
+            if let Some(sel) = &selection {
+                let old = layer.read_rect16(rect.x, rect.y, rect.w, rect.h);
+                clip_to_selection(&old, &mut fill.pixels, rect, sel);
+            }
+            Some(PourFilled { id, rect, pixels: PourPixels::U16(fill.pixels) })
+        } else {
+            let mut fill = flood_fill(&layer, seed, threshold, colour)?;
+            let rect = fill.rect;
+            if alpha_lock {
+                keep_alpha(&layer.read_rect(rect.x, rect.y, rect.w, rect.h), &mut fill.pixels);
+            }
+            if let Some(sel) = &selection {
+                let old = layer.read_rect(rect.x, rect.y, rect.w, rect.h);
+                clip_to_selection(&old, &mut fill.pixels, rect, sel);
+            }
+            Some(PourFilled { id, rect, pixels: PourPixels::U8(fill.pixels) })
+        }
+    }
+}
+
 impl Session {
     pub fn new(doc: Document) -> Self {
         let history = History::for_canvas(doc.width, doc.height, doc.depth);
@@ -951,48 +1004,61 @@ impl Session {
     /// alpha-locked layer keeps its alpha and only takes the colour. Returns the rectangle to
     /// refresh (the union of the old and new previews).
     pub fn pour_fill_preview(&mut self, id: u64, seed: (i64, i64), threshold: f32, colour: [u8; 3]) -> Option<PixelRect> {
-        let restored = self.pour_fill_cancel();
+        let filled = self.pour_fill_plan(id, seed, threshold, colour).and_then(PourPlan::compute);
+        match filled {
+            Some(f) => self.pour_fill_apply(f),
+            None => self.pour_fill_cancel(),
+        }
+    }
+
+    /// Copy what a Pour Fill preview needs out of the session, so [`PourPlan::compute`] can run
+    /// on a worker thread while the window keeps drawing. The snapshot is the layer without any
+    /// earlier preview (the pristine copy), and costs a handful of `Arc` clones. `None` when the
+    /// fill is refused: stroking, a hidden or locked layer, no such layer.
+    pub fn pour_fill_plan(&self, id: u64, seed: (i64, i64), threshold: f32, colour: [u8; 3]) -> Option<PourPlan> {
         if self.is_stroking() || !self.can_paint(id) {
-            return restored;
+            return None;
         }
         let alpha_lock = self.doc.node(id)?.props.alpha_lock;
-        let layer = self.doc.layer_mut(id)?;
-        let before = layer.clone();
-        let rect = if layer.depth() == Depth::U16 {
-            let Some(mut fill) = flood_fill16(layer, seed, threshold, colour) else {
-                return restored;
-            };
-            let rect = fill.rect;
-            if alpha_lock {
-                eskiz_core::filters::keep_alpha_t(&layer.read_rect16(rect.x, rect.y, rect.w, rect.h), &mut fill.pixels);
-            }
-            if self.selection.is_active() {
-                let old = layer.read_rect16(rect.x, rect.y, rect.w, rect.h);
-                clip_to_selection(&old, &mut fill.pixels, rect, &self.selection);
-            }
-            layer.write_rect16(rect.x, rect.y, rect.w, rect.h, &fill.pixels);
-            rect
-        } else {
-            let Some(mut fill) = flood_fill(layer, seed, threshold, colour) else {
-                return restored;
-            };
-            let rect = fill.rect;
-            if alpha_lock {
-                keep_alpha(&layer.read_rect(rect.x, rect.y, rect.w, rect.h), &mut fill.pixels);
-            }
-            if self.selection.is_active() {
-                let old = layer.read_rect(rect.x, rect.y, rect.w, rect.h);
-                clip_to_selection(&old, &mut fill.pixels, rect, &self.selection);
-            }
-            layer.write_rect(rect.x, rect.y, rect.w, rect.h, &fill.pixels);
-            rect
+        let layer = match &self.drop_preview {
+            Some(p) if p.layer_id == id => p.before.clone(),
+            _ => self.doc.layer(id)?.clone(),
         };
+        let selection = self.selection.is_active().then(|| self.selection.clone());
+        Some(PourPlan { id, layer, alpha_lock, selection, seed, threshold, colour })
+    }
+
+    /// Put a computed Pour Fill on the layer as the (only) preview. Returns the rectangle to
+    /// refresh (the union of the old and new previews). A fill for a layer that is no longer
+    /// paintable, or a stroke that began meanwhile, is dropped (the old preview is restored).
+    pub fn pour_fill_apply(&mut self, filled: PourFilled) -> Option<PixelRect> {
+        let id = filled.id;
+        let same_layer = self.drop_preview.as_ref().is_some_and(|p| p.layer_id == id);
+        let mut restored = if same_layer { None } else { self.pour_fill_cancel() };
+        if self.is_stroking() || !self.can_paint(id) {
+            return restored.or_else(|| self.pour_fill_cancel());
+        }
+        let rect = filled.rect;
+        let layer = self.doc.layer_mut(id)?;
+        // The new fill is written over the preview already shown, so tiles the threshold change
+        // did not touch keep their memory (`write_rect` skips a tile that already holds the
+        // pixels). Only what the old preview covered and the new one does not goes back.
+        let (before, old_rect) = match self.drop_preview.take() {
+            Some(p) => (p.before, Some(p.rect)),
+            None => (layer.clone(), None),
+        };
+        if let Some(old) = old_rect {
+            for strip in rect_minus(old, rect) {
+                layer.copy_tiles_in_rect_from(&before, strip.x, strip.y, strip.w, strip.h);
+            }
+            restored = Some(old);
+        }
+        match &filled.pixels {
+            PourPixels::U8(p) => layer.write_rect(rect.x, rect.y, rect.w, rect.h, p),
+            PourPixels::U16(p) => layer.write_rect16(rect.x, rect.y, rect.w, rect.h, p),
+        }
         self.touch(id);
-        self.drop_preview = Some(DropPreview {
-            layer_id: id,
-            rect,
-            before,
-        });
+        self.drop_preview = Some(DropPreview { layer_id: id, rect, before });
         Some(restored.map_or(rect, |r| r.union(rect)))
     }
 
@@ -1381,6 +1447,27 @@ impl Session {
 /// Blend `after` back towards `before` by how far each pixel lies outside the selection. Both
 /// buffers are premultiplied RGBA8 covering `rect`. Pixels fully inside keep their new value and
 /// pixels fully outside keep their old one.
+/// The parts of `a` that `b` does not cover, as up to four rectangles.
+fn rect_minus(a: PixelRect, b: PixelRect) -> Vec<PixelRect> {
+    let (ax1, ay1) = (a.x + a.w, a.y + a.h);
+    let (bx1, by1) = (b.x + b.w, b.y + b.h);
+    let (ix0, iy0, ix1, iy1) = (a.x.max(b.x), a.y.max(b.y), ax1.min(bx1), ay1.min(by1));
+    if ix0 >= ix1 || iy0 >= iy1 {
+        return vec![a];
+    }
+    let mut out = Vec::new();
+    let mut push = |x0: usize, y0: usize, x1: usize, y1: usize| {
+        if x1 > x0 && y1 > y0 {
+            out.push(PixelRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+        }
+    };
+    push(a.x, a.y, ax1, iy0);
+    push(a.x, iy1, ax1, ay1);
+    push(a.x, iy0, ix0, iy1);
+    push(ix1, iy0, ax1, iy1);
+    out
+}
+
 fn clip_to_selection<T: Chan>(before: &[T], after: &mut [T], rect: PixelRect, sel: &Selection) {
     for row in 0..rect.h {
         for col in 0..rect.w {
@@ -1502,6 +1589,44 @@ mod tests {
         assert_eq!(s.flatten(), blank);
         s.redo().unwrap();
         assert_eq!(s.flatten(), filled);
+    }
+
+    #[test]
+    fn a_changed_pour_fill_preview_equals_a_fresh_one_and_undoes_cleanly() {
+        let (mut a, mut b) = (fresh(), fresh());
+        let (la, lb) = (base(&a), base(&b));
+        let blank = a.flatten();
+        // A wide preview, then a smaller one elsewhere with another colour and threshold.
+        a.pour_fill_preview(la, (5, 5), 0.5, [255, 0, 0]).unwrap();
+        a.pour_fill_preview(la, (40, 40), 0.1, [0, 255, 0]).unwrap();
+        b.pour_fill_preview(lb, (40, 40), 0.1, [0, 255, 0]).unwrap();
+        assert_eq!(a.flatten(), b.flatten(), "incremental preview = fresh preview");
+        a.pour_fill_commit().unwrap();
+        assert_eq!(a.undo_steps(), 1);
+        a.undo().unwrap();
+        assert_eq!(a.flatten(), blank);
+    }
+
+    #[test]
+    fn rect_minus_covers_exactly_what_is_left() {
+        let a = PixelRect { x: 10, y: 10, w: 30, h: 20 };
+        for b in [
+            PixelRect { x: 15, y: 15, w: 5, h: 5 },
+            PixelRect { x: 0, y: 0, w: 12, h: 12 },
+            PixelRect { x: 35, y: 25, w: 20, h: 20 },
+            PixelRect { x: 100, y: 100, w: 5, h: 5 },
+            PixelRect { x: 0, y: 0, w: 100, h: 100 },
+        ] {
+            let parts = rect_minus(a, b);
+            for y in 0..50 {
+                for x in 0..60 {
+                    let in_a = x >= a.x && x < a.x + a.w && y >= a.y && y < a.y + a.h;
+                    let in_b = x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
+                    let hits = parts.iter().filter(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h).count();
+                    assert_eq!(hits, usize::from(in_a && !in_b), "({x},{y}) a={a:?} b={b:?}");
+                }
+            }
+        }
     }
 
     #[test]

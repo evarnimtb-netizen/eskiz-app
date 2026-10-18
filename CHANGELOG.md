@@ -43,11 +43,27 @@ First public preview of Eskiz, a free, open source painting app for macOS, Windo
 - The Eskiz look is calmer: neutral graphite surfaces with 1 px hairlines and no shadows, neutral slider fills, switches and selections, quieter icons, and the orange accent only on the active tool or tab and the one primary button of a screen. Classic is unchanged.
 - The "Gallery" title and the canvas "Gallery" button have the same size, baseline and left edge, and on macOS both start clear of the window buttons.
 
+### Fixed (third release-candidate smoke test: interface and canvas)
+
+- Toasts ("Created Untitled copy", "Undo Stroke", ...) size to their text on one line up to 360 pt, wrap only between words beyond that, and never break inside a word; before, the anchored toast box was laid out at a sliver of a width.
+- The side bar's grab handle and its redo icon now sit the same distance (about 11 pt) from the top and bottom edge of the pill, in both looks and in the right-hand interface.
+- You can rotate the canvas on a Mac: twist two fingers on the trackpad, hold R and drag sideways (works with a pen or a mouse), Actions > Canvas > Rotate canvas 90 degrees left, Rotate canvas 90 degrees right and Reset rotation, or Cmd+Alt+Left, Cmd+Alt+Right and Cmd+Alt+0. The view sticks at 0, 90, 180 and 270 degrees (also for the two-finger touch gesture) and a toast shows the angle. Painting, selection, transform and the brush cursor follow the turned canvas.
+- Hold to Shape tolerates a slippery pen: the hold fires when the pen stays within a few points over the hold time even if it jitters or creeps, the pen's wandering during the hold is cut from the stroke, and jitter is smoothed away before corners are counted, so a hand-drawn circle comes out as a Circle (or Ellipse) instead of a polygon while real rectangles, triangles, polygons and zigzags stay polygons and polylines.
+- The first segment of a snapped open polyline no longer tapers to a hairline (shapes ignore the brush's start taper).
+
+### Fixed (input, lag and Windows start-up)
+
+- **Pen tablets on macOS.** Wacom-style tablets and an iPad with an Apple Pencil through Sidecar now give pressure, tilt, barrel rotation and the eraser end (before, the pen acted as a mouse with fixed pressure). Eskiz reads the tablet events macOS sends next to the mouse events; mouse and trackpad are unchanged. Settings > pressure curve shows the live pen readings, and `ESKIZ_TRACE_STROKES=1` logs them per stroke (see Troubleshooting).
+- **Pour Fill no longer lags on big canvases.** Dragging sideways after the drop changes the threshold; the fill is now computed on a worker thread (newest request wins) and written into the layer only where the preview changed, so the window keeps drawing. The exact fill at the final threshold is made once when you let go. On a 4096 px canvas one step used to block the window for about 150 ms.
+- **Moving or rotating a Hold to Shape shape no longer lags.** While you drag a handle (or the pen is still down) the shape is a light vector preview; it is painted into the layer once on release, still as one "Stroke" undo step. A frame used to take about 140 ms at 4096 px.
+- **Windows: the program starts on a PC without the Visual C++ Redistributable.** eskiz.exe is built with the static C runtime and CI checks that it imports no VCRUNTIME, MSVCP or api-ms-win-crt DLL.
+- **Windows: start-up failures are no longer silent.** Eskiz writes `startup.log` and `panic-*.txt` to `%LOCALAPPDATA%\Eskiz\logs` and shows a message box with the reason and that folder. A panic or error in the graphics start-up falls back to OpenGL, the chosen adapter and backend are logged, and if a graphics driver ended the process without a message, the next start tries DirectX 12 only, then OpenGL. `eskiz.exe --version`, `--selftest` and `--diagnose` print in the terminal that started them. README and release notes explain Extract All and the SmartScreen "More info, Run anyway" step.
+
 ### Known issues
 
 - **Builds are not code-signed.** Your system will warn you the first time you open Eskiz.
   - macOS: Control-click Eskiz, choose Open, and confirm. If that does not work, open System Settings, Privacy & Security and choose Open Anyway, or run `xattr -dr com.apple.quarantine /Applications/Eskiz.app`.
-  - Windows: in the SmartScreen dialog, choose More info, then Run anyway.
+  - Windows: extract the whole zip (Extract All) before running eskiz.exe. In the SmartScreen dialog, choose More info, then Run anyway.
   - Linux: make the AppImage executable with `chmod +x`.
   - Android: allow installing apps from your browser or file manager when asked.
 - **Windows has not yet been tested on real hardware.** The Windows build passes the automated tests and self-test on GitHub's Windows runners only.

@@ -1,6 +1,16 @@
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
 
+# Windows (MSVC): link the C runtime statically. Without this eskiz.exe imports VCRUNTIME140.dll and the
+# api-ms-win-crt-* DLLs, which a clean Windows PC may not have (the Visual C++ Redistributable), and a
+# double click then does nothing useful. `packaging/windows/check-imports.py` checks the result in CI.
+# (Cargo build scripts using the `cc` crate follow this flag too.)
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [build]
 # Incremental caches grew to ~19 GB on a nearly full disk; full recompiles of changed crates are fast enough.
 incremental = false

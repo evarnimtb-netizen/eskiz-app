@@ -867,6 +867,20 @@ impl Layer {
                 if self.is_empty_tile(tx, ty) && (py0..py1).all(|r| src(r).iter().all(|b| b.is_zero())) {
                     continue;
                 }
+                // A tile that already holds exactly these pixels is left alone: it keeps sharing
+                // memory with undo snapshots, and a repeated write (a Pour Fill preview that
+                // changes by one percent) copies only the tiles that differ.
+                if let Some(existing) = self.tile(tx, ty) {
+                    let have = T::slice(existing);
+                    let same = (py0..py1).all(|row| {
+                        let o = ((row % TILE) * TILE + px0 % TILE) * 4;
+                        let s = src(row);
+                        have[o..o + s.len()] == *s
+                    });
+                    if same {
+                        continue;
+                    }
+                }
                 let tile = T::slice_mut(self.tile_mut(tx, ty));
                 for row in py0..py1 {
                     let o = ((row % TILE) * TILE + px0 % TILE) * 4;

@@ -46,6 +46,101 @@ pub(crate) struct DropState {
     pub phase: DropPhase,
 }
 
+/// What the previewer is asked to show.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PourRequest {
+    seed: (i64, i64),
+    percent: i32,
+    colour: [u8; 3],
+}
+
+/// Runs Pour Fill previews on a worker thread, one at a time, newest request wins.
+///
+/// A flood fill of a 4K layer takes tens to hundreds of milliseconds, and the preview used to
+/// run it on the UI thread for every 1% the pointer moved. Now the UI thread only copies a few
+/// `Arc`s ([`crate::session::Session::pour_fill_plan`]), the fill runs on a thread, and the frame
+/// that finds the result ready writes it into the layer. While a fill runs, further requests
+/// collapse into the newest one.
+#[derive(Default)]
+pub(crate) struct PourPreviewer {
+    inflight: Option<std::sync::mpsc::Receiver<Option<crate::session::PourFilled>>>,
+    /// What the running job computes.
+    running: Option<PourRequest>,
+    /// The newest request that has not started yet.
+    pending: Option<PourRequest>,
+    /// What the layer shows now.
+    shown: Option<PourRequest>,
+}
+
+impl PourPreviewer {
+    /// Ask for a preview. Ignored when it is what is shown or running already.
+    fn request(&mut self, req: PourRequest) {
+        if self.shown == Some(req) || self.running == Some(req) {
+            self.pending = None;
+        } else {
+            self.pending = Some(req);
+        }
+    }
+
+    /// Forget everything (the gesture ended); a running job's result is dropped.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// One frame: apply a finished fill, then start the newest pending one. Returns the rectangle
+    /// to refresh.
+    fn pump(&mut self, ctx: &egui::Context, session: &mut crate::session::Session, layer: u64) -> Option<crate::history::PixelRect> {
+        let mut refresh = None;
+        if let Some(rx) = &self.inflight {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.inflight = None;
+                    let req = self.running.take();
+                    refresh = match result {
+                        Some(filled) => {
+                            self.shown = req;
+                            session.pour_fill_apply(filled)
+                        }
+                        None => None,
+                    };
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.inflight = None;
+                    self.running = None;
+                }
+            }
+        }
+        if self.inflight.is_none() {
+            if let Some(req) = self.pending.take() {
+                let threshold = req.percent as f32 / 100.0;
+                if let Some(plan) = session.pour_fill_plan(layer, req.seed, threshold, req.colour) {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let repaint = ctx.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(plan.compute());
+                        repaint.request_repaint();
+                    });
+                    self.inflight = Some(rx);
+                    self.running = Some(req);
+                }
+            }
+        }
+        refresh
+    }
+
+    /// A fill is running or waiting to start.
+    #[cfg(test)]
+    pub(crate) fn busy(&self) -> bool {
+        self.inflight.is_some() || self.pending.is_some()
+    }
+
+    /// The percent the layer shows, for the final exact fill on release.
+    fn shown_percent(&self) -> Option<i32> {
+        self.shown.map(|r| r.percent)
+    }
+}
+
 impl EskizApp {
     /// The colour circle started to be dragged.
     pub(crate) fn begin_pour_fill(&mut self, pos: Pos2) {
@@ -86,6 +181,7 @@ impl EskizApp {
         (x >= 0 && y >= 0 && x < d.width as i64 && y < d.height as i64).then_some((x, y))
     }
 
+    /// Show the fill now, on this thread (the final, exact fill when the button is released).
     fn drop_preview(&mut self, seed: (i64, i64), percent: i32, colour: [u8; 3]) {
         let threshold = percent as f32 / 100.0;
         if let Some(rect) = self.session.pour_fill_preview(self.active, seed, threshold, colour) {
@@ -116,7 +212,7 @@ impl EskizApp {
                 } else if self.now - since >= DWELL_SECS {
                     if let Some(seed) = self.drop_seed(ctx, pos) {
                         let percent = (DEFAULT_THRESHOLD * 100.0).round() as i32;
-                        self.drop_preview(seed, percent, st.colour);
+                        self.pour_previewer.request(PourRequest { seed, percent, colour: st.colour });
                         st.phase = DropPhase::Dropped { seed_screen: pos, seed, percent };
                     }
                 }
@@ -124,11 +220,16 @@ impl EskizApp {
             DropPhase::Dropped { seed_screen, seed, percent } => {
                 let now_percent = (threshold_for_drag(pos.x - seed_screen.x) * 100.0).round() as i32;
                 if now_percent != percent {
-                    self.drop_preview(seed, now_percent, st.colour);
+                    self.pour_previewer.request(PourRequest { seed, percent: now_percent, colour: st.colour });
                     st.phase = DropPhase::Dropped { seed_screen, seed, percent: now_percent };
                 }
             }
         }
+        let mut previewer = std::mem::take(&mut self.pour_previewer);
+        if let Some(rect) = previewer.pump(ctx, &mut self.session, self.active) {
+            self.refresh(rect);
+        }
+        self.pour_previewer = previewer;
         self.draw_pour_fill(ctx, &st);
         ctx.request_repaint();
         self.pour_fill = Some(st);
@@ -136,8 +237,14 @@ impl EskizApp {
 
     /// The button was released (or the pointer vanished).
     fn finish_pour_fill(&mut self, ctx: &egui::Context, st: DropState, pos: Option<Pos2>, released: bool) {
+        let shown = self.pour_previewer.shown_percent();
+        self.pour_previewer.reset();
         match st.phase {
-            DropPhase::Dropped { .. } if released => {
+            DropPhase::Dropped { seed, percent, .. } if released => {
+                // The exact fill at the final threshold, on this thread, once.
+                if shown != Some(percent) || !self.session.has_pour_fill_preview() {
+                    self.drop_preview(seed, percent, st.colour);
+                }
                 if let Some(rect) = self.session.pour_fill_commit() {
                     self.refresh(rect);
                     self.note_colour_used(st.colour);
@@ -199,6 +306,36 @@ impl EskizApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_worker_preview_arrives_and_equals_the_synchronous_one() {
+        use crate::session::Session;
+        let mk = || {
+            let mut doc = crate::document::Document::new(300, 200);
+            doc.layer_at_mut(0).unwrap().write_rect(100, 0, 4, 200, &vec![255u8; 4 * 200 * 4]);
+            Session::new(doc)
+        };
+        let (mut a, mut b) = (mk(), mk());
+        let id = |s: &Session| s.doc.layer_ids()[0];
+        let (ia, ib) = (id(&a), id(&b));
+        let ctx = egui::Context::default();
+        let mut p = PourPreviewer::default();
+        let req = PourRequest { seed: (10, 10), percent: 40, colour: [255, 0, 0] };
+        // Two quick requests: the first may run, the newest wins.
+        p.request(PourRequest { percent: 10, ..req });
+        p.request(req);
+        let start = std::time::Instant::now();
+        while p.shown != Some(req) {
+            p.pump(&ctx, &mut a, ia);
+            assert!(start.elapsed().as_secs() < 20, "worker result never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        b.pour_fill_preview(ib, (10, 10), 0.40, [255, 0, 0]).unwrap();
+        assert_eq!(a.flatten(), b.flatten());
+        assert!(a.has_pour_fill_preview());
+        p.reset();
+        assert_eq!(p.shown_percent(), None);
+    }
 
     #[test]
     fn threshold_starts_at_half_and_moves_one_percent_per_two_points() {

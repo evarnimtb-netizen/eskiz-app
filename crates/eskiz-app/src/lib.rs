@@ -105,6 +105,8 @@ mod rc2_tests;
 #[cfg(test)]
 mod rc3_tests;
 #[cfg(test)]
+mod rc5_tests;
+#[cfg(test)]
 mod rc3_look_tests;
 #[cfg(test)]
 mod qa1_tests;
@@ -126,6 +128,9 @@ pub mod snapshot;
 mod qa_capture;
 pub mod tablet;
 pub mod tablet_backend;
+pub mod startup;
+#[cfg(any(target_os = "macos", test))]
+pub mod tablet_mac;
 pub mod text_tool;
 pub mod theme;
 pub mod timelapse;
@@ -229,9 +234,12 @@ pub fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let parsed = parse_args(&args);
     // Commands that print: on Windows the release exe is a GUI program with no console of its own.
-    if !matches!(parsed, Ok(Command::Gui { .. } | Command::Icons)) {
+    if matches!(parsed, Ok(Command::Gui { .. } | Command::Icons)) {
+        startup::install_panic_hook();
+    } else {
         attach_parent_console();
     }
+    let gui = matches!(parsed, Ok(Command::Gui { .. } | Command::Icons));
     let result = match parsed {
         Ok(Command::Help) => {
             println!("{USAGE}");
@@ -253,6 +261,9 @@ pub fn run() {
     };
     if let Err(e) = result {
         eprintln!("eskiz: {e}");
+        if gui {
+            startup::report_failure(&e);
+        }
         std::process::exit(1);
     }
 }
@@ -317,6 +328,7 @@ fn attach_parent_console() {}
 /// first, so a missing package gives a message and exit status 2, not a panic. A panic before
 /// the app has been created is reported the same way; a panic after that is passed on unchanged.
 fn open_window(start: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    startup::init(&std::env::args().skip(1).collect::<Vec<_>>());
     #[cfg(target_os = "linux")]
     {
         if let Err(message) = linux_runtime::preflight() {
@@ -326,7 +338,12 @@ fn open_window(start: impl FnOnce() -> Result<(), String>) -> Result<(), String>
     }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(start)) {
         Ok(result) => result,
-        Err(payload) if renderer::window_created() => std::panic::resume_unwind(payload),
+        Err(payload) if renderer::window_created() => {
+            // The panic hook has written the report. Say so, then let the process end.
+            let summary = startup::last_panic_summary().unwrap_or_else(|| "unknown panic".to_owned());
+            startup::report_failure(&format!("Eskiz stopped unexpectedly: {summary}"));
+            std::panic::resume_unwind(payload)
+        }
         Err(payload) => {
             let detail = payload
                 .downcast_ref::<&str>()
@@ -334,6 +351,7 @@ fn open_window(start: impl FnOnce() -> Result<(), String>) -> Result<(), String>
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_owned());
             eprintln!("eskiz: could not start the window: {detail}");
+            startup::report_failure(&format!("The window could not be created: {detail}"));
             #[cfg(target_os = "linux")]
             {
                 if let Err(message) = linux_runtime::preflight() {
