@@ -106,6 +106,8 @@ mod rc2_tests;
 mod rc3_tests;
 #[cfg(test)]
 mod rc3_look_tests;
+#[cfg(test)]
+mod qa1_tests;
 pub mod stroke_trace;
 pub mod storage;
 pub mod studio;

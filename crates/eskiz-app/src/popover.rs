@@ -12,6 +12,8 @@ use crate::theme::{self, Palette};
 
 /// Open and close duration, seconds.
 pub const OPEN_SECS: f32 = 0.15;
+/// Least distance between a popover and the window edge.
+pub const EDGE_GAP: f32 = 12.0;
 
 /// What a notice popover says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +81,22 @@ pub struct Visible {
     pub anchor: Rect,
     /// 0 (closed) to 1 (fully open), eased.
     pub ease: f32,
+    /// The raw animation progress, 0 to 1 (linear; the close fades with it so it does not end in a cut).
+    pub t: f32,
+}
+
+impl Visible {
+    /// Opacity of the panel surface (frame, shadow, nub): solid early, so the canvas never shows through the
+    /// panel while its content is still fading in.
+    pub fn surface_alpha(&self) -> f32 {
+        let x = (self.t / 0.35).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    }
+
+    /// Opacity of the content on the surface.
+    pub fn content_alpha(&self) -> f32 {
+        self.t.clamp(0.0, 1.0)
+    }
 }
 
 /// Popover state. Keep one in the app.
@@ -144,6 +162,7 @@ impl Popovers {
             panel: anchor.panel,
             anchor: anchor.rect,
             ease: ease_out(t),
+            t,
         })
     }
 
@@ -177,19 +196,36 @@ pub fn ease_out(t: f32) -> f32 {
 pub fn draw(ctx: &egui::Context, pal: &Palette, vis: Visible, body: impl FnOnce(&mut egui::Ui)) -> Rect {
     let screen = ctx.content_rect();
     // Never wider than the window minus its margins.
-    let width = vis.panel.width().min((screen.width() - 16.0).max(200.0));
+    // The frame adds 12 pt of margin on each side of `width`.
+    let width = vis.panel.width().min((screen.width() - 2.0 * EDGE_GAP - 24.0).max(200.0));
     // Room below the button: the 12 px gap, the frame's 24 px of margin and an 8 px edge.
-    let max_h = (screen.height() - (vis.anchor.bottom() - screen.top()) - 46.0).clamp(220.0, 600.0);
-    let left = (vis.anchor.center().x - width / 2.0).clamp(screen.left() + 8.0, screen.right() - width - 8.0);
+    // The room ends above a bottom panel (the Frames timeline), whose controls the popover must not cover.
+    let floor = ctx.data(|d| d.get_temp::<f32>(Id::new("canvas-bottom"))).unwrap_or(screen.bottom()).min(screen.bottom());
+    let max_h = (floor - vis.anchor.bottom() - 52.0).clamp(220.0, 600.0);
+    // 12 pt from the window edge, and clear of the tool sidebar when the window is wide enough for both.
+    let (mut min_left, mut max_left) = (screen.left() + EDGE_GAP, (screen.right() - width - 24.0 - EDGE_GAP).max(screen.left() + EDGE_GAP));
+    if let Some((on_right, clear)) = ctx.data(|d| d.get_temp::<(bool, f32)>(Id::new("sidebar-clear"))) {
+        if on_right {
+            if clear - width - 24.0 >= min_left {
+                max_left = max_left.min(clear - width - 24.0);
+            }
+        } else if clear <= max_left {
+            min_left = min_left.max(clear);
+        }
+    }
+    let left = (vis.anchor.center().x - width / 2.0).max(min_left).min(max_left);
     // Slide down 8 points while opening.
     let top = vis.anchor.bottom() + 12.0 - (1.0 - vis.ease) * 8.0;
     let out = Area::new(Id::new(("popover", vis.panel.id())))
         .order(Order::Foreground)
         .fixed_pos(egui::pos2(left, top))
         .show(ctx, |ui| {
-            ui.set_opacity(vis.ease);
             ui.set_max_width(width);
-            theme::panel_frame(pal).show(ui, |ui| {
+            let sa = vis.surface_alpha();
+            let mut frame = theme::panel_frame(pal).fill(pal.panel.gamma_multiply(sa)).stroke(Stroke::new(1.0, pal.hairline.gamma_multiply(sa)));
+            frame.shadow.color = frame.shadow.color.gamma_multiply(sa);
+            frame.show(ui, |ui| {
+                ui.set_opacity(vis.content_alpha());
                 let inner_w = width - 24.0;
                 ui.set_width(inner_w);
                 ui.set_max_height(max_h);
@@ -220,16 +256,16 @@ pub fn draw(ctx: &egui::Context, pal: &Palette, vis: Visible, body: impl FnOnce(
             tip,
             egui::pos2(nub_x + 7.0, base_y),
         ],
-        pal.panel,
+        pal.panel.gamma_multiply(vis.surface_alpha()),
         Stroke::NONE,
     )));
     painter.line_segment(
         [egui::pos2(nub_x - 7.0, base_y), tip],
-        Stroke::new(1.0, pal.hairline),
+        Stroke::new(1.0, pal.hairline.gamma_multiply(vis.surface_alpha())),
     );
     painter.line_segment(
         [tip, egui::pos2(nub_x + 7.0, base_y)],
-        Stroke::new(1.0, pal.hairline),
+        Stroke::new(1.0, pal.hairline.gamma_multiply(vis.surface_alpha())),
     );
     rect
 }

@@ -270,6 +270,8 @@ impl Prefs {
 pub struct Toast {
     pub text: String,
     pub until: f64,
+    /// When it appeared, for the fade-in.
+    pub since: f64,
 }
 
 /// Touch input for one frame, in the order egui reported it.
@@ -690,6 +692,7 @@ impl EskizApp {
         self.toast = Some(Toast {
             text: text.into(),
             until: self.now + secs,
+            since: self.now,
         });
     }
 
@@ -1634,12 +1637,15 @@ impl EskizApp {
         let ctx = ui.ctx().clone();
         let vp = ui.max_rect();
         self.viewport = vp;
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("canvas-bottom"), vp.bottom()));
         let (cw, ch) = self.canvas_size();
         // Panels such as the timeline strip are measured a frame late, so fit once the height has settled.
         let settled = (vp.height() - self.fit_height_seen).abs() < 0.5;
         self.fit_height_seen = vp.height();
         self.on_viewport_resize(vp);
-        if self.need_fit && vp.width() > 1.0 && settled && !self.session.is_stroking() {
+        // Fit on every frame until settled, so the first frame after opening a document is already fitted
+        // (waiting left it at 100 % for two frames: a flash of a tiny canvas); the settled frame refits.
+        if self.need_fit && vp.width() > 1.0 && !self.session.is_stroking() {
             let inner = Rect::from_min_max(
                 vp.min + Vec2::new(16.0 + self.safe.left, FIT_TOP + self.safe.top),
                 vp.max - Vec2::new(16.0 + self.safe.right, 16.0 + self.safe.bottom),
@@ -1648,7 +1654,7 @@ impl EskizApp {
             v.offset += inner.min - vp.min;
             self.view = v;
             self.fitted_view = Some(v);
-            self.need_fit = false;
+            self.need_fit = !settled;
         }
         let mut input = self.read_input(ui);
         if self.studio.is_some() {

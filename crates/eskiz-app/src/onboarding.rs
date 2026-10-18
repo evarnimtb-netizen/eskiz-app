@@ -47,7 +47,7 @@ pub(crate) mod copy {
     pub fn welcome_title() -> String {
         format!("Welcome to {APP_NAME}")
     }
-    pub const WELCOME_BODY: &str = "Paint, layer and export artwork with touch, pen or mouse. The tour takes about a minute, and you can skip it at any time.";
+    pub const WELCOME_BODY: &str = "Paint, layer and export artwork with touch, pen or mouse. The tour takes about a minute. Skip it whenever you like.";
     pub const SHOW_AROUND: &str = "Show me around";
     pub const SKIP: &str = "Skip";
     pub const SAMPLE_TITLE: &str = "Try a sample";
@@ -589,7 +589,10 @@ impl EskizApp {
                 self.toggle_menu(crate::gallery::Menu::NewCanvas, anchor);
             }
         }
-        ctx.request_repaint();
+        // Repaint only when the card changed something (a click already repaints; nothing here animates).
+        if pick != Pick::None || focus {
+            ctx.request_repaint();
+        }
     }
 
     /// Per frame on the canvas: the coach marks and the closing card.
@@ -622,11 +625,18 @@ impl EskizApp {
         let cmd = cmd_key();
         let g = copy::Gestures { touch_painting: self.prefs.touch_painting, undo_gestures: self.prefs.undo_gestures };
         let focus = self.tour.take_focus();
+        // The mark fades in over 0.15 s from the frame its step first shows (no fade under reduced motion).
+        let since = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(Id::new(format!("tour-mark-since-{step:?}")), || self.now));
+        let fade = if self.reduce_motion() { 1.0 } else { ((self.now - since) / 0.15).clamp(0.0, 1.0) as f32 };
+        if fade < 1.0 {
+            ctx.request_repaint();
+        }
         let mut finished = false;
         let mut skipped = false;
         if step == Step::Done {
             let mut rect = Rect::NOTHING;
             egui::Area::new(Id::new("tour-mark")).order(Order::Tooltip).anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -32.0)).show(ctx, |ui| {
+                ui.set_opacity(fade);
                 let frame = theme::panel_frame(&pal).inner_margin(Margin::same(16)).show(ui, |ui| {
                     ui.set_width(MARK_W);
                     ui.add(egui::Label::new(RichText::new(copy::DONE_TITLE).size(18.0).strong().color(pal.text)).wrap());
@@ -668,6 +678,7 @@ impl EskizApp {
         let n = step.mark_number().unwrap_or(1);
         let mut rect = Rect::NOTHING;
         egui::Area::new(Id::new("tour-mark")).order(Order::Tooltip).pivot(pivot).fixed_pos(anchor).show(ctx, |ui| {
+            ui.set_opacity(fade);
             let frame = theme::panel_frame(&pal).inner_margin(Margin::same(14)).show(ui, |ui| {
                 ui.set_width(MARK_W);
                 ui.horizontal(|ui| {

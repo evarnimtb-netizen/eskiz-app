@@ -994,7 +994,7 @@ impl EskizApp {
                 }
             });
         }
-        let vis = Visible { panel: Panel::Notice(Notice::Gallery), anchor, ease: popover::ease_out(t) };
+        let vis = Visible { panel: Panel::Notice(Notice::Gallery), anchor, ease: popover::ease_out(t), t };
         let mut choice: Option<(usize, usize)> = None;
         let mut import: Option<PathBuf> = None;
         let mut sort: Option<SortMode> = None;
@@ -1002,6 +1002,11 @@ impl EskizApp {
             let s = ctx.content_rect().size() * ctx.pixels_per_point();
             ((s.x.round() as usize).clamp(256, MAX_SIDE), (s.y.round() as usize).clamp(256, MAX_SIDE))
         };
+        // The gallery has no tool sidebar: forget the canvas screen's clearance and floor.
+        ctx.data_mut(|d| {
+            d.remove::<(bool, f32)>(Id::new("sidebar-clear"));
+            d.remove::<f32>(Id::new("canvas-bottom"));
+        });
         let rect = popover::draw(ctx, gp, vis, |ui| {
             dark_widgets(ui, gp);
             match menu {

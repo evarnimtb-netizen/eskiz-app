@@ -175,14 +175,22 @@ fn library_with(n: usize) -> (Library, PathBuf) {
     let _ = std::fs::remove_dir_all(&dir);
     let lib = Library::at(&dir);
     let titles = ["Harbour at dusk", "Study in green", "Night sky"];
+    // The captions show the canvas size from the document's metadata: use real, different sizes (the art itself is
+    // drawn small, as in the gallery tests, and the metadata reports the full size).
+    let sizes = [(2048usize, 1536usize), (1600, 1600), (3840, 2160)];
     for i in 0..n {
-        lib.save(&storage::new_id(), titles[i % 3], &art(192, 144, i)).unwrap();
+        let (w, h) = sizes[i % 3];
+        lib.save(&storage::new_id(), titles[i % 3], &art(w / 8, h / 8, i)).unwrap();
         std::thread::sleep(Duration::from_millis(20));
+    }
+    for (i, e) in lib.list().iter().rev().enumerate() {
+        let (w, h) = sizes[i % 3];
+        std::fs::write(dir.join(format!("{}.meta", e.id)), format!("{w}\n{h}\n{}\n", e.title)).unwrap();
     }
     (lib, dir)
 }
 
-fn frames_doc() -> eskiz_core::Document {
+pub(crate) fn frames_doc() -> eskiz_core::Document {
     let mut doc = eskiz_core::Document::empty(160, 120);
     for (i, rgb) in [[230u8, 60, 60], [60, 200, 90], [60, 110, 230], [240, 190, 40]].iter().enumerate() {
         let mut px = vec![0u8; 160 * 120 * 4];
@@ -195,6 +203,8 @@ fn frames_doc() -> eskiz_core::Document {
         doc.push_layer(None, eskiz_core::Props::new(format!("Frame {}", i + 1)), None, px);
     }
     doc.animation.frames_enabled = true;
+    // Onion skins are on by default; the plain frame shots show none (the onion shot turns them on).
+    doc.animation.onion_enabled = false;
     doc
 }
 
@@ -262,6 +272,15 @@ fn brush_by_set(h: &mut Headless, set: usize, idx: usize) {
     let b = &s.brushes[idx.min(s.brushes.len() - 1)];
     let t = h.app.tool.index();
     h.app.tool_brushes[t] = b.id.clone();
+}
+
+/// The tour at its first coach mark (Paint), started the way the app starts it: the gate opens on an empty gallery.
+fn tour_at_paint(h: &mut Headless) {
+    use crate::onboarding::{Gate, Tour};
+    h.app.tour = Tour::at_startup(None, false, false);
+    h.app.tour.poll(Gate { gallery: true, recovery_open: false, library_empty: Some(true) });
+    h.app.tour.show_around();
+    h.app.tour.sample_opened();
 }
 
 fn open(h: &mut Headless, panel: Panel) {
@@ -358,10 +377,15 @@ fn run_seq(rec: &mut Rec, s: &Seq, v: &Variant) -> Result<(), String> {
     let mut frames = Vec::new();
     let mut times: Vec<Duration> = Vec::new();
     let mut quiet = 0;
+    // Index of the last frame that differs from the one before it: the frames the user waits for.
+    let mut last_change = 0usize;
     let theme = if v.light { "light" } else { "dark" };
     for i in 0..MAX_FRAMES {
         (s.hook)(&mut h, i);
         let img = h.render_at(1.0);
+        if frames.last().is_some_and(|prev: &crate::snapshot::Image| prev.rgba != img.rgba) {
+            last_change = i;
+        }
         times.push(h.last_update);
         rec.save(&img, &format!("{name}_f{i:02}.png"));
         frames.push(img);
@@ -395,7 +419,7 @@ fn run_seq(rec: &mut Rec, s: &Seq, v: &Variant) -> Result<(), String> {
         v.identity.key(),
         v.size.x as u32,
         v.size.y as u32,
-        frames.len()
+        last_change + 1
     );
     if let Some(d) = dir {
         let _ = std::fs::remove_dir_all(d);
@@ -523,6 +547,18 @@ fn shots() -> Vec<Shot> {
             let pts: Vec<Pos2> = (0..30).map(|i| screen_of(h, 240.0 + f64::from(i) * 12.0, 180.0 + f64::from(i) * 10.0)).collect();
             drag(h, &pts);
         }),
+        s!("painting", "eraser_over_colour", Canvas, "An eraser stroke through a coloured layer above the sample.", "Add a layer, fill it, Eraser tool, drag a diagonal.", |h| {
+            h.app.session.add_layer(None);
+            let id = *layer_ids(h).last().unwrap();
+            h.app.session.fill_layer(id, [230, 190, 60]);
+            h.app.active = id;
+            h.app.needs_full = true;
+            h.advance(0.2);
+            h.app.set_tool(Tool::Eraser);
+            h.app.tool_params[2].size = 50.0;
+            let pts: Vec<Pos2> = (0..30).map(|i| screen_of(h, 240.0 + f64::from(i) * 12.0, 180.0 + f64::from(i) * 10.0)).collect();
+            drag(h, &pts);
+        }),
         s!("painting", "pour_fill", Canvas, "Pour Fill dropped into the orange disc.", "Press on the disc with the active colour, drag colour in, release.", |h| {
             h.app.colour = [30, 160, 120];
             let p = screen_of(h, 830.0, 220.0);
@@ -536,12 +572,14 @@ fn shots() -> Vec<Shot> {
         // brushes
         s!("brushes", "brush_library", Canvas, "The Brush library popover.", "Tap the brush button.", |h| open(h, Panel::Brush)),
         s!("brushes", "brush_library_smudge", Canvas, "Brush library opened for the Smudge tool.", "Select Smudge, tap the brush button.", |h| {
+            // A tap on an inactive tool selects it; the next tap on the (now active) button opens its library.
             h.app.set_tool(Tool::Smudge);
-            h.app.library_tool = Tool::Smudge;
+            h.advance(0.2);
             open(h, Panel::Brush);
         }),
         s!("brushes", "brush_library_second_set", Canvas, "Brush library with the second set's brushes in view.", "Open the library, pick a different brush in set 2.", |h| {
-            brush_by_set(h, 1, 0);
+            // The library shows the set of the tool's brush unless another set was picked: pick the fourth set.
+            h.app.library_set[0] = Some(3);
             open(h, Panel::Brush);
         }),
         s!("brushes", "brush_bench", Canvas, "Brush Bench opened on the tool's brush.", "Open Brush Bench from the library tool.", |h| {
@@ -573,7 +611,15 @@ fn shots() -> Vec<Shot> {
                 h.app.session.set_blend(id, mode);
             }
             h.app.needs_full = true;
-            h.advance(0.2);
+            open(h, Panel::Layers);
+        }),
+        s!("layers", "layers_long_blend_name", Canvas, "A layer with the longest blend-mode name (Linear Light), panel open.", "Add a layer, fill it, blend Linear Light; open the panel.", |h| {
+            h.app.session.add_layer(None);
+            let id = *layer_ids(h).last().unwrap();
+            h.app.session.fill_layer(id, [90, 160, 220]);
+            h.app.session.set_blend(id, BlendMode::LinearLight);
+            h.app.needs_full = true;
+            open(h, Panel::Layers);
         }),
         s!("layers", "layers_reordered", Canvas, "Layer order changed: the filled layer moved below.", "Add and fill a layer, move it down one step, open the panel.", |h| {
             h.app.session.add_layer(None);
@@ -590,6 +636,7 @@ fn shots() -> Vec<Shot> {
             h.app.tool_params[0].size = 60.0;
             let pts = curve(h, 150.0, 420.0, 20.0, 700.0);
             drag(h, &pts);
+            open(h, Panel::Layers);
         }),
         s!("layers", "layers_clip_below", Canvas, "Clip to Layer Below: a fill clipped to the block.", "Add a layer, fill it, enable Clip, open the panel.", |h| {
             h.app.session.add_layer(None);
@@ -661,6 +708,14 @@ fn shots() -> Vec<Shot> {
             h.advance(0.3);
             let ctx = h.ctx.clone();
             h.app.adjust_apply(&ctx);
+            // Wait (real time) until the worker has finished and the result is written.
+            for _ in 0..600 {
+                h.step();
+                if h.app.adjust.is_none() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
             h.advance(0.5);
         }),
         // actions-settings
@@ -762,8 +817,10 @@ fn shots() -> Vec<Shot> {
             h.app.actions_ui.tab = ActionsTab::Share;
             open(h, Panel::Actions);
         }),
-        s!("import-export", "gallery_import_menu", Gallery(3), "Gallery with a selected document.", "Open the gallery, tap select.", |h| {
-            h.advance(0.3);
+        s!("import-export", "gallery_import_menu", Gallery(3), "Gallery with the Import menu open.", "Click Import in the gallery header.", |h| {
+            let c = h.app.gal.header.import.center();
+            h.click(c);
+            h.advance(0.4);
         }),
         // onboarding-a11y
         s!("onboarding-a11y", "welcome_card_1", Tour, "Welcome card 1 over the empty gallery.", "First launch.", |_| {}),
@@ -772,9 +829,7 @@ fn shots() -> Vec<Shot> {
             h.advance(0.3);
         }),
         s!("onboarding-a11y", "coach_mark_paint", Canvas, "First coach mark over the canvas.", "Tour sample opened, coach mark 'Paint'.", |h| {
-            h.app.tour = crate::onboarding::Tour::at_startup(None, false, false);
-            h.app.tour.show_around();
-            h.app.tour.sample_opened();
+            tour_at_paint(h);
             h.advance(0.6);
         }),
         s!("onboarding-a11y", "canvas_main", Canvas, "Main canvas chrome.", "Open the sample.", |_| {}),
@@ -869,21 +924,32 @@ fn seqs() -> Vec<Seq> {
                 _ => {}
             }
         }),
+        q!("import-export", "share_tab_open", Base::Canvas, "The Actions popover opening on the Share tab.", "Tap Actions with the Share tab selected.", |h, i| {
+            h.app.actions_ui.tab = ActionsTab::Share;
+            tap(h, i, Panel::Actions);
+        }),
+        q!("import-export", "share_tab_open_frames", Base::Frames, "The Actions popover opening on the Share tab of a frames document.", "Tap Actions with the Share tab selected.", |h, i| {
+            h.app.actions_ui.tab = ActionsTab::Share;
+            tap(h, i, Panel::Actions);
+        }),
+        q!("import-export", "add_tab_open", Base::Canvas, "The Actions popover opening on the Add tab.", "Tap Actions with the Add tab selected.", |h, i| {
+            h.app.actions_ui.tab = ActionsTab::Add;
+            tap(h, i, Panel::Actions);
+        }),
         q!("onboarding-a11y", "toast_show_hide", Base::Canvas, "A toast appearing and fading.", "Show a 0.5 s toast.", |h, i| {
             if i == 0 {
                 h.app.show_toast("Undo Stroke", 0.5);
             }
         }),
         q!("onboarding-a11y", "welcome_card_advance", Base::Tour, "Welcome card 1 to 2.", "Advance the tour card.", |h, i| {
-            if i == 0 {
+            // Frames 0 to 3 show card 1; the advance happens on frame 4.
+            if i == 4 {
                 h.app.tour.show_around();
             }
         }),
         q!("onboarding-a11y", "coach_mark_enter", Base::Canvas, "A coach mark appearing.", "Enter the first coach mark.", |h, i| {
             if i == 0 {
-                h.app.tour = crate::onboarding::Tour::at_startup(None, false, false);
-                h.app.tour.show_around();
-                h.app.tour.sample_opened();
+                tour_at_paint(h);
             }
         }),
         q!("frames", "frames_toggle_timeline", Base::Canvas, "The Frames timeline sliding in.", "Toggle Frames on.", |h, i| {

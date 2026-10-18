@@ -172,8 +172,20 @@ pub fn switch(painter: &egui::Painter, pal: &Palette, rect: Rect, on: bool, enab
     let track = if on { pal.accent_fill } else { pal.separator };
     let track = if enabled { track } else { track.gamma_multiply(0.5) };
     painter.rect_filled(rect, CornerRadius::same(12), track);
+    if !on && pal.is_eskiz() {
+        // The off track is outlined so it is visible on light panels too.
+        painter.rect_stroke(rect, CornerRadius::same(12), Stroke::new(1.0, pal.edge), egui::StrokeKind::Inside);
+    }
     let x = if on { rect.right() - 12.0 } else { rect.left() + 12.0 };
-    painter.circle_filled(Pos2::new(x, rect.center().y), 9.0, egui::Color32::WHITE);
+    // Eskiz: the knob is the ink of the fill when on (a light knob on the light dark-theme fill would vanish).
+    let knob = if !pal.is_eskiz() {
+        egui::Color32::WHITE
+    } else if on {
+        pal.on_accent
+    } else {
+        pal.text_dim
+    };
+    painter.circle_filled(Pos2::new(x, rect.center().y), 9.0, knob);
 }
 
 /// A strip of icon tabs with a label under each icon. Returns the tab that was clicked.
@@ -194,7 +206,7 @@ pub fn tab_bar(ui: &mut Ui, pal: &Palette, tabs: &[(IconFn, &str)], selected: us
         let active = i == selected;
         let colour = if active { pal.primary_text } else if resp.hovered() { pal.text } else { pal.text_dim };
         if active {
-            painter.rect_filled(cell_rect.shrink2(vec2(4.0, 4.0)), CornerRadius::same(8), pal.selected_bg(0.16));
+            pal.paint_selected(&painter, cell_rect.shrink2(vec2(4.0, 4.0)), 8, 0.16);
         }
         icon(&painter, Rect::from_center_size(Pos2::new(cell_rect.center().x, cell_rect.top() + 18.0), vec2(22.0, 22.0)), colour);
         painter.text(
@@ -212,4 +224,33 @@ pub fn tab_bar(ui: &mut Ui, pal: &Palette, tabs: &[(IconFn, &str)], selected: us
 /// A dim, wrapped hint under a group of rows.
 pub fn hint(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(pal.text_dim)).wrap());
+}
+
+/// A fade at the bottom (and top) edge of a scroll area that has more content beyond it, so a clipped last row
+/// reads as "scroll for more" instead of as a cut. `bg` is the colour the area sits on.
+pub fn scroll_cue<R>(ui: &Ui, out: &egui::scroll_area::ScrollAreaOutput<R>, bg: Color32) {
+    const FADE: f32 = 26.0;
+    let r = out.inner_rect;
+    let max_offset = (out.content_size.y - r.height()).max(0.0);
+    if max_offset <= 2.0 {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(r.expand2(vec2(0.0, 0.0)));
+    let band = |top: bool| {
+        let (y0, y1) = if top { (r.top(), r.top() + FADE) } else { (r.bottom() - FADE, r.bottom()) };
+        let (c0, c1) = if top { (bg, Color32::TRANSPARENT) } else { (Color32::TRANSPARENT, bg) };
+        let mut mesh = egui::epaint::Mesh::default();
+        for (p, c) in [(Pos2::new(r.left(), y0), c0), (Pos2::new(r.right(), y0), c0), (Pos2::new(r.right(), y1), c1), (Pos2::new(r.left(), y1), c1)] {
+            mesh.colored_vertex(p, c);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
+    };
+    if out.state.offset.y < max_offset - 2.0 {
+        band(false);
+    }
+    if out.state.offset.y > 2.0 {
+        band(true);
+    }
 }

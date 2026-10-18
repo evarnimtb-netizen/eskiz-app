@@ -107,7 +107,7 @@ fn import_browse_asks_for_an_open_dialog_and_imports_the_picture() {
     mock.push(Picked::Path(png.clone()));
     actions(&mut h, ActionsTab::Add);
     let layers = h.app.session.doc.layer_count();
-    press(&mut h, "Browse...", 0);
+    press(&mut h, "Import...", 0);
     let req = mock.requests().pop().expect("a request");
     assert_eq!(req.purpose, PickPurpose::ImportImage);
     assert_eq!(req.kind, PickKind::OpenFile);
@@ -124,7 +124,7 @@ fn font_browse_routes_to_the_font_import() {
     // copying a font into the user's data folder.
     mock.push(Picked::Path("/tmp/not-a-font.txt".into()));
     actions(&mut h, ActionsTab::Add);
-    press(&mut h, "Browse...", 1);
+    press(&mut h, "Browse...", 0);
     let req = mock.requests().pop().unwrap();
     assert_eq!((req.purpose, req.kind), (PickPurpose::ImportFont, PickKind::OpenFile));
     assert_eq!(req.filters[0].extensions, ["ttf", "otf", "ttc"]);
@@ -140,7 +140,7 @@ fn open_browse_replaces_the_drawing() {
     let (mut h, mock) = harness();
     mock.push(Picked::Path(file.clone()));
     actions(&mut h, ActionsTab::Add);
-    press(&mut h, "Browse...", 2);
+    press(&mut h, "Browse...", 1);
     let req = mock.requests().pop().unwrap();
     assert_eq!((req.purpose, req.kind), (PickPurpose::OpenDocument, PickKind::OpenFile));
     assert_eq!(req.filters[0].extensions, ["procreate"]);

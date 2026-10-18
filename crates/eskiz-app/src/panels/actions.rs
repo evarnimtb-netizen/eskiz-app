@@ -98,7 +98,7 @@ impl EskizApp {
         }
         ui.add_space(8.0);
         let tab = self.actions_ui.tab;
-        egui::ScrollArea::vertical()
+        let scroll_out = egui::ScrollArea::vertical()
             .id_salt(("actions-tab", tab.index()))
             .auto_shrink([false, true])
             .max_height(ui.available_height())
@@ -113,6 +113,7 @@ impl EskizApp {
                     ActionsTab::Help => self.actions_help(ui),
                 }
             });
+        crate::panels::rows::scroll_cue(ui, &scroll_out, self.pal.panel);
     }
 
     /// A rounded card holding a text field, an optional "Browse..." button and its action button.
@@ -160,11 +161,16 @@ impl EskizApp {
             true,
             Trailing::None,
         );
+        // One primary Import (opens the file chooser); typing a path is the secondary way.
+        let primary = ui
+            .add_sized([ui.available_width(), 36.0], egui::Button::new(RichText::new("Import...").color(pal.on_accent).strong()).fill(pal.accent_fill))
+            .on_hover_text("Choose a picture, PSD or .procreate file");
         let mut path = std::mem::take(&mut self.actions_ui.import_path);
         let enabled = !path.trim().is_empty();
-        let (go, browse) = Self::path_field(ui, &pal, &mut path, "Image, PSD or .procreate path", "Import", enabled, true);
+        small_label(ui, &pal, "OR TYPE A PATH");
+        let (go, _) = Self::path_field(ui, &pal, &mut path, "Image, PSD or .procreate path", "Import path", enabled, false);
         self.actions_ui.import_path = path;
-        if browse {
+        if primary.clicked() {
             let typed = self.actions_ui.import_path.clone();
             self.request_pick_near(PickPurpose::ImportImage, &typed, None);
         }
@@ -403,6 +409,13 @@ impl EskizApp {
         self.share_options(ui);
         let base = expand_home(&self.export_path);
         let mut chosen = None;
+        // A document with frames offers its animation formats (GIF, APNG) first.
+        let frames_first = self.session.doc.animation.frames_enabled;
+        if frames_first {
+            self.share_animation_rows(ui);
+            ui.add_space(6.0);
+            small_label(ui, &pal, "STILL IMAGE");
+        }
         for format in ExportFormat::ALL {
             let (icon, name) = share_row(format);
             let file = if format.is_folder() {
@@ -414,7 +427,9 @@ impl EskizApp {
                 chosen = Some(format);
             }
         }
-        self.share_animation_rows(ui);
+        if !frames_first {
+            self.share_animation_rows(ui);
+        }
         if let Some(format) = chosen {
             self.start_export(&ctx, format);
         }

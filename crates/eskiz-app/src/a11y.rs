@@ -35,25 +35,25 @@ pub fn keep_arrows(ui: &egui::Ui, id: egui::Id) {
     });
 }
 
+/// Colours of the keyboard focus ring and of its halo outside it. Never the selected fill (Classic's accent): the
+/// ring is the text colour, the halo its opposite, so focus and selection are told apart on any surface.
+pub fn focus_colours(pal: &Palette) -> (egui::Color32, egui::Color32) {
+    if pal.identity == crate::theme::UiIdentity::Eskiz {
+        (pal.focus_ring, pal.focus_halo)
+    } else if pal.light {
+        (egui::Color32::from_rgb(0x10, 0x11, 0x14), egui::Color32::WHITE)
+    } else {
+        (egui::Color32::WHITE, egui::Color32::from_rgb(0x10, 0x11, 0x14))
+    }
+}
+
 /// Draw the keyboard focus ring around `rect` when `resp` holds keyboard focus.
 pub fn focus_ring(p: &Painter, rect: Rect, resp: &Response, pal: &Palette, radius: u8) {
     if resp.has_focus() {
-        let eskiz = pal.identity == crate::theme::UiIdentity::Eskiz;
-        if eskiz {
-            // Eskiz: a 1 px halo in the opposite colour outside the ring, so it reads on any surface.
-            p.rect_stroke(
-                rect.expand(6.0),
-                CornerRadius::same(radius.saturating_add(6)),
-                Stroke::new(1.0, pal.focus_halo),
-                StrokeKind::Outside,
-            );
-        }
-        p.rect_stroke(
-            rect.expand(3.0),
-            CornerRadius::same(radius.saturating_add(3)),
-            Stroke::new(2.0, if eskiz { pal.focus_ring } else { pal.accent }),
-            StrokeKind::Outside,
-        );
+        let (ring, halo) = focus_colours(pal);
+        // A 1 px halo in the opposite colour outside the ring, so it reads on any surface.
+        p.rect_stroke(rect.expand(6.0), CornerRadius::same(radius.saturating_add(6)), Stroke::new(1.0, halo), StrokeKind::Outside);
+        p.rect_stroke(rect.expand(3.0), CornerRadius::same(radius.saturating_add(3)), Stroke::new(2.0, ring), StrokeKind::Outside);
     }
 }
 

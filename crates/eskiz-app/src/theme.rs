@@ -2,7 +2,7 @@
 //!
 //! The canvas is never tinted: only bars, panels, text and controls use these colours.
 
-use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, Shadow, Stroke, TextStyle};
+use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, Rect, Shadow, Stroke, TextStyle};
 
 /// The accent blue: active tool glyph, selected rows, toggles and slider fills.
 pub const ACCENT: Color32 = Color32::from_rgb(0x3B, 0x82, 0xF6);
@@ -190,7 +190,7 @@ fn eskiz_palette(light: bool) -> Palette {
             bar: Color32::from_rgba_unmultiplied(0xF4, 0xF4, 0xF5, 235),
             panel: hex(0xFAFAFA),
             row: hex(0xEEEEEF),
-            track: hex(0xA2A5AB),
+            track: hex(0x83868E),
             separator: hex(0xDADADD),
             text: hex(0x17181A),
             text_dim: hex(0x4A4D54),
@@ -201,7 +201,7 @@ fn eskiz_palette(light: bool) -> Palette {
             hairline: Color32::from_black_alpha(26),
             hover: hex(0xE2E2E4),
             edge: hex(0x757880),
-            accent_fill: hex(0x5B5F68),
+            accent_fill: hex(0x3A3D44),
             on_accent: hex(0xFFFFFF),
             primary: hex(0xFF5A1F),
             primary_text: hex(0xA33008),
@@ -220,7 +220,7 @@ fn eskiz_palette(light: bool) -> Palette {
             bar: Color32::from_rgba_unmultiplied(0x18, 0x19, 0x1B, 235),
             panel: hex(0x1F2022),
             row: hex(0x28292C),
-            track: hex(0x6B6E75),
+            track: hex(0x777A82),
             separator: hex(0x303134),
             text: hex(0xECEDEF),
             text_dim: hex(0xA3A6AD),
@@ -231,7 +231,7 @@ fn eskiz_palette(light: bool) -> Palette {
             hairline: Color32::from_white_alpha(26),
             hover: hex(0x323336),
             edge: hex(0x7D8088),
-            accent_fill: hex(0x8D9199),
+            accent_fill: hex(0xB4B8BF),
             on_accent: hex(0x101113),
             primary: hex(0xFF5A1F),
             primary_text: hex(0xFF8A60),
@@ -267,6 +267,16 @@ impl Palette {
             self.hover
         } else {
             self.accent.gamma_multiply(strength)
+        }
+    }
+
+    /// Fills `rect` as a selected row or cell. Classic: the accent tint. Eskiz: the flat hover surface plus a
+    /// 2 px outline in the `accent` ink (about 10:1 on panels in both themes), so a selected item never reads
+    /// as a hover.
+    pub fn paint_selected(&self, painter: &egui::Painter, rect: Rect, radius: u8, strength: f32) {
+        painter.rect_filled(rect, CornerRadius::same(radius), self.selected_bg(strength));
+        if self.is_eskiz() {
+            painter.rect_stroke(rect, CornerRadius::same(radius), Stroke::new(2.0, self.accent), egui::StrokeKind::Inside);
         }
     }
 
@@ -401,6 +411,20 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     visuals.widgets.hovered.weak_bg_fill = pal.hover;
     visuals.widgets.active.bg_fill = pal.accent_fill;
     visuals.widgets.active.weak_bg_fill = pal.accent_fill;
+    if pal.is_eskiz() {
+        // No global text override: selected buttons and segmented controls take `selection.stroke` (the ink
+        // on the selected fill), every other state the palette text.
+        visuals.override_text_color = None;
+        visuals.selection.stroke = Stroke::new(1.0, pal.on_accent);
+        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, pal.text);
+        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, pal.text);
+        // Buttons and text fields get a 3:1 outline (they were plain text on a row).
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, pal.edge);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, pal.text_dim);
+        visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, pal.text);
+        visuals.widgets.active.fg_stroke = Stroke::new(2.0, pal.text);
+        visuals.widgets.open.fg_stroke = Stroke::new(1.0, pal.text);
+    }
     ctx.set_visuals(visuals);
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("eskiz_identity"), pal.identity == UiIdentity::Eskiz));
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("eskiz_checkbox_tokens"), (tk.checkbox_radius, pal.on_accent)));
@@ -429,7 +453,7 @@ pub fn checkbox(ui: &mut egui::Ui, value: &mut bool, text: impl Into<egui::Widge
     // Eskiz passes its own radius and ink through the style: see `apply`.
     let (checkbox_radius, on_accent) = ui.data(|d| d.get_temp::<(u8, Color32)>(egui::Id::new("eskiz_checkbox_tokens"))).unwrap_or((4, Color32::WHITE));
     let accent = ui.visuals().selection.bg_fill;
-    let outline = ui.visuals().weak_text_color();
+    let outline = if is_eskiz(ui.ctx()) { ui.visuals().widgets.inactive.bg_stroke.color } else { ui.visuals().weak_text_color() };
     ui.scope(|ui| {
         let inactive = &mut ui.visuals_mut().widgets.inactive;
         inactive.corner_radius = CornerRadius::same(checkbox_radius);

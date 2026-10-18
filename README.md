@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="packaging/icons/png/eskiz-macos-256.png" width="128" height="128" alt="Eskiz app icon">
+</p>
+
 # Eskiz
 
 Eskiz is a free, open source painting app for macOS, Windows, Linux and (experimentally) Android. It is written in Rust. It has layers with blend modes and masks, a pressure and tilt aware brush engine, selections and transforms, text layers, drawing guides, animation, 3D model painting, and a GPU-accelerated canvas. All icons, brushes and textures are drawn in code.

@@ -106,7 +106,11 @@ impl EskizApp {
                         Color32::TRANSPARENT
                     };
                     let p = ui.painter();
-                    p.rect_filled(rect, CornerRadius::same(10), fill);
+                    if selected && pal.is_eskiz() {
+                        pal.paint_selected(p, rect, 10, 0.2);
+                    } else {
+                        p.rect_filled(rect, CornerRadius::same(10), fill);
+                    }
                     let glyph = if selected { pal.accent } else { pal.text_dim };
                     (set.icon)(p, Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), vec2(24.0, 24.0)), glyph);
                     p.text(pos2(rect.left() + 40.0, rect.center().y), Align2::LEFT_CENTER, &set.name, FontId::proportional(13.0), pal.text);
@@ -135,7 +139,7 @@ impl EskizApp {
                         .color(pal.text_dim),
                 );
             }
-            egui::ScrollArea::vertical()
+            let scroll_out = egui::ScrollArea::vertical()
                 .id_salt(("brush-rows", set_idx))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -183,6 +187,7 @@ impl EskizApp {
                         }
                     }
                 });
+        crate::panels::rows::scroll_cue(ui, &scroll_out, self.pal.panel);
         });
         if pending {
             // Draw the rest of the previews over the next frames.

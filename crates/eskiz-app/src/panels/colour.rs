@@ -540,7 +540,7 @@ impl EskizApp {
     fn palettes_tab(&mut self, ui: &mut egui::Ui, area: Rect, pal: &Palette) {
         let count = self.colour_store.palette.len();
         ui.horizontal(|ui| {
-            small_label(ui, pal, &format!("{count} colors. Right-click a swatch to remove it."));
+            small_label(ui, pal, &format!("{count} colors. Right-click or long-press a swatch to remove it."));
             if ui.small_button("Files").on_hover_text("Import, export or take a palette from the canvas").clicked() {
                 self.guides.palette_window_open = true;
             }
@@ -549,7 +549,7 @@ impl EskizApp {
         let mut chosen = None;
         let mut removed = None;
         let mut add = false;
-        egui::ScrollArea::vertical()
+        let scroll_out = egui::ScrollArea::vertical()
             .max_height(area.height() - 26.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -579,7 +579,7 @@ impl EskizApp {
                     if resp.clicked() {
                         chosen = Some(colour);
                     }
-                    if resp.secondary_clicked() {
+                    if resp.secondary_clicked() || resp.long_touched() {
                         removed = Some(i);
                     }
                 }
@@ -599,6 +599,7 @@ impl EskizApp {
                 }
                 add = resp.clicked();
             });
+        crate::panels::rows::scroll_cue(ui, &scroll_out, self.pal.panel);
         if let Some(c) = chosen {
             self.choose_colour(c);
         }
@@ -644,7 +645,7 @@ impl EskizApp {
                     }
                 }
                 None => {
-                    ui.painter().circle_stroke(c, d / 2.0 - 1.0, Stroke::new(1.0, pal.separator));
+                    ui.painter().circle_stroke(c, d / 2.0 - 1.0, Stroke::new(1.0, if pal.is_eskiz() { pal.edge } else { pal.separator }));
                 }
             }
         }

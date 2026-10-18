@@ -26,7 +26,8 @@ fn rows() -> &'static [String] {
         let mut out = Vec::new();
         let mut in_fence = false;
         let mut para = String::new();
-        for line in NOTICES.lines() {
+        let shown = user_facing(NOTICES);
+        for line in shown.lines() {
             if line.trim_start().starts_with("```") {
                 in_fence = !in_fence;
                 continue;
@@ -55,6 +56,51 @@ fn rows() -> &'static [String] {
         }
         out
     })
+}
+
+/// The notices as the screen shows them: the build-time paragraphs (how the file is generated, per-target
+/// differences) are replaced by one sentence, an unsubstituted `evarnimtb-netizen/eskiz-app` source line (private and
+/// development builds; the public snapshot fills it in) becomes plain text, and the Markdown backticks outside
+/// the licence texts are dropped.
+pub(crate) fn user_facing(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_fence = false;
+    let mut skipping = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if skipping {
+            if line.trim().is_empty() {
+                skipping = false;
+            }
+            continue;
+        }
+        if line.starts_with("This file lists the third-party software") {
+            out.push_str("Below are the licenses of the third-party software and fonts included in Eskiz.\n\n");
+            skipping = true;
+            continue;
+        }
+        if line.starts_with("Per-target differences:") {
+            skipping = true;
+            continue;
+        }
+        if line.starts_with("Source code:") && line.contains("evarnimtb-netizen/eskiz-app") {
+            out.push_str("Source code: see the Eskiz project page.\n");
+            continue;
+        }
+        out.push_str(&line.replace('`', ""));
+        out.push('\n');
+    }
+    out
 }
 
 /// Splits `line` at spaces into pieces of at most [`WRAP_COLUMNS`] characters (a longer word stays whole).
@@ -280,6 +326,21 @@ mod tests {
         assert!(search(idx, "").is_empty());
         assert!(search(idx, "no-such-crate-xyz").is_empty());
         assert!(search(idx, "jpeg").iter().any(|e| e.name == "jpeg-encoder"));
+    }
+
+    #[test]
+    fn the_screen_shows_user_text_not_build_text() {
+        let shown = rows().join("\n");
+        for bad in ["evarnimtb-netizen/eskiz-app", "cargo about", "do not edit by hand", "Per-target differences", "APK", '`'.to_string().as_str()] {
+            let head: String = shown.lines().take(30).collect::<Vec<_>>().join("\n");
+            assert!(!head.contains(bad), "the notices header still shows {bad:?}:\n{head}");
+        }
+        assert!(shown.contains("Source code:"));
+        assert!(shown.contains("Below are the licenses"));
+        let sample = "Source code: <https://github.com/evarnimtb-netizen/eskiz-app>\n\nPer-target differences: x\ny\n\n## Next\n";
+        let out = user_facing(sample);
+        assert!(out.contains("see the Eskiz project page") && !out.contains("Per-target") && out.contains("## Next"));
+        assert!(user_facing("Source code: <https://github.com/acme/eskiz>").contains("github.com/acme/eskiz"));
     }
 
     #[test]

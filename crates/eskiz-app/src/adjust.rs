@@ -406,7 +406,7 @@ impl EskizApp {
                 if let Some(st) = self.adjust.as_mut() {
                     st.job = Some(ApplyJob { rx, progress });
                 }
-                self.show_toast(format!("Applying {}...", adj.kind.name()), 30.0);
+                // The panel shows the one progress indicator (label and bar); no toast on top of its buttons.
                 return;
             }
             // The worker could not start: render on this thread instead.

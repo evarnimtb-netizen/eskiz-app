@@ -221,42 +221,50 @@ impl EskizApp {
         };
         let vp = self.viewport;
         let view = &self.view;
-        let accent = self.pal.accent;
-        let white = Color32::WHITE;
+        // Two-tone marks (a dark underlay, a light overlay, handles with a dark ring inside a light one) read on a
+        // white canvas as well as on a dark one.
+        let (dark, white) = (Color32::from_rgb(0x14, 0x15, 0x17), Color32::WHITE);
+        let line = |painter: &egui::Painter, pts: [Pos2; 2], w: f32| {
+            painter.line_segment(pts, Stroke::new(w + 2.5, dark.gamma_multiply(0.85)));
+            painter.line_segment(pts, Stroke::new(w, white));
+        };
+        let dot = |painter: &egui::Painter, c: Pos2, r: f32, fill: Color32| {
+            painter.circle_filled(c, r + 2.0, white);
+            painter.circle(c, r, fill, Stroke::new(1.5, dark));
+        };
         let screen = |c: Point| view.canvas_to_screen(vp, f64::from(c.x), f64::from(c.y));
         if let Some(mesh) = t.session.warp() {
-            let stroke = Stroke::new(1.0, accent);
             for i in 0..4 {
                 for j in 0..4 {
                     let p = screen(mesh.ctrl[i][j]);
                     if i + 1 < 4 {
-                        painter.line_segment([p, screen(mesh.ctrl[i + 1][j])], stroke);
+                        line(painter, [p, screen(mesh.ctrl[i + 1][j])], 1.0);
                     }
                     if j + 1 < 4 {
-                        painter.line_segment([p, screen(mesh.ctrl[i][j + 1])], stroke);
+                        line(painter, [p, screen(mesh.ctrl[i][j + 1])], 1.0);
                     }
-                    painter.circle(p, 5.0, white, Stroke::new(1.5, accent));
+                    dot(painter, p, 5.0, white);
                 }
             }
             return;
         }
         let corners: Vec<Pos2> = quad.iter().map(|&c| screen(c)).collect();
-        let mut outline = corners.clone();
-        outline.push(corners[0]);
-        painter.add(egui::Shape::line(outline, Stroke::new(1.5, accent)));
+        for i in 0..4 {
+            line(painter, [corners[i], corners[(i + 1) % 4]], 1.5);
+        }
         for &c in &corners {
-            painter.circle(c, 6.0, white, Stroke::new(1.5, accent));
+            dot(painter, c, 6.0, white);
         }
         for i in 0..4 {
             let mid = Pos2::new(
                 (corners[i].x + corners[(i + 1) % 4].x) / 2.0,
                 (corners[i].y + corners[(i + 1) % 4].y) / 2.0,
             );
-            painter.circle(mid, 4.5, white, Stroke::new(1.5, accent));
+            dot(painter, mid, 4.5, white);
         }
         let top = rotate_handle(&corners);
-        painter.line_segment([top_mid(&corners), top], Stroke::new(1.5, accent));
-        painter.circle(top, 6.0, accent, Stroke::new(1.5, white));
+        line(painter, [top_mid(&corners), top], 1.5);
+        dot(painter, top, 6.0, dark);
     }
 }
 

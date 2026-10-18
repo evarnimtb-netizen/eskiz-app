@@ -86,6 +86,7 @@ impl egui::DroppedFile for DroppedPath {
 }
 
 /// An RGBA8 image (unpremultiplied, opaque after rendering).
+#[derive(Clone)]
 pub struct Image {
     pub width: usize,
     pub height: usize,

@@ -63,7 +63,7 @@ impl EskizApp {
         let busy = self.session.is_stroking();
         let mut chosen = None;
         let mut liquify_chosen = false;
-        egui::ScrollArea::vertical()
+        let scroll_out = egui::ScrollArea::vertical()
             .id_salt("adjustments-list")
             .auto_shrink([false, true])
             .max_height(ui.available_height())
@@ -81,6 +81,7 @@ impl EskizApp {
                 ui.add_space(2.0);
                 hint(ui, &pal, "Layer changes the whole layer. Pencil applies the effect only where you paint. Tap the Adjustments button again to apply.");
             });
+        crate::panels::rows::scroll_cue(ui, &scroll_out, self.pal.panel);
         if liquify_chosen {
             self.enter_liquify();
         }
@@ -137,7 +138,8 @@ impl EskizApp {
                         });
                     });
                     if applying {
-                        ui.add(egui::ProgressBar::new(progress).desired_width(ui.available_width()).text(format!("Applying {}", kind.name())));
+                        ui.label(RichText::new(format!("Applying {}...", kind.name())).size(12.5).color(pal.text_dim));
+                        ui.add(egui::ProgressBar::new(progress).desired_width(ui.available_width()));
                         return;
                     }
                     ui.horizontal(|ui| {

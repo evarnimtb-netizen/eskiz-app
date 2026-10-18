@@ -226,15 +226,12 @@ impl EskizApp {
                 let rect = rect.translate(vec2(8.0, 0.0));
                 st.layout.sections.push((s, rect));
                 let selected = st.section == s;
-                let fill = if selected {
-                    pal.selected_bg(0.2)
-                } else if resp.hovered() {
-                    pal.row.gamma_multiply(0.7)
-                } else {
-                    Color32::TRANSPARENT
-                };
                 let p = ui.painter();
-                p.rect_filled(rect, CornerRadius::same(10), fill);
+                if selected {
+                    pal.paint_selected(p, rect, 10, 0.2);
+                } else {
+                    p.rect_filled(rect, CornerRadius::same(10), if resp.hovered() { pal.row.gamma_multiply(0.7) } else { Color32::TRANSPARENT });
+                }
                 let ink = if selected { pal.accent } else { pal.text };
                 (s.icon())(p, Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), vec2(22.0, 22.0)), if selected { pal.accent } else { pal.text_dim });
                 p.text(pos2(rect.left() + 42.0, rect.center().y), Align2::LEFT_CENTER, s.label(), FontId::proportional(13.5), ink);
@@ -255,7 +252,7 @@ impl EskizApp {
             ui.label(RichText::new(st.section.label()).size(17.0).strong());
             ui.add(egui::Label::new(RichText::new(st.section.blurb()).size(12.0).color(pal.text_dim)).wrap());
             ui.add_space(8.0);
-            egui::ScrollArea::vertical()
+            let scroll_out = egui::ScrollArea::vertical()
                 .id_salt(("studio-settings", st.section as u8))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -263,6 +260,7 @@ impl EskizApp {
                     self.studio_controls(ui, st, brush, act);
                     ui.add_space(24.0);
                 });
+        crate::panels::rows::scroll_cue(ui, &scroll_out, self.pal.panel);
         });
     }
 
@@ -716,8 +714,11 @@ fn picker_cell(ui: &Ui, pal: &Palette, rect: Rect, resp: &egui::Response, select
     crate::a11y::toggle(resp, egui::WidgetType::SelectableLabel, true, selected, label);
     crate::a11y::focus_ring(ui.painter(), rect, resp, pal, 10);
     let p = ui.painter();
-    let fill = if selected { pal.selected_bg(0.18) } else if resp.hovered() { pal.separator } else { pal.row };
-    p.rect_filled(rect, CornerRadius::same(10), fill);
+    if selected {
+        pal.paint_selected(p, rect, 10, 0.18);
+    } else {
+        p.rect_filled(rect, CornerRadius::same(10), if resp.hovered() { pal.separator } else { pal.row });
+    }
     let img = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(rect.width() - 12.0, rect.width() - 12.0));
     // Paint sits on a darker well so the tip reads like ink on paper.
     p.rect_filled(img, CornerRadius::same(7), if pal.light { Color32::from_black_alpha(10) } else { Color32::from_black_alpha(60) });

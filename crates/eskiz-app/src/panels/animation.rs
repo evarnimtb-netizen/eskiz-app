@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Sense, Stroke, V
 
 use crate::animation_ui::{AnimExportOptions, AnimFormat};
 use crate::app::EskizApp;
+use crate::chrome::small_label;
 use crate::export::expand_home;
 use crate::icons::IconFn;
 use crate::icons_actions as ia;
@@ -80,7 +81,8 @@ impl EskizApp {
         let playing = self.anim.playback.as_ref().is_some_and(Playback::is_playing);
         let frames = self.anim.cache.as_ref().map_or(0, |c| c.frames.len());
         ui.horizontal(|ui| {
-            if ui.button(if playing { "Pause" } else { "Play" }).clicked() {
+            // A fixed-width slot: Play and Pause differ in width, which used to shift Add frame and Settings.
+            if ui.add(egui::Button::new(if playing { "Pause" } else { "Play" }).min_size(Vec2::new(64.0, 0.0))).clicked() {
                 if playing {
                     self.anim_pause();
                 } else {
@@ -109,17 +111,16 @@ impl EskizApp {
                 .size(12.5)
                 .color(pal.text_dim),
             );
-            // The hold of the selected frame, stored on its bottom item.
-            if let Some(index) = self.anim.selected.filter(|&i| i < frames) {
-                if let Some(id) = self.anim_frame_node(index) {
-                    let mut hold = self.session.doc.node(id).map_or(0, |n| n.props.hold);
-                    let before = hold;
-                    ui.add_space(12.0);
-                    ui.add(egui::DragValue::new(&mut hold).range(0..=30).prefix("Hold ").suffix(" frames").speed(0.2));
-                    if hold != before {
-                        self.session.set_props(id, "Change hold", |p| p.hold = hold);
-                    }
-                }
+            // The hold of the selected frame, stored on its bottom item. Always shown (same place, same label);
+            // disabled while no frame is selected.
+            let node = self.anim.selected.filter(|&i| i < frames).and_then(|i| self.anim_frame_node(i));
+            let mut hold = node.and_then(|id| self.session.doc.node(id)).map_or(0, |n| n.props.hold);
+            let before = hold;
+            ui.add_space(12.0);
+            ui.add_enabled(node.is_some(), egui::DragValue::new(&mut hold).range(0..=30).prefix("Hold: ").speed(0.2))
+                .on_hover_text(if node.is_some() { "Extra frames the selected frame is held" } else { "Select a frame to set how long it is held" });
+            if let (Some(id), true) = (node, hold != before) {
+                self.session.set_props(id, "Change hold", |p| p.hold = hold);
             }
         });
     }
@@ -343,6 +344,8 @@ impl EskizApp {
             }
         }
         let mut opts: AnimExportOptions = self.anim.export_opts;
+        ui.add_space(4.0);
+        small_label(ui, &pal, "GIF AND PNG OPTIONS");
         egui::Frame::new()
             .fill(pal.row)
             .corner_radius(CornerRadius::same(10))
@@ -352,16 +355,19 @@ impl EskizApp {
                 crate::theme::checkbox(ui, &mut opts.dither, "Dither GIF");
                 crate::theme::checkbox(ui, &mut opts.transparent, "Transparent background (GIF and PNG)");
                 ui.add(egui::Slider::new(&mut opts.alpha_threshold, 0..=255).text("Alpha threshold"));
-                ui.add_enabled_ui(eskiz_media::encoder_available(), |ui| ui.horizontal(|ui| {
-                    ui.label(RichText::new("MP4 quality").size(12.5).color(pal.text_dim));
-                    egui::ComboBox::from_id_salt("anim_mp4_quality")
-                        .selected_text(format!("{:?}", opts.quality))
-                        .show_ui(ui, |ui| {
-                            for q in [Quality::Low, Quality::Standard, Quality::High, Quality::Studio] {
-                                ui.selectable_value(&mut opts.quality, q, format!("{q:?}"));
-                            }
-                        });
-                }));
+                // MP4 is off in this build: its quality setting is not offered.
+                if eskiz_media::encoder_available() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("MP4 quality").size(12.5).color(pal.text_dim));
+                        egui::ComboBox::from_id_salt("anim_mp4_quality")
+                            .selected_text(format!("{:?}", opts.quality))
+                            .show_ui(ui, |ui| {
+                                for q in [Quality::Low, Quality::Standard, Quality::High, Quality::Studio] {
+                                    ui.selectable_value(&mut opts.quality, q, format!("{q:?}"));
+                                }
+                            });
+                    });
+                }
             });
         self.anim.export_opts = opts;
         if let Some(job) = self.anim.export.as_ref() {

@@ -180,6 +180,11 @@ impl EskizApp {
         }
         let alpha = ctx.animate_bool_with_time(Id::new("ui-visible"), !self.fullscreen, FADE_SECS);
         if alpha > 0.01 {
+            // An egui Area that has never been drawn is invisible for its first (sizing) pass. The first canvas
+            // frame after the gallery would show the bars empty: ask for a second pass instead.
+            if ["top-bar", "sidebar"].iter().any(|id| ctx.memory(|m| m.area_rect(Id::new(*id))).is_none()) {
+                ctx.request_discard("chrome sizing pass");
+            }
             self.top_bar(ctx, screen, alpha);
             self.sidebar(ctx, screen, alpha);
             self.edit_chrome(ctx, alpha);
@@ -374,6 +379,9 @@ impl EskizApp {
         let start_y = if self.prefs.sidebar_y < 0.0 { centred } else { self.prefs.sidebar_y };
         let top = start_y.clamp(min_top, max_top);
         let right = self.prefs.sidebar_right;
+        // Popovers keep clear of the sidebar (no sliver of it beside a popover): its inner edge plus a gap.
+        let clear = if right { x - 8.0 } else { x + width + 8.0 };
+        ctx.data_mut(|d| d.insert_temp(Id::new("sidebar-clear"), (right, clear)));
         // While the 3D view is open, undo and redo follow its own strokes.
         let (can_undo, can_redo) = match self.three_d.as_ref() {
             Some(three) => (three.can_undo(), three.can_redo()),
@@ -533,7 +541,9 @@ impl EskizApp {
             return;
         }
         let pal = self.pal;
-        let alpha = (remaining / 0.3).clamp(0.0, 1.0) as f32;
+        // Fades in over 0.12 s and out over the last 0.3 s (no fade under reduced motion).
+        let fade_in = if self.reduce_motion() { 1.0 } else { ((self.now - toast.since) / 0.12).clamp(0.0, 1.0) as f32 };
+        let alpha = ((remaining / 0.3).clamp(0.0, 1.0) as f32).min(fade_in);
         egui::Area::new(Id::new("toast"))
             .order(Order::Foreground)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, BAR_HEIGHT + 14.0))

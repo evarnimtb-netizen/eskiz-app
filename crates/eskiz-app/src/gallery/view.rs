@@ -265,7 +265,7 @@ impl EskizApp {
         painter.text(
             c + Vec2::new(0.0, 78.0),
             Align2::CENTER_CENTER,
-            "Tap + to start a new canvas, or Import a .procreate file.",
+            "Click or tap + to start a new canvas, or choose Import to open a .procreate file.",
             FontId::proportional(13.0),
             gp.text_dim,
         );
@@ -275,7 +275,7 @@ impl EskizApp {
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Label,
                 true,
-                "No artwork yet. Tap plus to start a new canvas, or Import a .procreate file.",
+                "No artwork yet. Click or tap plus to start a new canvas, or choose Import to open a .procreate file.",
             )
         });
         frame
