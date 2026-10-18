@@ -5,4 +5,4 @@ contact_links:
     about: Report a security problem privately. Do not open a public issue.
   - name: Question or idea
     url: https://github.com/evarnimtb-netizen/eskiz-app/discussions
-    about: Ask a question or talk about an idea (enable Discussions in the repository settings first).
+    about: Ask a question or talk about an idea.

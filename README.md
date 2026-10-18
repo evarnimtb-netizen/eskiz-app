@@ -2,31 +2,106 @@
   <img src="packaging/social/social-preview.png" width="100%" alt="Eskiz: a free painting app for every screen. No account. Your files stay yours. macOS, Windows, Linux, Android preview. Open source (MIT or Apache-2.0).">
 </p>
 
-Eskiz is a free, open source painting app for macOS, Windows, Linux and (experimentally) Android. It is written in Rust. It has layers with blend modes and masks, a pressure and tilt aware brush engine, selections and transforms, text layers, drawing guides, animation, 3D model painting, and a GPU-accelerated canvas. All icons, brushes and textures are drawn in code.
+<p align="center">
+  <a href="https://github.com/evarnimtb-netizen/eskiz-app/releases/latest"><b>Download Eskiz</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml"><b>Report a bug</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/evarnimtb-netizen/eskiz-app/discussions"><b>Ask a question</b></a>
+</p>
 
-**Status: first public preview (0.1.0).** It is usable, but expect rough edges. Please file issues.
+**Eskiz** is a free painting and drawing app for your computer. Sketch, paint and animate with layers, many brushes, pen pressure, selections, text, drawing guides and simple frame-by-frame animation. It opens and saves `.procreate` files, and exports PNG, JPEG, PSD, GIF and more.
 
-> Eskiz is an independent project. It is not affiliated with or endorsed by the makers of any other app; `.procreate` files are supported as a file format for compatibility.
+- **Free, with no account and no ads.** Eskiz does not collect any data. Your drawings stay on your computer.
+- **Works on** Mac, Windows and Linux. An early Android version is available too.
 
-## Install
+> **This is the first preview (version 0.1.0).** Most things work, but you may find bugs. Please [tell us](#found-a-bug) when something goes wrong; it really helps.
 
-Download a package from the [Releases page](https://github.com/evarnimtb-netizen/eskiz-app/releases) and check it against `SHA256SUMS`. These preview builds are **not code-signed** (signing certificates cost money and this is a volunteer project), so your system will warn you the first time. Here is how to open each one.
+## Download and install
 
-**macOS (universal, Apple silicon and Intel).** Open the `.dmg` and drag Eskiz to Applications. The app is ad-hoc signed but not notarized. On first launch, Control-click Eskiz, choose Open, and confirm. If macOS still refuses, open System Settings, Privacy & Security, and choose Open Anyway, or run `xattr -dr com.apple.quarantine /Applications/Eskiz.app` in Terminal.
+1. Open the **[Downloads page](https://github.com/evarnimtb-netizen/eskiz-app/releases/latest)**.
+2. Under **Assets**, click the file for your computer:
 
-**Windows (x64).** Right-click the `.zip`, choose **Extract All**, and run `eskiz.exe` from the extracted folder (not from inside the zip window). The download is not code-signed, so SmartScreen may say "Windows protected your PC": choose **More info**, then **Run anyway**. The program needs nothing else installed (the C runtime is built in). If nothing appears when you double-click, or a message box names a problem, open `%LOCALAPPDATA%\Eskiz\logs` (paste it into the Explorer address bar): `startup.log` says what happened and `panic-*.txt` has the details of a crash; please attach them to a bug report. `eskiz.exe --version`, `--selftest` and `--diagnose` print their output in the terminal they were started from. Windows builds have not yet been tested on real hardware beyond automated checks.
+   | Your computer | File to download |
+   |---|---|
+   | Mac (any Mac from the last ten years) | `Eskiz-…-macos-universal.dmg` |
+   | Windows 10 or 11 | `Eskiz-…-windows-x64.zip` |
+   | Linux | `Eskiz-…-x86_64.AppImage` |
+   | Android 10 or newer (early preview) | `Eskiz-…-android-arm64-experimental.apk` |
 
-**Linux (x86_64).** Either download the `.AppImage`, make it executable (`chmod +x Eskiz-*.AppImage`) and run it, or unpack the `.tar.gz` and run `./install.sh`. The AppImage needs a few system libraries for graphics (Vulkan or OpenGL drivers and X11 or Wayland); if one is missing Eskiz tells you which packages to install. The tarball lists its requirements in `DEPENDENCIES.txt`.
+3. Follow the steps for your system below.
 
-**Android (arm64, experimental).** Download the `.apk` on your device and allow installing from this source when asked, or install it with `adb install Eskiz-*.apk`. It needs Android 10 or newer. It is signed with a public debug key, so treat it as a preview: there is no system file picker, share sheet or clipboard integration yet.
+**Why does my computer warn me?** Big companies pay every year for a certificate that stops these warnings. Eskiz is a free volunteer project without one, so your system asks you to confirm the first time you open it. That is expected. Only download Eskiz from this page.
 
-## Build from source
+### Mac
+
+1. Double-click the downloaded `.dmg` file. A window opens.
+2. Drag the **Eskiz** icon onto the **Applications** folder.
+3. Open your **Applications** folder, **right-click** (or Control-click) **Eskiz** and choose **Open**.
+4. macOS asks if you are sure: click **Open**. You only need to do this once.
+
+If macOS still will not open it: open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the message about Eskiz.
+
+### Windows
+
+1. Find the downloaded `.zip` file (usually in **Downloads**), right-click it and choose **Extract All…**, then **Extract**.
+2. Open the new **Eskiz** folder and double-click **eskiz.exe**.
+3. If a blue window says **"Windows protected your PC"**, click **More info**, then **Run anyway**. You only need to do this once.
+
+Tip: to start Eskiz more easily, right-click `eskiz.exe` and choose **Pin to Start** or **Send to → Desktop (create shortcut)**.
+
+If nothing happens or an error appears, see [Something does not start](#something-does-not-start).
+
+### Linux
+
+1. Right-click the downloaded `.AppImage` file, choose **Properties → Permissions** and tick **Allow executing file as program** (or run `chmod +x Eskiz-*.AppImage` in a terminal).
+2. Double-click it to start Eskiz.
+
+If Eskiz says a graphics library is missing, it tells you which package to install. A `.tar.gz` package with an `install.sh` script is also on the Downloads page.
+
+### Android (early preview)
+
+1. Download the `.apk` file on your phone or tablet and open it.
+2. If asked, allow your browser or file app to install apps, then tap **Install**.
+
+The Android version is experimental: saving to other apps, sharing and the clipboard are not there yet.
+
+## Found a bug?
+
+**[Click here to report a bug](https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml).** A short form opens; fill in what you can. It helps a lot to include:
+
+- what you did, what happened, and what you expected;
+- your system (for example "Mac, macOS 15" or "Windows 10 laptop");
+- a screenshot, if you can.
+
+You need a free GitHub account to send the form. Have a question or an idea instead? [Ask in Discussions](https://github.com/evarnimtb-netizen/eskiz-app/discussions). Found a security problem? Please report it privately as described in [SECURITY.md](SECURITY.md).
+
+### Something does not start
+
+- **Windows:** Eskiz writes notes about its start-up to a folder. Press **Windows key + R**, paste `%LOCALAPPDATA%\Eskiz\logs`, press **Enter**, and attach the files you find there (`startup.log` and any `panic-…txt`) to your bug report.
+- **Any system:** in Eskiz's folder, running `eskiz --diagnose` from a terminal prints a short report about your graphics setup that you can paste into the bug report.
+
+## Good to know
+
+- **Files:** Eskiz saves your drawings in its own gallery. Use **Share** to export them as PNG, JPEG, PSD, `.procreate`, GIF and other formats.
+- **Not in this version:** MP4 video export (GIF and APNG animations work).
+- **Independent project:** Eskiz is not affiliated with or endorsed by the makers of any other app. `.procreate` files are supported only for compatibility.
+- **Privacy:** Eskiz collects nothing and needs no internet connection. Details in [PRIVACY.md](PRIVACY.md).
+- **Support:** Eskiz is free and always will be. A way to donate may be added here later; donating will never unlock features.
+
+<!-- Donation link placeholder: add it here (and in .github/FUNDING.yml) when the maintainer has an account. -->
+
+---
+
+## For developers
+
+### Build from source
 
 You need the Rust toolchain installer, [rustup](https://rustup.rs). The right Rust version is picked from `rust-toolchain.toml`.
 
 ```
 git clone https://github.com/evarnimtb-netizen/eskiz-app.git
-cd eskiz
+cd eskiz-app
 cargo run --release -p eskiz-app
 ```
 
@@ -46,25 +121,13 @@ cargo build --release -p eskiz-app --locked
 ./target/release/eskiz --selftest
 ```
 
-`eskiz --diagnose` prints a report about your graphics setup that is useful in bug reports. Packaging scripts for each platform are in `packaging/`, and the Android project is in `android/`. `INTEGRATION.md` explains how the crates fit together.
+Packaging scripts for each platform are in `packaging/`, and the Android project is in `android/`. `INTEGRATION.md` explains how the crates fit together. Downloads come with a `SHA256SUMS` file if you want to check them.
 
-## What is and is not in 0.1.0
+### Contributing
 
-MP4 export is not included in the distributed builds (GIF, APNG and PNG sequences are). Details are in `CHANGELOG.md`.
+Bug reports, feature ideas and patches are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; contributions need a DCO sign-off. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Eskiz reads and writes `.procreate` files for compatibility. The name refers only to that file format.
-
-## Contributing
-
-Bug reports, feature ideas and patches are welcome. Read `CONTRIBUTING.md` first; contributions need a DCO sign-off. Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). To report a security problem, see `SECURITY.md`. Eskiz does not collect any data; see `PRIVACY.md`.
-
-## Support
-
-Eskiz is free and always will be. If you would like to support its development, a donation link will appear here. Donating is optional and never unlocks features or priority.
-
-<!-- Donation link placeholder: add it here (and in .github/FUNDING.yml) when the maintainer has an account. -->
-
-## License
+### License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Third-party notices are in `THIRD_PARTY_NOTICES.md` and are included in every package.
 

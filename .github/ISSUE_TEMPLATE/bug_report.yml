@@ -5,13 +5,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Please do not attach artwork you do not want to share publicly.
+        Thank you for taking the time to report this! Fill in what you can; it is fine to leave fields
+        empty if you are not sure. This page is public, so only attach pictures you are happy to share.
         For security problems, do not use this form: see SECURITY.md.
   - type: input
     id: version
     attributes:
       label: Eskiz version
-      description: Shown in About, or in the file name you downloaded (for example 0.1.0).
+      description: The number in the file name you downloaded (for example 0.1.0), or in Actions > Help > About.
     validations:
       required: true
   - type: dropdown
@@ -29,40 +30,43 @@ body:
   - type: input
     id: os-version
     attributes:
-      label: OS version
-      placeholder: e.g. macOS 15.1, Windows 11 23H2, Ubuntu 24.04
+      label: System version and computer
+      placeholder: e.g. macOS 15 on a MacBook Air, Windows 10 laptop, Ubuntu 24.04
     validations:
-      required: true
+      required: false
   - type: input
     id: gpu
     attributes:
-      label: Graphics card and driver
-      description: If you know it. Run `eskiz --diagnose` for a summary you can paste below.
-      placeholder: e.g. Apple M2, NVIDIA RTX 3060 (driver 560), Intel UHD 620 (Mesa 24.2)
+      label: Graphics card (optional)
+      description: Only if you know it. Developers can run `eskiz --diagnose` for a summary to paste below.
+      placeholder: e.g. Apple M2, NVIDIA RTX 3060, Intel UHD 620
     validations:
-      required: true
+      required: false
   - type: input
     id: input-device
     attributes:
-      label: Pen or tablet
-      description: Leave empty if you use a mouse or touchpad.
+      label: Pen or tablet (optional)
+      description: For example "Wacom Intuos" or "iPad with Apple Pencil through Sidecar". Leave empty if you use a mouse or touchpad.
   - type: textarea
     id: what
     attributes:
       label: What happened, and what did you expect?
+      placeholder: e.g. I pressed Undo and the whole layer disappeared. I expected only the last stroke to go.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Steps to reproduce
+      label: How can we see it happen? (optional)
+      description: The steps that lead to the problem, if you know them.
       placeholder: |
-        1. New canvas 2048 x 2048
-        2. ...
+        1. Make a new canvas
+        2. Choose the Graphite brush
+        3. ...
     validations:
-      required: true
+      required: false
   - type: textarea
     id: extra
     attributes:
-      label: Logs, screenshots or a small file that shows the problem
-      description: Drag files into this box. Only share files you are allowed to share.
+      label: Screenshots, logs or a small file (optional)
+      description: Drag files into this box. On Windows, the start-up logs are in %LOCALAPPDATA%\Eskiz\logs. Only share files you are allowed to share.
