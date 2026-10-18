@@ -3,7 +3,8 @@ name: Release
 # Builds the downloadable packages and, for a version tag, creates a DRAFT GitHub release. Nothing is
 # published until a maintainer reviews the draft and presses "Publish release".
 #
-#   - push a tag `vX.Y.Z` (it must match the version in Cargo.toml), or
+#   - push a tag `vX.Y.Z` (it must match the version in Cargo.toml), or a release-candidate tag
+#     `vX.Y.Z-rcN` (same version; the release is marked as a pre-release), or
 #   - run it by hand (Actions tab, "Run workflow"). A manual run is a dry run unless you untick the
 #     box; a dry run builds everything and uploads the files as workflow artifacts only.
 #
@@ -34,6 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,10 +46,17 @@ jobs:
         run: |
           version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version v$version" >&2
-            exit 1
+          tag="v$version"; prerelease=false
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            case "$GITHUB_REF_NAME" in
+              "v$version") ;;
+              "v$version"-rc[0-9]*) prerelease=true ;;
+              *) echo "tag $GITHUB_REF_NAME does not match Cargo.toml version v$version (or v$version-rcN)" >&2; exit 1 ;;
+            esac
+            tag="$GITHUB_REF_NAME"
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
 
   macos:
@@ -242,10 +252,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check-version.outputs.version }}
+          TAG: ${{ needs.check-version.outputs.tag }}
+          PRERELEASE: ${{ needs.check-version.outputs.prerelease }}
         run: |
-          gh release create "v$VERSION" release-files/* \
+          title="Eskiz $VERSION"; extra=""
+          if [ "$PRERELEASE" = true ]; then
+            title="Eskiz $VERSION (release candidate ${TAG##*-rc})"
+            extra="--prerelease"
+          fi
+          gh release create "$TAG" release-files/* \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Eskiz $VERSION" --notes-file release-notes.md --draft
+            --title "$title" --notes-file release-notes.md --draft $extra
       - name: Dry run summary
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: |

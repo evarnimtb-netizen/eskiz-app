@@ -6,6 +6,21 @@ All notable changes to Eskiz are listed here. The format follows [Keep a Changel
 
 First public preview of Eskiz, a free, open source painting app for macOS, Windows, Linux and (experimentally) Android.
 
+### In short
+
+- **Paint and draw** with dozens of brushes, pen pressure and tilt (Wacom-style tablets, and an iPad with Apple Pencil through Sidecar on a Mac), smoothing, smudge, eraser and fill.
+- **Layers** with blend modes, masks and clipping; **selections**, **transform** and **adjustments** such as blur, curves and hue.
+- **Text**, **drawing guides** (grid, perspective, symmetry), simple **frame-by-frame animation** (export as GIF or APNG), and painting on **3D models**.
+- **Opens and saves `.procreate` files**, and exports PNG, JPEG, PSD, PDF and more.
+- **Free, no account, no ads, no data collected.** Your drawings stay on your computer.
+- **New here?** A short welcome tour shows the basics; replay it any time from Actions > Help > Welcome tour.
+
+**How to install:** pick the file for your computer under **Assets** below and follow the steps in the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install). The apps are not code-signed, so your system asks you to confirm the first time you open them; that is expected.
+
+**Found a bug?** [Report it here](https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml). It helps a lot.
+
+The full list of changes follows.
+
 ### Added
 
 - A skippable welcome tour on first launch: a sample canvas and three coach marks (paint, undo, brush size). Replay it from Actions > Help > Welcome tour.
