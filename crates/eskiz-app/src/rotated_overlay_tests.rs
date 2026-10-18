@@ -369,7 +369,7 @@ fn edit_shape_handles_follow_a_rotated_view() {
 #[test]
 #[cfg_attr(
     target_os = "macos",
-    ignore = "macOS fonts make \"Hello\" so narrow that the click lands in the width handle's 12 px grab zone; queued in docs/progress/rc1-feedback/rc6-queue.md"
+    ignore = "macOS fonts make \"Hello\" so narrow that the click lands in the width handle's 12 px grab zone (known issue, fix planned)"
 )]
 fn text_box_caret_and_width_handle_follow_a_rotated_view() {
     use crate::text_tool::caret_geometry;
