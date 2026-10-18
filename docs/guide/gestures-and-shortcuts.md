@@ -59,7 +59,7 @@ While a text layer is being edited, the keys go to the text instead of the tools
 ## Mouse, trackpad and pen
 
 - **Space and drag** pans the view. **R and drag sideways** rotates it (works with a pen, a mouse or a trackpad click-drag), and the view sticks at 0, 90, 180 and 270 degrees. On a Mac trackpad, **twist two fingers** to rotate; the view snaps the same way.
-- **Rotate canvas 90° left / right** and **Reset rotation** are in the Canvas tab of the Actions menu, and on **Cmd+Alt+Left**, **Cmd+Alt+Right** and **Cmd+Alt+0**. A toast shows the angle ("Rotation 90°"). Rotating only turns the view: the picture is not changed, and painting, selection, transform and the brush cursor follow the turned canvas. **Cmd+0** fits the canvas and also turns it upright.
+- **Rotate canvas 90° left / right** and **Reset rotation** are in the Canvas tab of the Actions menu, and on **Cmd+Alt+Left**, **Cmd+Alt+Right** and **Cmd+Alt+0**. A toast shows the angle ("Rotation 90°"). Rotating only turns the view: the picture is not changed, and painting, selection, transform and the brush cursor follow the turned canvas, at any angle and not only in quarter turns. The Crop & Resize rectangle and its handles turn with the canvas, and a rectangle or ellipse selection is the box you draw on screen (a tilted box on a tilted canvas). Text boxes, Edit Shape handles, the Liquify ring, Pour Fill, Pick Color and the drawing guides follow the view too. **Cmd+0** fits the canvas and also turns it upright.
 - The **wheel** pans the view. **Ctrl and the wheel** zooms it.
 - **Alt** (Option on macOS) and a click or drag pick a color (eyedropper).
 - A pen's barrel button picks a color, as a hold of the Pick Color button does.

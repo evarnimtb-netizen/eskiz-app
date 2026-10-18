@@ -70,18 +70,10 @@ try {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -Path $exe -Destination (Join-Path $stage 'eskiz.exe')
     Copy-Item -Path (Join-Path $eskizDir 'packaging\icons\eskiz.ico') -Destination (Join-Path $stage 'eskiz.ico')
-    Set-Content -Path (Join-Path $stage 'README-Windows.txt') -Encoding utf8 -Value @"
-Eskiz $version for Windows
-
-1. Extract the whole zip first (right-click the zip, Extract All...). Do not run eskiz.exe from
-   inside the zip window.
-2. Double-click eskiz.exe. If Windows says "Windows protected your PC" (SmartScreen), click
-   "More info", then "Run anyway". The download is not code-signed.
-3. If nothing appears, or a message box names a problem, look in
-   %LOCALAPPDATA%\Eskiz\logs  (paste that into the Explorer address bar).
-   startup.log lists what happened; panic-*.txt has the details of a crash. Please send them.
-4. In a terminal, eskiz.exe --version, --selftest and --diagnose print their result there.
-"@
+    # README-Windows.txt and the compatibility launcher are files next to this script.
+    $readme = (Get-Content -Raw -Path (Join-Path $here 'README-Windows.txt')).Replace('0.1.0', $version)
+    Set-Content -Path (Join-Path $stage 'README-Windows.txt') -Encoding utf8 -Value $readme
+    Copy-Item -Path (Join-Path $here 'Eskiz (compatibility mode).bat') -Destination (Join-Path $stage 'Eskiz (compatibility mode).bat')
     foreach ($f in 'THIRD_PARTY_NOTICES.md', 'LICENSE-MIT', 'LICENSE-APACHE') {
         $src = Join-Path $eskizDir $f
         if (-not (Test-Path $src)) { throw "missing $src" }

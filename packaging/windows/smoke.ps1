@@ -4,7 +4,9 @@
 #      --diagnose --window (GPU adapter and backend, scale factor of a real window).
 #   2. Opens the real window on selftest.procreate, takes screenshots, paints one stroke with real
 #      mouse input, presses Ctrl+Z, and counts how many pixels each step changed.
-#   3. Closes the window and checks that the app never exited on its own.
+#   3. Closes the window and checks that the app never exited on its own, and that it never turned
+#      "Not Responding" (IsHungAppWindow) or left a stalled.marker.
+#   4. Opens the same document again with `--renderer gl` (compatibility mode) and checks the same.
 #
 # Output folder (default eskiz\target\windows-smoke): numbered *.png screenshots (whole screen and
 # the window alone), one log per command, eskiz-diagnose.md and smoke-report.md. In GitHub Actions
@@ -42,6 +44,10 @@ $env:ESKIZ_LIBRARY_DIR = Join-Path $data 'library'
 $env:ESKIZ_BRUSH_DIR = Join-Path $data 'brushes'
 $env:ESKIZ_FONT_DIR = Join-Path $data 'fonts'
 $env:RUST_BACKTRACE = '1'
+# The start-up log, crash marker and stall marker of the runs go here, not to %LOCALAPPDATA%.
+$script:logDir = Join-Path $OutDir 'logs'
+New-Item -ItemType Directory -Force -Path $script:logDir | Out-Null
+$env:ESKIZ_LOG_DIR = $script:logDir
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -53,6 +59,7 @@ public static class SmokeWin {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int cmd);
@@ -152,6 +159,28 @@ function Invoke-Eskiz([string]$name, [string[]]$arguments, [int]$timeout) {
     $first = (Get-Content -Path $out -TotalCount 1 -ErrorAction SilentlyContinue)
     Add-Row "eskiz $($arguments -join ' ')" 'PASS' $first
     $true
+}
+
+# A window that stops answering is "Not Responding" (IsHungAppWindow, Process.Responding). Windows
+# takes about 5 s to decide, so a check is a pair of looks a few seconds apart; one hit is a failure.
+# The app's own watchdog also leaves `STALL:` in startup.log (ESKIZ_LOG_DIR below).
+function Test-Hung($proc, [IntPtr]$hwnd, [string]$step) {
+    if ($proc.HasExited) { return $false }
+    $proc.Refresh()
+    $hung = [SmokeWin]::IsHungAppWindow($hwnd) -or (-not $proc.Responding)
+    if ($hung) {
+        Fail "hung window ($step)" 'the window is "Not Responding" (IsHungAppWindow). The app froze; see startup.log STALL line in the artifact.'
+    }
+    $hung
+}
+
+function Save-StartupLog([string]$name) {
+    $log = Join-Path $script:logDir 'startup.log'
+    if (Test-Path $log) { Copy-Item -Force $log (Join-Path $OutDir "$name-startup.log") }
+    $marker = Join-Path $script:logDir 'stalled.marker'
+    if (Test-Path $marker) {
+        Fail "stall marker ($name)" "the app's watchdog saw a stall: $((Get-Content $marker) -join ' ')"
+    }
 }
 
 # ------------------------------------------------------------------------------------- capture
@@ -264,6 +293,42 @@ function Invoke-Undo {
 
 $sample = Join-Path ([System.IO.Path]::GetTempPath()) 'selftest.procreate'
 $app = $null
+# The same document once more with --renderer gl (the compatibility mode in the zip): it must open,
+# stay responsive and close cleanly.
+function Invoke-CompatRun {
+    Write-Host "== window with --renderer gl"
+    if (-not (Test-Path $sample)) { Fail 'window (--renderer gl)' "no $sample"; return }
+    Save-StartupLog 'main'
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $script:logDir 'startup.log'), (Join-Path $script:logDir 'starting.marker'), (Join-Path $script:logDir 'stalled.marker')
+    $gl = Start-Eskiz 'window-gl' @('--renderer', 'gl', "`"$sample`"")
+    try {
+        $deadline = (Get-Date).AddSeconds($WindowTimeout)
+        while ((Get-Date) -lt $deadline -and -not $gl.HasExited) {
+            $gl.Refresh()
+            if ($gl.MainWindowHandle -ne [IntPtr]::Zero) { break }
+            Start-Sleep -Milliseconds 250
+        }
+        $h = $gl.MainWindowHandle
+        if ($gl.HasExited) { Fail 'window (--renderer gl)' "exited with $($gl.ExitCode) before its window appeared. $(Tail (Join-Path $OutDir 'window-gl.err.log'))"; return }
+        if ($h -eq [IntPtr]::Zero) { Fail 'window (--renderer gl)' "no window after $WindowTimeout s"; return }
+        Start-Sleep -Seconds 6
+        [void](Save-Shot $h '07-gl-opened')
+        $hung = Test-Hung $gl $h '--renderer gl'
+        $logFile = Join-Path $script:logDir 'startup.log'
+        $chosen = ''
+        if (Test-Path $logFile) { $chosen = (Select-String -Path $logFile -Pattern 'renderer: ' | Select-Object -First 1).Line }
+        if (-not $hung) { Add-Row 'window (--renderer gl)' 'PASS' "responsive. $chosen" }
+        if ($chosen -and $chosen -notmatch 'glow|OpenGL') { Warn 'window (--renderer gl)' "the log does not say OpenGL: $chosen" }
+    }
+    finally {
+        if (-not $gl.HasExited) {
+            [void]$gl.CloseMainWindow()
+            if (-not $gl.WaitForExit(15000)) { $gl.Kill(); $gl.WaitForExit() }
+        }
+        Save-StartupLog 'gl'
+    }
+}
+
 try {
     Remove-Item -Force -Path $sample -ErrorAction SilentlyContinue
     $os = Get-CimInstance Win32_OperatingSystem
@@ -305,6 +370,7 @@ try {
             Add-Row 'window opens' 'PASS' "title '$($app.MainWindowTitle)'"
             # Let it draw a few frames on a slow software renderer.
             Start-Sleep -Seconds 5
+            if (-not (Test-Hung $app $hwnd 'after opening')) { Add-Row 'responsive after opening' 'PASS' 'not hung' }
             $opened = Save-Shot $hwnd '01-opened'
             if ([SmokeWin]::NotLikeFirst($opened.Screen) -eq 0) { Warn 'screen capture' 'the screenshot is one flat colour' }
 
@@ -320,6 +386,7 @@ try {
             Invoke-Stroke $hwnd
             Start-Sleep -Seconds 2
             $stroke = Save-Shot $hwnd '03-stroke'
+            [void](Test-Hung $app $hwnd 'after the stroke')
             $change = Describe-Change $before $stroke
             if ($app.HasExited) { Fail 'stroke' "the app exited with $($app.ExitCode)" }
             elseif ($change.Screen -gt 200 -or $change.Window -gt 200) { Add-Row 'stroke' 'PASS' "changed: $($change.Text)" }
@@ -330,6 +397,7 @@ try {
             Invoke-Undo
             Start-Sleep -Seconds 2
             $undo = Save-Shot $hwnd '04-undo'
+            [void](Test-Hung $app $hwnd 'after undo')
             $back = Describe-Change $stroke $undo
             $left = Describe-Change $before $undo
             if ($app.HasExited) { Fail 'undo' "the app exited with $($app.ExitCode)" }
@@ -339,6 +407,7 @@ try {
             Write-Host "== idle 5 s"
             Start-Sleep -Seconds 5
             $app.Refresh()
+            [void](Test-Hung $app $hwnd 'idle')
             if ($app.HasExited) { Fail 'idle' "the app exited with $($app.ExitCode)" } else { Add-Row 'idle 5 s' 'PASS' "still running, $([math]::Round($app.WorkingSet64 / 1MB)) MB working set" }
             [void](Save-Shot $hwnd '05-idle')
         }
@@ -365,6 +434,8 @@ catch {
     Fail 'smoke script' "$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))"
     if ($app -and -not $app.HasExited) { $app.Kill() }
 }
+
+try { Invoke-CompatRun } catch { Fail 'compat run' "$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" }
 
 # ------------------------------------------------------------------------------------- summary
 

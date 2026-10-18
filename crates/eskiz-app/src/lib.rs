@@ -107,6 +107,8 @@ mod rc3_tests;
 #[cfg(test)]
 mod rc5_tests;
 #[cfg(test)]
+mod rotated_overlay_tests;
+#[cfg(test)]
 mod rc3_look_tests;
 #[cfg(test)]
 mod qa1_tests;
@@ -128,6 +130,7 @@ pub mod snapshot;
 mod qa_capture;
 pub mod tablet;
 pub mod tablet_backend;
+pub mod stall;
 pub mod startup;
 #[cfg(any(target_os = "macos", test))]
 pub mod tablet_mac;
@@ -160,6 +163,9 @@ Eskiz - painting app
 
 USAGE:
     eskiz [FILE.procreate]              open the window (optionally with a document)
+    eskiz --renderer gl|dx12|vulkan|auto [FILE]
+                                        pick the graphics renderer (same as ESKIZ_RENDERER);
+                                        gl is the compatible OpenGL mode, auto forgets stalls
     eskiz --open FILE --export OUT.png  export a document to PNG without a window
     eskiz --version                     print the version
     eskiz --selftest                    paint, undo and redo headlessly; writes selftest.png
@@ -176,8 +182,29 @@ pub fn version_line() -> String {
     format!("Eskiz {}", env!("CARGO_PKG_VERSION"))
 }
 
+/// Take `--renderer VALUE` (or `--renderer=VALUE`) out of the arguments. Returns the requested
+/// mode, if any, and the remaining arguments.
+pub fn split_renderer_flag(args: &[String]) -> Result<(Option<renderer::Mode>, Vec<String>), String> {
+    let mut mode = None;
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--renderer" {
+            let value = it.next().ok_or("--renderer needs gl, dx12, vulkan or auto")?;
+            mode = Some(renderer::Mode::parse_flag(value)?);
+        } else if let Some(value) = arg.strip_prefix("--renderer=") {
+            mode = Some(renderer::Mode::parse_flag(value)?);
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Ok((mode, rest))
+}
+
 /// Parse command-line arguments (without the program name).
 pub fn parse_args(args: &[String]) -> Result<Command, String> {
+    let (_, args) = split_renderer_flag(args)?;
+    let args = &args[..];
     let mut open = None;
     let mut export = None;
     let mut selftest = false;
@@ -234,6 +261,9 @@ pub fn run() {
     journal::install_panic_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let parsed = parse_args(&args);
+    if let Ok((Some(mode), _)) = split_renderer_flag(&args) {
+        renderer::set_cli_request(mode);
+    }
     // Commands that print: on Windows the release exe is a GUI program with no console of its own.
     if matches!(parsed, Ok(Command::Gui { .. } | Command::Icons)) {
         startup::install_panic_hook();
@@ -393,6 +423,22 @@ fn android_main(android_app: android_activity::AndroidApp) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn renderer_flag_is_parsed_and_removed() {
+        let a = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let (m, rest) = split_renderer_flag(&a(&["--renderer", "gl", "doc.procreate"])).unwrap();
+        assert_eq!((m, rest), (Some(renderer::Mode::Gl), a(&["doc.procreate"])));
+        assert_eq!(split_renderer_flag(&a(&["--renderer=dx12"])).unwrap().0, Some(renderer::Mode::Dx12));
+        assert_eq!(split_renderer_flag(&a(&["--renderer", "vulkan"])).unwrap().0, Some(renderer::Mode::Vulkan));
+        assert_eq!(split_renderer_flag(&a(&["--renderer", "auto"])).unwrap().0, Some(renderer::Mode::Auto));
+        assert_eq!(split_renderer_flag(&a(&["x"])).unwrap().0, None);
+        assert!(split_renderer_flag(&a(&["--renderer"])).is_err());
+        assert!(split_renderer_flag(&a(&["--renderer", "metal"])).is_err());
+        // The flag does not disturb the rest of the command line.
+        assert_eq!(parse_args(&a(&["--renderer", "gl"])), Ok(Command::Gui { file: None }));
+        assert_eq!(parse_args(&a(&["--renderer", "gl", "--version"])), Ok(Command::Version));
+    }
+
     use super::*;
 
     fn args(v: &[&str]) -> Vec<String> {

@@ -69,7 +69,7 @@ pub enum Pending {
     /// Polygon vertices placed so far, canvas points.
     Polygon(Vec<Point>),
     /// Rectangle or ellipse from `a` to `b`, canvas points.
-    Drag { shape: Shape, a: Point, b: Point },
+    Drag { shape: Shape, a: Point, b: Point, rot: f32 },
 }
 
 /// Selection tool state. The selection itself lives in the session (it is undoable).
@@ -590,7 +590,7 @@ impl EskizApp {
                         }
                     }
                     shape @ (Shape::Rectangle | Shape::Ellipse) => {
-                        self.sel.pending = Pending::Drag { shape, a: c, b: c };
+                        self.sel.pending = Pending::Drag { shape, a: c, b: c, rot: self.view.rotation };
                     }
                 }
             }
@@ -634,7 +634,7 @@ impl EskizApp {
                     }
                 }
                 Pending::Freehand(stroke) => self.commit_selection_mask(stroke.finish(w, h)),
-                Pending::Drag { shape, a, b } => self.commit_selection_mask(shape_mask(shape, a, b, w, h)),
+                Pending::Drag { shape, a, b, rot } => self.commit_selection_mask(drag_mask(shape, a, b, rot, w, h)),
                 Pending::Idle | Pending::Polygon(_) => {}
             }
             self.sel.preview = None;
@@ -709,20 +709,57 @@ pub enum TransformAction {
     Cancel,
 }
 
-/// Shape of a rectangle or ellipse as a closed canvas polyline, for the preview.
-pub(crate) fn preview_polyline(shape: Shape, a: Point, b: Point) -> Vec<Point> {
+/// Is `rot` (radians) a whole number of quarter turns, so a screen-aligned box is also canvas-aligned?
+fn is_quarter_turn(rot: f32) -> bool {
+    let q = std::f32::consts::FRAC_PI_2;
+    ((rot / q).round() * q - rot).abs() < 1e-4
+}
+
+/// Shape of a rectangle or ellipse as a closed canvas polyline, for the preview. The box is the
+/// one the pointer drew on screen: on a view rotated by `rot` radians it is a rotated box on the
+/// canvas (a whole number of quarter turns keeps it canvas-aligned).
+pub(crate) fn preview_polyline(shape: Shape, a: Point, b: Point, rot: f32) -> Vec<Point> {
+    if is_quarter_turn(rot) {
+        return match shape {
+            Shape::Ellipse => {
+                let c = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+                let (rx, ry) = ((b.x - a.x).abs() / 2.0, (b.y - a.y).abs() / 2.0);
+                ellipse_points(|u, v| Point::new(c.x + u * rx, c.y + v * ry))
+            }
+            _ => vec![a, Point::new(b.x, a.y), b, Point::new(a.x, b.y)],
+        };
+    }
+    let (sn, cs) = rot.sin_cos();
+    // Canvas vector to the screen frame and back (rotation only; the zoom is uniform).
+    let to_screen = |x: f32, y: f32| (x * cs - y * sn, x * sn + y * cs);
+    let to_canvas = |x: f32, y: f32| (x * cs + y * sn, -x * sn + y * cs);
+    let (dx, dy) = to_screen(b.x - a.x, b.y - a.y);
+    let at = |u: f32, v: f32| {
+        let (x, y) = to_canvas(u, v);
+        Point::new(a.x + x, a.y + y)
+    };
     match shape {
-        Shape::Ellipse => {
-            let c = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
-            let (rx, ry) = ((b.x - a.x).abs() / 2.0, (b.y - a.y).abs() / 2.0);
-            (0..96)
-                .map(|i| {
-                    let t = std::f32::consts::TAU * i as f32 / 96.0;
-                    Point::new(c.x + rx * t.cos(), c.y + ry * t.sin())
-                })
-                .collect()
-        }
-        _ => vec![a, Point::new(b.x, a.y), b, Point::new(a.x, b.y)],
+        Shape::Ellipse => ellipse_points(|u, v| at(dx / 2.0 + u * dx.abs() / 2.0, dy / 2.0 + v * dy.abs() / 2.0)),
+        _ => vec![at(0.0, 0.0), at(dx, 0.0), at(dx, dy), at(0.0, dy)],
+    }
+}
+
+/// 96 points on the unit circle, mapped through `f`.
+fn ellipse_points(f: impl Fn(f32, f32) -> Point) -> Vec<Point> {
+    (0..96)
+        .map(|i| {
+            let t = std::f32::consts::TAU * i as f32 / 96.0;
+            f(t.cos(), t.sin())
+        })
+        .collect()
+}
+
+/// The mask of a rectangle or ellipse dragged from `a` to `b` on a view rotated by `rot` radians.
+pub fn drag_mask(shape: Shape, a: Point, b: Point, rot: f32, width: usize, height: usize) -> Mask {
+    if is_quarter_turn(rot) {
+        shape_mask(shape, a, b, width, height)
+    } else {
+        raster::polygon(width, height, &preview_polyline(shape, a, b, rot))
     }
 }
 

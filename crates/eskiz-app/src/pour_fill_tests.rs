@@ -161,3 +161,28 @@ fn releasing_off_the_canvas_cancels() {
     h.open_panel(Panel::Colour);
     assert!(h.app.popovers.is_open());
 }
+
+/// The drop point and the filled region follow a rotated view (0, 33, 90 and 180 degrees).
+#[test]
+fn pour_fill_drops_on_the_canvas_pixel_under_a_rotated_view() {
+    for deg in [0.0f32, 33.0, 90.0, 180.0] {
+        let mut h = scene(false);
+        let vp = h.app.viewport;
+        h.app.view.rotate_at(vp, vp.center(), deg.to_radians());
+        h.advance(0.1);
+        // Inside the circle, outside the square.
+        let target = screen(&h, 1000.0, 500.0);
+        drag_to(&mut h, target);
+        h.advance(0.5);
+        match h.app.pour_fill.map(|s| s.phase) {
+            Some(DropPhase::Dropped { seed, .. }) => assert_eq!(seed, (1000, 500), "{deg}"),
+            other => panic!("{deg}: expected a preview, got {other:?}"),
+        }
+        settle(&mut h);
+        h.press(target, false);
+        h.step();
+        assert_eq!(pixel(&h, 1000, 500), [226, 84, 60, 255], "{deg}");
+        assert_eq!(pixel(&h, 800, 500)[3], 0, "{deg}: the inner square stays empty");
+        assert_eq!(pixel(&h, 100, 100)[3], 0, "{deg}: outside the circle stays empty");
+    }
+}

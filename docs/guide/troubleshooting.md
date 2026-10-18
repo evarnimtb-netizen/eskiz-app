@@ -18,6 +18,18 @@ Eskiz draws with the graphics card through wgpu (Metal, DirectX 12 or Vulkan). I
 
 Values are not case-sensitive. An unknown value means the default.
 
+## The window freezes ("Not Responding")
+
+Some graphics drivers stop answering. Eskiz limits every wait on the graphics card to under two seconds; if one runs out, it switches to the processor for the rest of the session and shows "Graphics driver is slow; switched to compatible mode". A watchdog also notices a window that does not finish a frame for 3 seconds: it writes a `STALL:` line to `startup.log` (with the phase it was in) and leaves a `stalled.marker` file. Close the frozen window (Task Manager > End task) and start Eskiz again: it skips the renderer that froze and tells you so. The order is automatic, DirectX 12, Vulkan, then OpenGL.
+
+You can pick the renderer yourself:
+
+- Start `eskiz.exe --renderer gl` (also `dx12`, `vulkan` or `auto`; `auto` forgets earlier freezes). On Windows, the zip has **Eskiz (compatibility mode).bat**, which does this for you.
+- Or open Actions, then **Settings**, then **Graphics**, and turn on **Compatibility graphics (OpenGL)**. It applies the next time Eskiz starts.
+- `ESKIZ_RENDERER=gl` does the same as `--renderer gl`; the command line wins.
+
+Compatibility mode is slower on large canvases, but works on nearly every PC. Please send `startup.log` when you report a freeze.
+
 ## Windows: double-clicking eskiz.exe does nothing
 
 Work through these in order.
@@ -25,7 +37,7 @@ Work through these in order.
 1. **Extract the zip first.** Right-click the `.zip`, choose **Extract All**, and run `eskiz.exe` from the new folder. Running it from inside the zip window does not work.
 2. **SmartScreen.** The download is not code-signed, so Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
 3. **Read the log.** Open `%LOCALAPPDATA%\Eskiz\logs` (paste it into the Explorer address bar). `startup.log` lists each start-up step, the graphics adapter and backend that were chosen, and "first frames drawn" when the window came up. `startup.prev.log` is the run before. If Eskiz crashed, `panic-<number>.txt` holds the message, the place in the code and a backtrace. When the start fails, Eskiz also shows a message box with the reason and this folder.
-4. **Graphics.** If the previous start never drew its first frames (a graphics driver can end the process without any message), Eskiz notices the next time and tries a safer renderer: first DirectX 12 only, then OpenGL. Check `startup.log` for lines starting `renderer attempt`. You can also force it: set `ESKIZ_RENDERER=gl` (OpenGL) or `ESKIZ_RENDERER=cpu`. Updating the graphics driver usually fixes it for good.
+4. **Graphics.** If the previous start never drew its first frames (a graphics driver can end the process without any message), Eskiz notices the next time and tries a safer renderer: first DirectX 12 only, then Vulkan only, then OpenGL. Check `startup.log` for lines starting `renderer attempt`. You can also force it: set `ESKIZ_RENDERER=gl` (OpenGL) or `ESKIZ_RENDERER=cpu`. Updating the graphics driver usually fixes it for good.
 5. **Terminal output.** Start `eskiz.exe --version`, `--selftest` or `--diagnose` from PowerShell or Command Prompt; the result prints in that window. Please send the `--diagnose` output and the files from the logs folder when you report a problem.
 
 Eskiz is built with the C runtime inside, so the Visual C++ Redistributable is not needed.

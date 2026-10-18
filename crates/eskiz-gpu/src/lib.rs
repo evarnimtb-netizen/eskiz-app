@@ -15,7 +15,7 @@ pub mod compositor;
 
 pub use adjust::{Adjuster, Adjustment};
 pub use compositor::{CompositeStats, Compositor, Region, BATCH_TILES};
-pub use context::{block_on, probe_adapters, AdapterKind, AdapterProbe, GpuContext, GpuError, GpuOptions};
+pub use context::{block_on, bounded_wait, GPU_WAIT_BOUND, probe_adapters, AdapterKind, AdapterProbe, GpuContext, GpuError, GpuOptions};
 pub use eskiz_core::Depth;
 pub use layer::{f16_to_unorm16, unorm16_to_f16, GpuLayer, GpuMask};
 pub use scene::{mode_index, BlendMode, Scene, SceneGroup, SceneItem, SceneLayer};

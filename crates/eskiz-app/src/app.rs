@@ -127,6 +127,8 @@ pub struct Prefs {
     pub touch_painting: bool,
     /// Turn off popover and gallery zoom animations. The OS setting is also honoured.
     pub reduce_motion: bool,
+    /// Settings > Graphics: Compatibility (OpenGL) instead of Automatic. Applied on the next start.
+    pub compat_graphics: bool,
 }
 
 impl Default for Prefs {
@@ -153,6 +155,7 @@ impl Default for Prefs {
             fullscreen_taps: true,
             touch_painting: true,
             reduce_motion: false,
+            compat_graphics: false,
         }
     }
 }
@@ -170,7 +173,7 @@ impl Prefs {
     /// `key=value` pairs separated by `;`.
     pub fn encode(&self) -> String {
         format!(
-            "ver={PREFS_VERSION};light={};right={};cursor={};eyedrop={};hold_shape={};sidebar_y={};pcurve={};undo_gest={};repeat_undo={};touch_nav={};tl={};tlq={};tlr={};eyed_s={:.2};qs_s={:.2};scrub={};swipe={};fs4={};touch_paint={};rmotion={};identity={}",
+            "ver={PREFS_VERSION};light={};right={};cursor={};eyedrop={};hold_shape={};sidebar_y={};pcurve={};undo_gest={};repeat_undo={};touch_nav={};tl={};tlq={};tlr={};eyed_s={:.2};qs_s={:.2};scrub={};swipe={};fs4={};touch_paint={};rmotion={};identity={};gfx={}",
             u8::from(self.light),
             u8::from(self.sidebar_right),
             u8::from(self.brush_cursor),
@@ -191,7 +194,8 @@ impl Prefs {
             u8::from(self.fullscreen_taps),
             u8::from(self.touch_painting),
             u8::from(self.reduce_motion),
-            self.identity.key()
+            self.identity.key(),
+            u8::from(self.compat_graphics)
         )
     }
 
@@ -246,6 +250,7 @@ impl Prefs {
                 "fs4" => p.fullscreen_taps = flag,
                 "touch_paint" => p.touch_painting = flag,
                 "rmotion" => p.reduce_motion = flag,
+                "gfx" => p.compat_graphics = flag,
                 "pcurve" => {
                     if let Some(c) = PressureCurve::decode(v) {
                         p.pressure_curve = c;
@@ -441,6 +446,7 @@ pub struct EskizApp {
     /// The text of the canvas top bar's "Gallery" button.
     pub(crate) gallery_title: Rect,
     pub(crate) toast: Option<Toast>,
+    watchdog_started: bool,
     pub(crate) now: f64,
     pub(crate) fullscreen: bool,
     /// When the sidebar Pick Color button went down (app clock), while it is held.
@@ -630,6 +636,7 @@ impl EskizApp {
             gallery_button: Rect::NOTHING,
             gallery_title: Rect::NOTHING,
             toast: None,
+            watchdog_started: false,
             now: 0.0,
             fullscreen: false,
             modify_press: None,
@@ -2050,6 +2057,20 @@ impl EskizApp {
 
     /// One frame: the whole UI, then the GPU display update (strokes that arrived this frame are
     /// uploaded and composited before egui renders).
+    /// Start the freeze watchdog on the first frame (not in unit tests, which draw many windows).
+    fn start_watchdog(&mut self, ctx: &egui::Context) {
+        if cfg!(test) || self.watchdog_started {
+            return;
+        }
+        self.watchdog_started = true;
+        let ctx = ctx.clone();
+        crate::stall::spawn_watchdog(
+            crate::startup::log_dir(),
+            crate::startup::current_stage().unwrap_or(crate::startup::Stage::Wgpu),
+            move || ctx.request_repaint(),
+        );
+    }
+
     pub(crate) fn ui_root(&mut self, ui: &mut egui::Ui) {
         // Colours the interface paints (swatches, the colour disc) are in the document's space.
         crate::colour_management::set_ui_space(self.session.doc.colour_space);
@@ -2074,6 +2095,7 @@ impl EskizApp {
             // A document that is still dirty here (its save failed) is retried.
             self.autosave_tick(&ctx);
             self.tour_poll();
+            crate::stall::crumb(crate::stall::Phase::Gallery);
             self.gallery_root(ui);
             self.tour_cards(&ctx);
             self.tour_watch_input(&ctx);
@@ -2089,6 +2111,7 @@ impl EskizApp {
         }
         self.animation_panel(ui);
         self.liquify_bar(ui);
+        crate::stall::crumb(crate::stall::Phase::CanvasComposite);
         let backdrop = self.pal.backdrop;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(backdrop))
@@ -2122,7 +2145,14 @@ fn time_of(input: &FrameInput) -> f64 {
 
 impl eframe::App for EskizApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // The previous frame, present included, is complete: this is the watchdog's heartbeat.
+        let visible = !ui.ctx().input(|i| i.viewport().minimized.unwrap_or(false));
+        crate::stall::beat(visible);
+        self.start_watchdog(ui.ctx());
         crate::startup::frame_drawn();
+        if let Some(notice) = crate::startup::take_notice() {
+            self.show_toast(notice, 9.0);
+        }
         if !self.gallery_active() && self.three_d.is_none() {
             let dt = f64::from(ui.ctx().input(|i| i.stable_dt)).min(0.25);
             self.session.add_time_spent(dt);
@@ -2132,6 +2162,7 @@ impl eframe::App for EskizApp {
             self.lifecycle_frame(&ctx);
         }
         self.ui_root(ui);
+        crate::stall::crumb(crate::stall::Phase::PaintPresent);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2458,8 +2489,10 @@ mod tests {
             swipe_copy: false,
             fullscreen_taps: false,
             touch_painting: false,
+            compat_graphics: true,
         };
         assert_eq!(Prefs::decode(&p.encode()), p);
+        assert!(!Prefs::decode("light=1").compat_graphics, "old strings keep Automatic");
     }
 
     #[test]

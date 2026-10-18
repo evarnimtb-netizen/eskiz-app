@@ -355,7 +355,7 @@ impl CropState {
     }
 
     /// The kept region as `x, y, width, height`.
-    fn rect(&self) -> [i64; 4] {
+    pub(crate) fn rect(&self) -> [i64; 4] {
         let e = self.edges;
         [e[0], e[1], e[2] - e[0], e[3] - e[1]]
     }
@@ -423,32 +423,52 @@ impl EskizApp {
         let Some(mut st) = self.crop.take() else { return };
         let (vp, view, pal) = (self.viewport, self.view, self.pal);
         let before = st.edges;
-        let p0 = view.canvas_to_screen(vp, st.edges[0] as f64, st.edges[1] as f64);
-        let p1 = view.canvas_to_screen(vp, st.edges[2] as f64, st.edges[3] as f64);
-        let frame = Rect::from_two_pos(p0, p1);
+        let e = st.edges.map(|v| v as f64);
+        // The kept region's corners on screen: a rotated rectangle when the view is rotated.
+        let corners = view.rect_corners(vp, e);
+        let at = |sx: i8, sy: i8| {
+            let (x, y) = (
+                match sx {
+                    -1 => e[0],
+                    1 => e[2],
+                    _ => (e[0] + e[2]) / 2.0,
+                },
+                match sy {
+                    -1 => e[1],
+                    1 => e[3],
+                    _ => (e[1] + e[3]) / 2.0,
+                },
+            );
+            view.canvas_to_screen(vp, x, y)
+        };
         egui::Area::new(Id::new("crop_handles"))
             .order(Order::Middle)
             .fixed_pos(vp.min)
             .show(ctx, |ui| {
                 ui.set_clip_rect(vp);
                 let painter = ui.painter();
-                painter.rect_stroke(frame, 0.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Outside);
+                let upright = view.is_upright();
+                if upright {
+                    let frame = Rect::from_two_pos(corners[0], corners[2]);
+                    painter.rect_stroke(frame, 0.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Outside);
+                } else {
+                    painter.add(egui::Shape::closed_line(corners.to_vec(), Stroke::new(1.5, Color32::WHITE)));
+                }
                 for (i, &(sx, sy)) in HANDLES.iter().enumerate() {
-                    let c = Pos2::new(
-                        match sx {
-                            -1 => frame.left(),
-                            1 => frame.right(),
-                            _ => frame.center().x,
-                        },
-                        match sy {
-                            -1 => frame.top(),
-                            1 => frame.bottom(),
-                            _ => frame.center().y,
-                        },
-                    );
+                    let c = at(sx, sy);
+                    // The grab area stays a screen square; the visible handle turns with the canvas.
                     let resp = ui.interact(Rect::from_center_size(c, Vec2::splat(18.0)), Id::new(("crop_handle", i)), Sense::drag());
                     let fill = if resp.hovered() || resp.dragged() { Color32::from_rgb(255, 210, 60) } else { Color32::WHITE };
-                    painter.rect_filled(Rect::from_center_size(c, Vec2::splat(10.0)), 2.0, fill);
+                    if upright {
+                        painter.rect_filled(Rect::from_center_size(c, Vec2::splat(10.0)), 2.0, fill);
+                    } else {
+                        let (sn, cs) = view.rotation.sin_cos();
+                        let q: Vec<Pos2> = [(-5.0f32, -5.0f32), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)]
+                            .iter()
+                            .map(|&(x, y)| c + Vec2::new(x * cs - y * sn, x * sn + y * cs))
+                            .collect();
+                        painter.add(egui::Shape::convex_polygon(q, fill, Stroke::NONE));
+                    }
                     if resp.dragged() {
                         if let Some(p) = resp.interact_pointer_pos() {
                             let (x, y) = view.screen_to_canvas(vp, p);
@@ -555,7 +575,7 @@ impl EskizApp {
     }
 
     /// Apply the sheet's crop and resize as one undo step.
-    fn apply_crop(&mut self, st: &CropState) -> Result<(), String> {
+    pub(crate) fn apply_crop(&mut self, st: &CropState) -> Result<(), String> {
         let width = st
             .width
             .trim()

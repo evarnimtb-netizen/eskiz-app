@@ -558,3 +558,23 @@ fn latency_report() {
         }
     }
 }
+
+/// A driver that stops answering: the frame returns at once, the app drops to the CPU compositor and says so.
+#[test]
+fn a_stalled_driver_switches_the_app_to_the_cpu_compositor() {
+    let Some(state) = render_state() else { return };
+    let mut h = harness(Some(&state), 256, 256);
+    h.step();
+    assert!(h.app.gpu_in_use());
+    gpu_canvas(&h).context().mark_stalled();
+    assert!(!gpu_canvas(&h).wait_idle(), "a stalled context does not wait");
+    let t = Instant::now();
+    h.step();
+    assert!(t.elapsed() < Duration::from_secs(2), "the UI thread must not block on the driver");
+    assert!(!h.app.gpu_in_use(), "the CPU compositor takes over");
+    assert!(h.app.gpu.is_none());
+    let toast = h.app.toast.as_ref().map(|t| t.text.clone()).unwrap_or_default();
+    assert!(toast.contains("Graphics driver is slow"), "{toast}");
+    h.step();
+    assert!(!h.app.gpu_in_use());
+}

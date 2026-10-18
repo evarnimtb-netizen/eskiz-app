@@ -33,6 +33,8 @@ pub enum Stage {
     Wgpu,
     /// wgpu restricted to DirectX 12 (Windows): skips a broken Vulkan driver.
     WgpuDx12,
+    /// wgpu restricted to Vulkan.
+    WgpuVulkan,
     /// eframe's OpenGL renderer.
     Glow,
 }
@@ -42,6 +44,7 @@ impl Stage {
         match self {
             Self::Wgpu => "wgpu",
             Self::WgpuDx12 => "wgpu-dx12",
+            Self::WgpuVulkan => "wgpu-vulkan",
             Self::Glow => "glow",
         }
     }
@@ -50,13 +53,24 @@ impl Stage {
         match text.trim() {
             "wgpu" => Some(Self::Wgpu),
             "wgpu-dx12" => Some(Self::WgpuDx12),
+            "wgpu-vulkan" => Some(Self::WgpuVulkan),
             "glow" => Some(Self::Glow),
             _ => None,
         }
     }
 }
 
-/// What to try, given the stage a previous start never finished.
+/// Every renderer in the order it is tried after a crash or a stall (Windows). Other systems
+/// have no per-backend steps: wgpu with every backend, then OpenGL.
+pub fn order(windows: bool) -> &'static [Stage] {
+    if windows {
+        &[Stage::Wgpu, Stage::WgpuDx12, Stage::WgpuVulkan, Stage::Glow]
+    } else {
+        &[Stage::Wgpu, Stage::Glow]
+    }
+}
+
+/// What to try, given the stage a previous start never finished and the stages stalls ruled out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ladder {
     Try(Stage),
@@ -65,14 +79,21 @@ pub enum Ladder {
 }
 
 impl Ladder {
-    /// `crashed` is the stage in the leftover marker, `None` after a clean start.
-    pub fn next(crashed: Option<Stage>, windows: bool) -> Self {
-        match crashed {
-            None => Self::Try(Stage::Wgpu),
-            Some(Stage::Wgpu) if windows => Self::Try(Stage::WgpuDx12),
-            Some(Stage::Wgpu | Stage::WgpuDx12) => Self::Try(Stage::Glow),
-            Some(Stage::Glow) => Self::GiveUp,
+    /// `crashed` is the stage in the leftover marker, `None` after a clean start; `skipped` the
+    /// stages that froze before (never OpenGL: it is the last resort).
+    pub fn next(crashed: Option<Stage>, skipped: &[Stage], windows: bool) -> Self {
+        let all = [Stage::Wgpu, Stage::WgpuDx12, Stage::WgpuVulkan, Stage::Glow];
+        let rank = |s: Stage| all.iter().position(|x| *x == s).unwrap_or(0);
+        if crashed == Some(Stage::Glow) {
+            return Self::GiveUp;
         }
+        order(windows)
+            .iter()
+            .copied()
+            .find(|s| {
+                *s == Stage::Glow || (!skipped.contains(s) && crashed.is_none_or(|c| rank(*s) > rank(c)))
+            })
+            .map_or(Self::Try(Stage::Glow), Self::Try)
     }
 }
 
@@ -122,11 +143,17 @@ struct State {
     last_panic: Option<String>,
     /// The stage the previous start died in, read by [`init`].
     crashed: Option<Stage>,
+    /// Renderers and the present mode that earlier stalls ruled out.
+    skips: crate::stall::Skips,
+    /// A sentence for a one-time toast about what the last run's stall changed.
+    notice: Option<String>,
+    /// The renderer being tried (for the watchdog).
+    current: Option<Stage>,
 }
 
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(State { dir: None, started: Instant::now(), marker: None, last_panic: None, crashed: None }))
+    S.get_or_init(|| Mutex::new(State { dir: None, started: Instant::now(), marker: None, last_panic: None, crashed: None, skips: crate::stall::Skips::default(), notice: None, current: None }))
 }
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
@@ -146,10 +173,18 @@ pub fn init(args: &[String]) -> Option<Stage> {
         std::env::var("LOCALAPPDATA").ok().as_deref(),
     );
     let crashed = dir.as_deref().and_then(take_marker);
+    let stall = dir.as_deref().and_then(crate::stall::take_marker);
+    let mut skips = dir.as_deref().map(crate::stall::Skips::load).unwrap_or_default();
+    let notice = stall.as_ref().map(|m| skips.learn(m));
+    if let (Some(d), Some(_)) = (&dir, &stall) {
+        skips.save(d);
+    }
     with(|s| {
         s.dir = dir.clone();
         s.started = Instant::now();
         s.crashed = crashed;
+        s.skips = skips;
+        s.notice = notice.clone();
     });
     if let Some(d) = &dir {
         let _ = fs::create_dir_all(d);
@@ -164,7 +199,40 @@ pub fn init(args: &[String]) -> Option<Stage> {
     if let Some(c) = crashed {
         log(&format!("the previous start never drew its first frames while using '{}'", c.name()));
     }
+    if let (Some(m), Some(n)) = (&stall, &notice) {
+        log(&format!("the previous run stalled (last phase '{}', renderer '{}'): {n}", m.phase, m.stage.name()));
+    }
     crashed
+}
+
+/// What earlier stalls ruled out (set by [`init`]).
+pub fn skips() -> crate::stall::Skips {
+    with(|s| s.skips.clone())
+}
+
+/// Forget the stalls: `--renderer auto` tries every renderer again.
+pub fn clear_skips() {
+    with(|s| {
+        s.skips = crate::stall::Skips::default();
+        if let Some(d) = &s.dir {
+            s.skips.save(d);
+        }
+    });
+}
+
+/// The one-time notice about a stall in the last run, once.
+pub fn take_notice() -> Option<String> {
+    with(|s| s.notice.take())
+}
+
+/// Queue a notice for the toast (a stall handled in this run).
+pub fn set_notice(text: &str) {
+    with(|s| s.notice = Some(text.to_owned()));
+}
+
+/// The renderer being tried now.
+pub fn current_stage() -> Option<Stage> {
+    with(|s| s.current)
 }
 
 /// Read and remove a leftover marker. `None` when there is none, or when another instance
@@ -204,6 +272,7 @@ pub fn log(line: &str) {
 pub fn begin_attempt(stage: Stage) {
     log(&format!("renderer attempt: {}", stage.name()));
     with(|s| {
+        s.current = Some(stage);
         s.marker = None;
         let Some(d) = s.dir.clone() else { return };
         let path = d.join(MARKER);
@@ -331,11 +400,19 @@ mod tests {
 
     #[test]
     fn ladder_escalates_after_each_crash_and_gives_up() {
-        assert_eq!(Ladder::next(None, true), Ladder::Try(Stage::Wgpu));
-        assert_eq!(Ladder::next(Some(Stage::Wgpu), true), Ladder::Try(Stage::WgpuDx12));
-        assert_eq!(Ladder::next(Some(Stage::WgpuDx12), true), Ladder::Try(Stage::Glow));
-        assert_eq!(Ladder::next(Some(Stage::Wgpu), false), Ladder::Try(Stage::Glow));
-        assert_eq!(Ladder::next(Some(Stage::Glow), true), Ladder::GiveUp);
+        use Stage::*;
+        assert_eq!(Ladder::next(None, &[], true), Ladder::Try(Wgpu));
+        assert_eq!(Ladder::next(Some(Wgpu), &[], true), Ladder::Try(WgpuDx12));
+        assert_eq!(Ladder::next(Some(WgpuDx12), &[], true), Ladder::Try(WgpuVulkan));
+        assert_eq!(Ladder::next(Some(WgpuVulkan), &[], true), Ladder::Try(Glow));
+        assert_eq!(Ladder::next(Some(Wgpu), &[], false), Ladder::Try(Glow));
+        assert_eq!(Ladder::next(Some(Glow), &[], true), Ladder::GiveUp);
+        // Stalls: wgpu auto -> dx12 -> vulkan -> glow, one step each start.
+        assert_eq!(Ladder::next(None, &[Wgpu], true), Ladder::Try(WgpuDx12));
+        assert_eq!(Ladder::next(None, &[Wgpu, WgpuDx12], true), Ladder::Try(WgpuVulkan));
+        assert_eq!(Ladder::next(None, &[Wgpu, WgpuDx12, WgpuVulkan], true), Ladder::Try(Glow));
+        assert_eq!(Ladder::next(Some(Wgpu), &[WgpuDx12], true), Ladder::Try(WgpuVulkan));
+        assert_eq!(Ladder::next(None, &[Wgpu], false), Ladder::Try(Glow));
     }
 
     #[test]

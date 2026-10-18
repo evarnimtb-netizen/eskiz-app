@@ -79,6 +79,7 @@ You need a free GitHub account to send the form. Have a question or an idea inst
 ### Something does not start
 
 - **Windows:** Eskiz writes notes about its start-up to a folder. Press **Windows key + R**, paste `%LOCALAPPDATA%\Eskiz\logs`, press **Enter**, and attach the files you find there (`startup.log` and any `panic-…txt`) to your bug report.
+- **Windows, the window freezes or says "Not Responding":** close it and start Eskiz again; it skips the graphics renderer that froze and says so. To choose by hand, double-click **Eskiz (compatibility mode).bat** in the zip, or run `eskiz.exe --renderer gl` (also `dx12`, `vulkan` or `auto`), or turn on **Settings → Graphics → Compatibility graphics (OpenGL)** and restart. Then attach `startup.log` to your bug report: it contains a `STALL:` line saying where it hung.
 - **Any system:** in Eskiz's folder, running `eskiz --diagnose` from a terminal prints a short report about your graphics setup that you can paste into the bug report.
 
 ## Good to know

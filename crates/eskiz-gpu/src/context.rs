@@ -4,7 +4,9 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, Thread};
+use std::time::{Duration, Instant};
 
 /// Errors from the GPU backend.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +23,29 @@ pub enum GpuError {
     /// A GPU buffer could not be mapped for reading.
     #[error("GPU readback failed: {0}")]
     Readback(String),
+    /// The driver did not answer within the time bound; the GPU path is switched off for this session.
+    #[error("the graphics driver did not answer within {0:?}")]
+    Stalled(Duration),
+}
+
+/// How long a GPU wait on the UI thread may take before the driver counts as stalled.
+pub const GPU_WAIT_BOUND: Duration = Duration::from_millis(1800);
+
+/// Wait until `done` reports completion, giving `pump` slices of at most 25 ms to make progress
+/// (it is where the real code polls the device). Returns `false` when `bound` elapsed first, so a
+/// driver that never signals cannot block the caller for longer than `bound` plus one slice.
+pub fn bounded_wait(bound: Duration, mut pump: impl FnMut(Duration), mut done: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    loop {
+        if done() {
+            return true;
+        }
+        let left = bound.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            return false;
+        }
+        pump(left.min(Duration::from_millis(25)));
+    }
 }
 
 /// Whether the selected adapter is real hardware or a CPU rasteriser.
@@ -57,6 +82,11 @@ pub struct GpuContext {
     pub queue: wgpu::Queue,
     pub kind: AdapterKind,
     pub info: wgpu::AdapterInfo,
+    /// Set when a bounded wait timed out. Shared by clones of the handle; once set every readback
+    /// fails at once and the app switches to the CPU compositor.
+    stalled: Arc<AtomicBool>,
+    /// Bound for a wait; tests shorten it.
+    wait_bound: Duration,
 }
 
 struct ThreadWaker(Thread);
@@ -222,6 +252,8 @@ impl GpuContext {
                         adapter,
                         device,
                         queue,
+                        stalled: Arc::new(AtomicBool::new(false)),
+                        wait_bound: GPU_WAIT_BOUND,
                     });
                 }
                 Err(e) => last_err = format!("{}: {e}", info.name),
@@ -246,7 +278,24 @@ impl GpuContext {
             adapter,
             device,
             queue,
+            stalled: Arc::new(AtomicBool::new(false)),
+            wait_bound: GPU_WAIT_BOUND,
         }
+    }
+
+    /// Use another wait bound (tests).
+    pub fn set_wait_bound(&mut self, bound: Duration) {
+        self.wait_bound = bound;
+    }
+
+    /// True once a GPU wait timed out: the driver does not answer, stop using the GPU path.
+    pub fn is_stalled(&self) -> bool {
+        self.stalled.load(Ordering::SeqCst)
+    }
+
+    /// Mark the GPU path unusable for this session.
+    pub fn mark_stalled(&self) {
+        self.stalled.store(true, Ordering::SeqCst);
     }
 
     /// Largest canvas edge this device can composite: its 2D texture limit.
@@ -291,21 +340,53 @@ impl GpuContext {
         let _ = self.device.poll(wgpu::PollType::Poll);
     }
 
-    /// Block until all submitted work has finished.
-    pub fn wait_idle(&self) {
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    /// Wait for all submitted work, at most the wait bound. Returns false on a timeout (and marks
+    /// the context stalled); never blocks longer.
+    pub fn wait_idle(&self) -> bool {
+        if self.is_stalled() {
+            return false;
+        }
+        let ok = bounded_wait(
+            self.wait_bound,
+            |slice| {
+                let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(slice) });
+            },
+            || self.device.poll(wgpu::PollType::Poll).is_ok_and(|s| s.is_queue_empty()),
+        );
+        if !ok {
+            self.mark_stalled();
+        }
+        ok
     }
 
-    /// Read a buffer that was copied into with `MAP_READ` usage. Blocks.
+    /// Read a buffer that was copied into with `MAP_READ` usage. Waits at most the wait bound;
+    /// on a timeout the context is marked stalled and `GpuError::Stalled` returned.
     pub(crate) fn read_buffer(&self, buf: &wgpu::Buffer, size: u64) -> Result<Vec<u8>, GpuError> {
+        if self.is_stalled() {
+            return Err(GpuError::Stalled(self.wait_bound));
+        }
         let slice = buf.slice(..size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv()
-            .map_err(|e| GpuError::Readback(e.to_string()))?
+        let mut result = None;
+        let ok = bounded_wait(
+            self.wait_bound,
+            |step| {
+                let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(step) });
+            },
+            || {
+                result = rx.try_recv().ok();
+                result.is_some()
+            },
+        );
+        if !ok {
+            self.mark_stalled();
+            return Err(GpuError::Stalled(self.wait_bound));
+        }
+        result
+            .ok_or_else(|| GpuError::Readback("no result".into()))?
             .map_err(|e| GpuError::Readback(e.to_string()))?;
         let data = slice
             .get_mapped_range()
@@ -313,5 +394,46 @@ impl GpuContext {
             .to_vec();
         buf.unmap();
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    /// A readback that never completes (the driver never signals): the wait returns within the bound.
+    #[test]
+    fn a_readback_that_never_completes_returns_within_the_bound() {
+        let (tx, rx) = std::sync::mpsc::channel::<u8>();
+        let start = Instant::now();
+        let ok = bounded_wait(Duration::from_millis(150), std::thread::sleep, || rx.try_recv().is_ok());
+        assert!(!ok);
+        let took = start.elapsed();
+        assert!(took >= Duration::from_millis(150) && took < Duration::from_millis(600), "{took:?}");
+        drop(tx);
+    }
+
+    #[test]
+    fn a_completing_wait_returns_at_once() {
+        let n = std::cell::Cell::new(0);
+        assert!(bounded_wait(Duration::from_secs(5), |_| n.set(n.get() + 1), || n.get() >= 2));
+    }
+
+    #[test]
+    fn a_stalled_context_fails_fast() {
+        let Ok(mut ctx) = GpuContext::new() else { return };
+        ctx.set_wait_bound(Duration::from_millis(100));
+        assert!(!ctx.is_stalled());
+        ctx.mark_stalled();
+        let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 16,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let start = Instant::now();
+        assert!(matches!(ctx.read_buffer(&buf, 16), Err(GpuError::Stalled(_))));
+        assert!(!ctx.wait_idle());
+        assert!(start.elapsed() < Duration::from_millis(50));
     }
 }

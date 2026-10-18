@@ -504,6 +504,23 @@ impl EskizApp {
         }
         let prefs = &mut self.prefs;
         ui.add_space(6.0);
+        small_label(ui, &pal, "GRAPHICS");
+        let compat = prefs.compat_graphics;
+        if list_row(
+            ui,
+            &pal,
+            ia::icon_info,
+            "Compatibility graphics (OpenGL)",
+            Some(if compat { "Compatibility, used on the next start" } else { "Automatic, the fastest renderer" }),
+            true,
+            Trailing::Switch(compat),
+        )
+        .clicked()
+        {
+            prefs.compat_graphics = !compat;
+            crate::renderer::write_compat_pref(prefs.compat_graphics);
+        }
+        ui.add_space(6.0);
         small_label(ui, &pal, "GESTURES");
         for (icon, label, sub, value) in [
             (ia::icon_eyedropper as icons::IconFn, "Eyedropper on hold", Some("Hold a finger still to pick a color"), &mut prefs.eyedrop_hold),

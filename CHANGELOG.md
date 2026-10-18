@@ -65,6 +65,7 @@ The full list of changes follows.
 - You can rotate the canvas on a Mac: twist two fingers on the trackpad, hold R and drag sideways (works with a pen or a mouse), Actions > Canvas > Rotate canvas 90 degrees left, Rotate canvas 90 degrees right and Reset rotation, or Cmd+Alt+Left, Cmd+Alt+Right and Cmd+Alt+0. The view sticks at 0, 90, 180 and 270 degrees (also for the two-finger touch gesture) and a toast shows the angle. Painting, selection, transform and the brush cursor follow the turned canvas.
 - Hold to Shape tolerates a slippery pen: the hold fires when the pen stays within a few points over the hold time even if it jitters or creeps, the pen's wandering during the hold is cut from the stroke, and jitter is smoothed away before corners are counted, so a hand-drawn circle comes out as a Circle (or Ellipse) instead of a polygon while real rectangles, triangles, polygons and zigzags stay polygons and polylines.
 - The first segment of a snapped open polyline no longer tapers to a hairline (shapes ignore the brush's start taper).
+- Overlays and handles now work on a rotated canvas at any angle: the Crop & Resize rectangle and its handles follow the turned canvas and crop the right pixels, rectangle and ellipse selections are the box you draw on screen, and the text selection highlight and width handle turn with the view. Transform handles, Edit Shape handles, Liquify, Pour Fill, Pick Color and the drawing guides are covered by new tests at 0, 33, 90 and 180 degrees.
 
 ### Fixed (input, lag and Windows start-up)
 
@@ -73,6 +74,13 @@ The full list of changes follows.
 - **Moving or rotating a Hold to Shape shape no longer lags.** While you drag a handle (or the pen is still down) the shape is a light vector preview; it is painted into the layer once on release, still as one "Stroke" undo step. A frame used to take about 140 ms at 4096 px.
 - **Windows: the program starts on a PC without the Visual C++ Redistributable.** eskiz.exe is built with the static C runtime and CI checks that it imports no VCRUNTIME, MSVCP or api-ms-win-crt DLL.
 - **Windows: start-up failures are no longer silent.** Eskiz writes `startup.log` and `panic-*.txt` to `%LOCALAPPDATA%\Eskiz\logs` and shows a message box with the reason and that folder. A panic or error in the graphics start-up falls back to OpenGL, the chosen adapter and backend are logged, and if a graphics driver ended the process without a message, the next start tries DirectX 12 only, then OpenGL. `eskiz.exe --version`, `--selftest` and `--diagnose` print in the terminal that started them. README and release notes explain Extract All and the SmartScreen "More info, Run anyway" step.
+
+### Fixed (Windows freeze: "Not Responding" after the first frames)
+
+- No GPU wait can freeze the window any more. Readbacks and "wait until idle" on the UI thread were unbounded (`wait_indefinitely`); they now give up after 1.8 s. When a driver does not answer, Eskiz marks the GPU path unusable for the session, composites on the processor, logs it and shows "Graphics driver is slow; switched to compatible mode".
+- A watchdog thread notices a window that has not finished a frame for 3 s. It writes a `STALL:` line with the phase (input, gallery, canvas composite, GPU readback, egui paint + present) to `startup.log` and leaves `stalled.marker`. The next start skips the renderer that froze (automatic, then DirectX 12, then Vulkan, then OpenGL) and says so in the log and in a one-time note. A stall while presenting first switches to a present mode that does not wait for the display.
+- `eskiz.exe --renderer gl|dx12|vulkan|auto` (same as `ESKIZ_RENDERER`; `auto` forgets earlier stalls), `Eskiz (compatibility mode).bat` in the Windows zip, and Settings > Graphics > Compatibility graphics (OpenGL), applied on the next start. The log records what was requested and what was chosen.
+- The Windows smoke test now reports a hung window ("Not Responding") and a stall marker, and also runs once with `--renderer gl`.
 
 ### Known issues
 

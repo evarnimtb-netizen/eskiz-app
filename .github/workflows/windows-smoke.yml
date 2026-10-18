@@ -3,7 +3,9 @@ name: Windows smoke
 # Builds the release app on a GitHub-hosted Windows runner and uses it like a person would:
 # `--selftest`, `--diagnose` and `--diagnose --window`, then the real window on a sample document,
 # one stroke painted with real mouse input, Ctrl+Z, and closing the window
-# (packaging/windows/smoke.ps1). The runner has no GPU, so wgpu runs on the WARP software adapter.
+# (packaging/windows/smoke.ps1). The script also fails when the window turns "Not Responding"
+# (IsHungAppWindow) or the app's watchdog leaves a stalled.marker, and it opens the document a second
+# time with `--renderer gl` (compatibility mode). The runner has no GPU, so wgpu runs on the WARP software adapter.
 # Screenshots, logs and the report are uploaded as the `windows-smoke` artifact; the report is also
 # the job summary.
 #

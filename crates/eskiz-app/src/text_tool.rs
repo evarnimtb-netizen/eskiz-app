@@ -746,7 +746,7 @@ impl EskizApp {
 
     /// Where the box width handle sits, in layer units: at the right edge of the box, halfway
     /// down the first line.
-    fn width_handle(&self, layer: &TextLayer, layout: &Layout) -> Option<[f32; 2]> {
+    pub(crate) fn width_handle(&self, layer: &TextLayer, layout: &Layout) -> Option<[f32; 2]> {
         let right = if layer.box_width > 0.0 {
             layer.box_width
         } else {
@@ -757,9 +757,21 @@ impl EskizApp {
     }
 
     /// Layer units to screen pixels.
-    fn layer_to_screen(&self, t: &Affine, lx: f32, ly: f32) -> Pos2 {
+    pub(crate) fn layer_to_screen(&self, t: &Affine, lx: f32, ly: f32) -> Pos2 {
         let (cx, cy) = t.apply(lx, ly);
         self.view.canvas_to_screen(self.viewport, f64::from(cx), f64::from(cy))
+    }
+
+    /// A small handle square around the screen point `p`, as a quad that turns with the view and the layer.
+    /// `half` is its half side in screen points; the handle keeps its screen size.
+    fn handle_quad(&self, t: &Affine, p: Pos2, half: f32) -> [Pos2; 4] {
+        // Axis of the layer's x direction on screen, from two nearby layer points.
+        let a = self.layer_to_screen(t, 0.0, 0.0);
+        let b = self.layer_to_screen(t, 1.0, 0.0);
+        let d = b - a;
+        let u = if d.length() > 1e-6 { d.normalized() } else { egui::vec2(1.0, 0.0) };
+        let v = egui::vec2(-u.y, u.x);
+        [p - u * half - v * half, p + u * half - v * half, p + u * half + v * half, p - u * half + v * half]
     }
 
     /// Draws the text box of the target layer and, while typing, the caret and selection.
@@ -780,14 +792,19 @@ impl EskizApp {
         }
         if let Some(h) = self.width_handle(&layer, &layout) {
             let p = self.layer_to_screen(&t, h[0], h[1]);
-            painter.rect_filled(egui::Rect::from_center_size(p, egui::vec2(8.0, 8.0)), 1.0, accent);
+            let q = self.handle_quad(&t, p, 4.0);
+            fill_quad(&painter, q, 1.0, accent);
         }
         if editing {
             let sel = self.text.selection();
             for [x0, y0, x1, y1] in selection_rects(&layout, sel) {
-                let a = self.layer_to_screen(&t, x0, y0);
-                let c = self.layer_to_screen(&t, x1, y1);
-                painter.rect_filled(egui::Rect::from_two_pos(a, c), 0.0, accent.gamma_multiply(0.35));
+                let q = [
+                    self.layer_to_screen(&t, x0, y0),
+                    self.layer_to_screen(&t, x1, y0),
+                    self.layer_to_screen(&t, x1, y1),
+                    self.layer_to_screen(&t, x0, y1),
+                ];
+                fill_quad(&painter, q, 0.0, accent.gamma_multiply(0.35));
             }
             let size = layer.attrs_at(self.text.caret).map_or(DEFAULT_SIZE_PT, |a| a.size_pt);
             let (x, top, bottom) = caret_geometry(&layout, self.text.caret, size);
@@ -929,5 +946,16 @@ impl EskizApp {
         let Some(mut layer) = self.session.doc.texts.get(&id).cloned() else { return };
         layer.box_width = width.max(0.0);
         self.text_update(id, WIDTH_STEP, layer);
+    }
+}
+
+/// Fill a quad given by its screen corners: a plain rectangle when it is axis-aligned (the upright
+/// view), otherwise a polygon that follows the rotation.
+fn fill_quad(painter: &egui::Painter, q: [Pos2; 4], rounding: f32, colour: Color32) {
+    let aligned = (q[0].y - q[1].y).abs() < 1e-3 && (q[1].x - q[2].x).abs() < 1e-3 && (q[2].y - q[3].y).abs() < 1e-3;
+    if aligned {
+        painter.rect_filled(egui::Rect::from_two_pos(q[0], q[2]), rounding, colour);
+    } else {
+        painter.add(egui::Shape::convex_polygon(q.to_vec(), colour, Stroke::NONE));
     }
 }

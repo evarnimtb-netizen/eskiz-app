@@ -462,9 +462,13 @@ impl GpuCanvas {
         Ok(px)
     }
 
-    /// Block until the GPU has finished everything submitted so far.
-    pub fn wait_idle(&self) {
-        self.ctx.wait_idle();
+    /// Wait for the GPU to finish what was submitted, for at most the context's wait bound.
+    /// False on a timeout: the context is then marked stalled and the app moves to the CPU path.
+    pub fn wait_idle(&self) -> bool {
+        crate::stall::crumb(crate::stall::Phase::GpuReadback);
+        let ok = self.ctx.wait_idle();
+        crate::stall::crumb(crate::stall::Phase::CanvasComposite);
+        ok
     }
 
     /// Number of layers mirrored.

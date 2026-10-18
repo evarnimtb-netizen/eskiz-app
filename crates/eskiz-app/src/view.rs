@@ -81,6 +81,22 @@ impl View {
         ]
     }
 
+    /// The four screen corners of a canvas-space rectangle `[left, top, right, bottom]`, in order:
+    /// top-left, top-right, bottom-right, bottom-left (of the canvas axes, whatever the rotation).
+    pub fn rect_corners(&self, viewport: Rect, r: [f64; 4]) -> [Pos2; 4] {
+        [
+            self.canvas_to_screen(viewport, r[0], r[1]),
+            self.canvas_to_screen(viewport, r[2], r[1]),
+            self.canvas_to_screen(viewport, r[2], r[3]),
+            self.canvas_to_screen(viewport, r[0], r[3]),
+        ]
+    }
+
+    /// Whether the view is upright (no rotation to speak of).
+    pub fn is_upright(&self) -> bool {
+        self.rotation.abs() < 1e-6
+    }
+
     /// Multiply the zoom by `factor`, keeping the canvas point under `anchor` fixed.
     pub fn zoom_at(&mut self, viewport: Rect, anchor: Pos2, factor: f32) {
         if !factor.is_finite() || factor <= 0.0 {

@@ -345,6 +345,8 @@ impl EskizApp {
                 Some(g) => g.flush(&self.session),
                 None => Ok(FlushStats::default()),
             };
+            let stalled = self.gpu.as_ref().is_some_and(|g| g.canvas().context().is_stalled());
+            let result = if stalled { Err("the graphics driver did not answer in time".to_owned()) } else { result };
             match result {
                 Ok(stats) => {
                     if stats.composited {
@@ -354,6 +356,10 @@ impl EskizApp {
                 }
                 Err(e) => {
                     eprintln!("eskiz: GPU compositor failed, compositing on the CPU: {e}");
+                    if stalled || e.contains("did not answer") {
+                        crate::startup::log(&format!("GPU compositor stopped: {e}; compositing on the CPU for this session"));
+                        self.show_toast("Graphics driver is slow; switched to compatible mode", 6.0);
+                    }
                     self.gpu = None;
                     self.gpu_active = false;
                     self.needs_full = true;

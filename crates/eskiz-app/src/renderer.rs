@@ -33,6 +33,10 @@ pub enum Mode {
     Cpu,
     /// `gl`: glow window, CPU compositor.
     Gl,
+    /// `dx12`: wgpu restricted to DirectX 12 (falls back to glow if it cannot start).
+    Dx12,
+    /// `vulkan`: wgpu restricted to Vulkan (falls back to glow if it cannot start).
+    Vulkan,
 }
 
 impl Mode {
@@ -42,17 +46,102 @@ impl Mode {
             Some("cpu") => Self::Cpu,
             Some("gl" | "glow" | "opengl") => Self::Gl,
             Some("gpu" | "wgpu") => Self::Gpu,
+            Some("dx12" | "d3d12") => Self::Dx12,
+            Some("vulkan" | "vk") => Self::Vulkan,
             _ => Self::Auto,
         }
     }
 
+    /// Parse the value of `--renderer`: `gl`, `dx12`, `vulkan` or `auto`; anything else is an error.
+    pub fn parse_flag(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "gl" | "glow" | "opengl" => Ok(Self::Gl),
+            "dx12" | "d3d12" => Ok(Self::Dx12),
+            "vulkan" | "vk" => Ok(Self::Vulkan),
+            other => Err(format!("--renderer takes gl, dx12, vulkan or auto, not '{other}'")),
+        }
+    }
+
+    /// Which request wins, and where it came from: `--renderer`, then `ESKIZ_RENDERER`, then the
+    /// Settings > Graphics choice (Compatibility means OpenGL), else automatic.
+    pub fn resolve(cli: Option<Self>, env: Option<&str>, compat_pref: bool) -> (Self, &'static str) {
+        if let Some(m) = cli {
+            return (m, "--renderer");
+        }
+        if let Some(v) = env.filter(|v| !v.trim().is_empty()) {
+            return (Self::parse(Some(v)), "ESKIZ_RENDERER");
+        }
+        if compat_pref {
+            return (Self::Gl, "Settings > Graphics > Compatibility");
+        }
+        (Self::Auto, "default")
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Gpu => "gpu",
+            Self::Cpu => "cpu",
+            Self::Gl => "gl",
+            Self::Dx12 => "dx12",
+            Self::Vulkan => "vulkan",
+        }
+    }
+
+    /// The mode for this run, resolved from the command line, the environment and the saved choice.
     pub fn from_env() -> Self {
-        Self::parse(crate::compat::env_var("ESKIZ_RENDERER").as_deref())
+        Self::requested().0
+    }
+
+    /// Like [`Mode::from_env`], with the source of the choice.
+    pub fn requested() -> (Self, &'static str) {
+        Self::resolve(
+            CLI_REQUEST.get().copied(),
+            crate::compat::env_var("ESKIZ_RENDERER").as_deref(),
+            read_compat_pref(),
+        )
     }
 
     /// Should the canvas be composited on the GPU?
     pub fn gpu_compositing(self) -> bool {
-        matches!(self, Self::Auto | Self::Gpu)
+        matches!(self, Self::Auto | Self::Gpu | Self::Dx12 | Self::Vulkan)
+    }
+}
+
+/// What `--renderer` asked for, set once by [`set_cli_request`].
+static CLI_REQUEST: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
+
+/// Remember the `--renderer` flag (the first call wins).
+pub fn set_cli_request(mode: Mode) {
+    let _ = CLI_REQUEST.set(mode);
+}
+
+/// The file Settings > Graphics writes next to the app data, read before the window exists
+/// (the preferences themselves live in eframe's storage, which opens later).
+const GRAPHICS_FILE: &str = "graphics.pref";
+
+fn graphics_path() -> Option<std::path::PathBuf> {
+    crate::storage::app_data_root().map(|d| d.join(GRAPHICS_FILE))
+}
+
+/// Does `text` (the contents of the graphics file) choose Compatibility?
+pub fn parse_compat_pref(text: &str) -> bool {
+    text.trim() == "compat"
+}
+
+/// Settings > Graphics: is Compatibility (OpenGL) saved?
+pub fn read_compat_pref() -> bool {
+    graphics_path().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| parse_compat_pref(&t))
+}
+
+/// Save the Settings > Graphics choice for the next start.
+pub fn write_compat_pref(compat: bool) {
+    if let Some(p) = graphics_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, if compat { "compat\n" } else { "auto\n" });
     }
 }
 
@@ -106,18 +195,27 @@ pub fn window_created() -> bool {
 
 /// Which renderer attempts to make, in order, for this start.
 ///
-/// * `ESKIZ_RENDERER=gl`: glow only.
-/// * A previous start that never drew its first frames (see [`crate::startup`]) moves the first
-///   attempt down the ladder: wgpu, wgpu on DX12 only (Windows), glow.
-/// * Otherwise wgpu with every backend, and glow after it when the `gl-fallback` feature is on.
+/// * `--renderer gl` / `ESKIZ_RENDERER=gl` / Settings > Graphics > Compatibility: glow only.
+/// * `--renderer dx12|vulkan`: that backend, then glow.
+/// * Otherwise the first renderer in `wgpu auto -> wgpu-dx12 -> wgpu-vulkan -> glow` that no
+///   earlier crash (`crashed`) or stall (`skipped`) ruled out, and glow after it when the
+///   `gl-fallback` feature is on. See [`crate::startup::Ladder`] and [`crate::stall`].
 ///
 /// `None` when every renderer already crashed the process: the caller tells the user.
-pub fn plan(mode: Mode, crashed: Option<Stage>, windows: bool, gl_fallback: bool) -> Option<Vec<Stage>> {
-    if mode == Mode::Gl && gl_fallback {
-        return Some(vec![Stage::Glow]);
+pub fn plan(mode: Mode, crashed: Option<Stage>, skipped: &[Stage], windows: bool, gl_fallback: bool) -> Option<Vec<Stage>> {
+    if gl_fallback {
+        match mode {
+            Mode::Gl => return Some(vec![Stage::Glow]),
+            Mode::Dx12 => return Some(vec![Stage::WgpuDx12, Stage::Glow]),
+            Mode::Vulkan => return Some(vec![Stage::WgpuVulkan, Stage::Glow]),
+            _ => {}
+        }
     }
-    let first = match Ladder::next(crashed, windows) {
-        Ladder::Try(Stage::Glow) if !gl_fallback => Stage::Wgpu,
+    if !gl_fallback {
+        // Without OpenGL there is nothing to step down to: wgpu with every backend, whatever happened.
+        return Some(vec![Stage::Wgpu]);
+    }
+    let first = match Ladder::next(crashed, skipped, windows) {
         Ladder::Try(stage) => stage,
         Ladder::GiveUp => return None,
     };
@@ -148,13 +246,18 @@ pub fn run_native(
     options: impl Fn() -> NativeOptions,
     creator: impl Fn(&CreationContext<'_>, Mode) -> AppResult,
 ) -> Result<(), String> {
-    let mode = Mode::from_env();
+    let (mode, source) = Mode::requested();
+    startup::log(&format!("renderer requested: {} (from {source})", mode.name()));
+    if CLI_REQUEST.get() == Some(&Mode::Auto) {
+        startup::clear_skips();
+    }
+    let skips = startup::skips();
     #[cfg(not(feature = "gl-fallback"))]
     if mode == Mode::Gl {
         eprintln!("eskiz: this build has no OpenGL renderer (cargo feature `gl-fallback`); using wgpu");
     }
     let crashed = startup::previous_crash();
-    let Some(stages) = plan(mode, crashed, cfg!(windows), cfg!(feature = "gl-fallback")) else {
+    let Some(stages) = plan(mode, crashed, &skips.stages, cfg!(windows), cfg!(feature = "gl-fallback")) else {
         // Every renderer killed the process on an earlier start. Say so once and start over next time.
         let reason = "Eskiz stopped during start-up with every graphics renderer it can use. Update the graphics \
                       driver, or run eskiz.exe --diagnose from a terminal and send the output with the logs.";
@@ -167,10 +270,24 @@ pub fn run_native(
         if stage != Stage::Glow {
             tune_wgpu(&mut o);
         }
-        if stage == Stage::WgpuDx12 {
+        if let Some(backends) = backends_for(stage) {
             if let WgpuSetup::CreateNew(create) = &mut o.wgpu_options.wgpu_setup {
-                create.instance_descriptor.backends = wgpu::Backends::DX12;
+                create.instance_descriptor.backends = backends;
             }
+        }
+        if skips.no_vsync {
+            // An earlier run froze while presenting: do not wait for the display.
+            o.wgpu_options.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
+            #[cfg(feature = "gl-fallback")]
+            {
+                o.glow_options.vsync = false;
+            }
+        }
+        if stage == Stage::Glow {
+            #[cfg(feature = "gl-fallback")]
+            startup::log(&format!("present mode: {}", if o.glow_options.vsync { "vsync (OpenGL swap interval 1)" } else { "no vsync" }));
+        } else {
+            startup::log(&format!("present mode requested: {:?}", o.wgpu_options.surface.present_mode));
         }
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             eframe::run_native(
@@ -204,6 +321,15 @@ pub fn run_native(
         }
     }
     Err(first_error.unwrap_or_else(|| "no renderer could be started".to_owned()))
+}
+
+/// The wgpu backends a stage is limited to; `None` leaves wgpu's own choice.
+fn backends_for(stage: Stage) -> Option<wgpu::Backends> {
+    match stage {
+        Stage::WgpuDx12 => Some(wgpu::Backends::DX12),
+        Stage::WgpuVulkan => Some(wgpu::Backends::VULKAN),
+        Stage::Wgpu | Stage::Glow => None,
+    }
 }
 
 #[cfg(feature = "gl-fallback")]
@@ -254,15 +380,44 @@ mod tests {
     #[test]
     fn plan_follows_the_crash_ladder() {
         use Stage::*;
-        assert_eq!(plan(Mode::Auto, None, true, true), Some(vec![Wgpu, Glow]));
-        assert_eq!(plan(Mode::Auto, None, true, false), Some(vec![Wgpu]));
-        assert_eq!(plan(Mode::Auto, Some(Wgpu), true, true), Some(vec![WgpuDx12, Glow]));
-        assert_eq!(plan(Mode::Auto, Some(Wgpu), false, true), Some(vec![Glow]));
-        assert_eq!(plan(Mode::Auto, Some(WgpuDx12), true, true), Some(vec![Glow]));
-        assert_eq!(plan(Mode::Auto, Some(Glow), true, true), None);
-        assert_eq!(plan(Mode::Gl, None, true, true), Some(vec![Glow]), "ESKIZ_RENDERER=gl wins");
+        assert_eq!(plan(Mode::Auto, None, &[], true, true), Some(vec![Wgpu, Glow]));
+        assert_eq!(plan(Mode::Auto, None, &[], true, false), Some(vec![Wgpu]));
+        assert_eq!(plan(Mode::Auto, Some(Wgpu), &[], true, true), Some(vec![WgpuDx12, Glow]));
+        assert_eq!(plan(Mode::Auto, Some(Wgpu), &[], false, true), Some(vec![Glow]));
+        assert_eq!(plan(Mode::Auto, Some(WgpuDx12), &[], true, true), Some(vec![WgpuVulkan, Glow]));
+        assert_eq!(plan(Mode::Auto, Some(WgpuVulkan), &[], true, true), Some(vec![Glow]));
+        assert_eq!(plan(Mode::Auto, Some(Glow), &[], true, true), None);
+        assert_eq!(plan(Mode::Gl, None, &[], true, true), Some(vec![Glow]), "ESKIZ_RENDERER=gl wins");
         // No glow compiled in: wgpu is the only choice, whatever crashed.
-        assert_eq!(plan(Mode::Auto, Some(WgpuDx12), true, false), Some(vec![Wgpu]));
+        assert_eq!(plan(Mode::Auto, Some(WgpuDx12), &[], true, false), Some(vec![Wgpu]));
+    }
+
+    #[test]
+    fn plan_skips_stalled_renderers_in_order() {
+        use Stage::*;
+        // wgpu auto -> wgpu-dx12 -> wgpu-vulkan -> glow, one stall at a time.
+        assert_eq!(plan(Mode::Auto, None, &[Wgpu], true, true), Some(vec![WgpuDx12, Glow]));
+        assert_eq!(plan(Mode::Auto, None, &[Wgpu, WgpuDx12], true, true), Some(vec![WgpuVulkan, Glow]));
+        assert_eq!(plan(Mode::Auto, None, &[Wgpu, WgpuDx12, WgpuVulkan], true, true), Some(vec![Glow]));
+        // A stalled glow is not given up: nothing else is left.
+        assert_eq!(plan(Mode::Auto, None, &[Glow], false, true), Some(vec![Wgpu, Glow]));
+        // An explicit request ignores the skip list.
+        assert_eq!(plan(Mode::Dx12, None, &[WgpuDx12], true, true), Some(vec![WgpuDx12, Glow]));
+        assert_eq!(plan(Mode::Vulkan, None, &[], true, true), Some(vec![WgpuVulkan, Glow]));
+    }
+
+    #[test]
+    fn flag_parsing_and_precedence() {
+        assert_eq!(Mode::parse_flag("gl"), Ok(Mode::Gl));
+        assert_eq!(Mode::parse_flag("DX12"), Ok(Mode::Dx12));
+        assert_eq!(Mode::parse_flag("vulkan"), Ok(Mode::Vulkan));
+        assert_eq!(Mode::parse_flag("auto"), Ok(Mode::Auto));
+        assert!(Mode::parse_flag("metal").is_err());
+        assert_eq!(Mode::resolve(Some(Mode::Dx12), Some("gl"), true), (Mode::Dx12, "--renderer"));
+        assert_eq!(Mode::resolve(None, Some("cpu"), true), (Mode::Cpu, "ESKIZ_RENDERER"));
+        assert_eq!(Mode::resolve(None, None, true).0, Mode::Gl);
+        assert_eq!(Mode::resolve(None, Some(""), false), (Mode::Auto, "default"));
+        assert!(parse_compat_pref("compat\n") && !parse_compat_pref("auto\n"));
     }
 
     #[test]

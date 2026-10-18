@@ -202,7 +202,7 @@ impl EskizApp {
         let shape_points: Option<(Vec<Point>, bool)> = match &self.sel.pending {
             Pending::Freehand(stroke) => Some((stroke.points().to_vec(), false)),
             Pending::Polygon(pts) => Some((pts.clone(), false)),
-            Pending::Drag { shape, a, b } => Some((selection_tool::preview_polyline(*shape, *a, *b), true)),
+            Pending::Drag { shape, a, b, rot } => Some((selection_tool::preview_polyline(*shape, *a, *b, *rot), true)),
             _ => None,
         };
         if let Some((pts, closed)) = shape_points {
