@@ -406,6 +406,9 @@ mod tests {
         assert_eq!(crashed, None);
         assert_eq!(fs::read_to_string(d.join(PREV)).unwrap(), "old run\n", "the previous log is kept");
         begin_attempt(Stage::Wgpu);
+        assert!(d.join(MARKER).exists());
+        // On Windows the marker is held open without sharing while the start is in progress.
+        #[cfg(not(windows))]
         assert_eq!(fs::read_to_string(d.join(MARKER)).unwrap(), "wgpu");
         first_frames_ok();
         assert!(!d.join(MARKER).exists(), "a successful start removes the marker");
@@ -413,6 +416,8 @@ mod tests {
         assert!(log_text.contains("renderer attempt: wgpu") && log_text.contains("first frames drawn"), "{log_text}");
         // A crash leaves the marker; the next start sees it.
         begin_attempt(Stage::Glow);
+        // A crashed process no longer holds the marker open.
+        with(|s| s.marker = None);
         let again = init(&[]);
         assert_eq!(again, Some(Stage::Glow));
         std::env::remove_var("ESKIZ_LOG_DIR");
