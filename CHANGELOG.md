@@ -87,7 +87,7 @@ The full list of changes follows.
 
 ### Fixed (seventh release candidate)
 
-- **Windows: closing the window is quick again.** Your drawing is saved first (at most 2 s, or until a running save finishes), then the window hides and Eskiz exits; before, closing could take longer than 15 s on some graphics drivers. A slow close is no longer mistaken for a freeze, so the next start keeps your renderer.
+- **Windows: closing the window saves your drawing first, then exits within about 2 s** (longer only while a save is still running). A slow close is no longer mistaken for a freeze, so the next start keeps your renderer.
 - Text: a click at the end of a short word places the caret. The width knob now sits just outside the text box, so it can no longer be grabbed by accident.
 - Android: Open, Save and Import use the system file picker, Share sends a picture to other apps, pictures can be copied and pasted, and the Back button closes panels before leaving the app.
 - Files from other people are checked more carefully: damaged or oversized `.procreate`, PSD, brush and swatch files are refused with a message instead of exhausting memory.
@@ -100,7 +100,7 @@ The full list of changes follows.
   - Windows: extract the whole zip (Extract All) before running eskiz.exe. In the SmartScreen dialog, choose More info, then Run anyway.
   - Linux: make the AppImage executable with `chmod +x`.
   - Android: allow installing apps from your browser or file manager when asked.
-- **Windows has not yet been tested on real hardware.** The Windows build passes the automated tests and self-test on GitHub's Windows runners only.
+- **Windows: the window can stop responding on some graphics drivers** (DirectX 12), usually within the first minute. A fix is in progress. Eskiz notices the freeze and starts in a safer graphics mode next time; you can also start it with `Eskiz (compatibility mode).bat` from the zip. If it happens to you, please [report it](https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml) and attach `startup.log` from `%LOCALAPPDATA%\Eskiz\logs`.
 - **Android is experimental.** Only arm64 devices running Android 10 or newer are supported. The APK is signed with a public debug key.
 - **MP4 export is not included.** It needs the OpenH264 codec, which these builds do not bundle. GIF, APNG and PNG sequence export work. Developers can build with `--features mp4`.
 - Some adjustment defaults and several 3D and Liquify details are approximations and may change.

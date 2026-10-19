@@ -9,7 +9,10 @@ use eskiz_gpu::GpuContext;
 /// Set `ESKIZ_GPU_REQUIRE=1` to turn a missing adapter into a failure.
 pub fn gpu(test: &str) -> Option<GpuContext> {
     match GpuContext::new() {
-        Ok(ctx) => {
+        Ok(mut ctx) => {
+            // The app's 1.8 s bound is for the UI thread; software adapters on a busy CI machine
+            // can take longer to read back while other tests run.
+            ctx.set_wait_bound(std::time::Duration::from_secs(30));
             eprintln!("[{test}] running on {}", ctx.describe());
             Some(ctx)
         }

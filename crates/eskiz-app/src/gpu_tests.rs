@@ -54,6 +54,10 @@ fn harness(state: Option<&RenderState>, w: usize, h: usize) -> Headless {
         let mut app = EskizApp::new(ctx, Document::new(w, h), String::new(), Prefs::default());
         if let Some(state) = state {
             app.attach_gpu(ctx, state);
+            if let Some(gpu) = app.gpu.as_mut() {
+                // Software adapters on a busy CI machine can take longer than the UI bound.
+                gpu.set_wait_bound(Duration::from_secs(30));
+            }
         }
         app
     })

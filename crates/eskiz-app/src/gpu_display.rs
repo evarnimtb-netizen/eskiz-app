@@ -56,6 +56,12 @@ impl GpuDisplay {
     }
 
     /// `Apple M3 (Metal, hardware)` and the like.
+    /// Use another GPU wait bound (tests on slow software adapters).
+    #[cfg(test)]
+    pub(crate) fn set_wait_bound(&mut self, bound: std::time::Duration) {
+        self.canvas.set_wait_bound(bound);
+    }
+
     pub fn describe(&self) -> String {
         self.canvas.context().describe()
     }

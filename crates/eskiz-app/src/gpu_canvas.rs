@@ -236,6 +236,12 @@ impl GpuCanvas {
         &self.ctx
     }
 
+    /// Use another GPU wait bound (tests on slow software adapters).
+    #[cfg(test)]
+    pub(crate) fn set_wait_bound(&mut self, bound: std::time::Duration) {
+        self.ctx.set_wait_bound(bound);
+    }
+
     /// Can a `w x h` canvas be composited on this device?
     pub fn fits(&self, w: usize, h: usize) -> bool {
         let max = self.ctx.max_canvas_edge() as usize;
