@@ -776,7 +776,7 @@ mod tests {
         start(&d, &mac);
         draw();
         // The watchdog saw the window freeze; the user ended it.
-        crate::stall::report_stall(Some(&d), WgpuMetal, crate::stall::Phase::Gallery, 3.5);
+        crate::stall::report_stall(Some(&d), WgpuMetal, crate::stall::Phase::Gallery, 3.5, false);
         let p = start(&d, &mac);
         assert_eq!((p.stages[0], p.safe), (Glow, true));
         let banner = take_safe_banner().expect("notice");

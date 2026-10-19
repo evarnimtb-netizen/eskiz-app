@@ -67,10 +67,24 @@ fn gpu_canvas(h: &Headless) -> &GpuCanvas {
     h.app.gpu.as_ref().expect("the GPU display is attached").canvas()
 }
 
+/// Step until the GPU display has no deferred work: frames in a test follow each other at once,
+/// so the backlog gate can hold work back for a frame while earlier composites finish.
+fn settle(h: &mut Headless) {
+    h.step();
+    for _ in 0..500 {
+        if !h.app.gpu.as_ref().is_some_and(crate::gpu_display::GpuDisplay::deferred) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+        h.step();
+    }
+    panic!("the GPU display still defers work after 500 frames");
+}
+
 /// The GPU composite must equal the CPU composite (within the 8-bit rounding of the two
 /// pipelines).
 fn assert_same(h: &mut Headless, what: &str) {
-    h.step(); // the frame flushes the GPU canvas
+    settle(h); // the frame flushes the GPU canvas
     assert!(h.app.gpu_in_use(), "{what}: the GPU display should be in use");
     let cpu = h.app.session.flatten_display();
     let gpu = gpu_canvas(h).read_straight().unwrap();
@@ -269,7 +283,7 @@ fn adjustment_preview_runs_on_the_gpu_and_matches_the_cpu_render() {
             h.app.adjust_set(i, v);
         }
         h.step();
-        h.step();
+        settle(&mut h);
         // The preview is on the GPU: the session holds no CPU preview, the layer is untouched,
         // and the composite on screen equals the CPU render of the same adjustment.
         assert!(!h.app.session.has_preview(), "{kind:?}: no CPU preview when the GPU does it");
@@ -313,7 +327,7 @@ fn cancelling_an_adjustment_leaves_no_gpu_preview() {
     assert!(h.app.enter_adjustment(AdjustKind::Hsb));
     h.app.adjust_set(2, 0.5);
     h.step();
-    h.step();
+    settle(&mut h);
     assert_ne!(gpu_canvas(&h).read_straight().unwrap(), before);
     h.app.adjust_cancel();
     assert_same(&mut h, "after cancel");
@@ -581,4 +595,46 @@ fn a_stalled_driver_switches_the_app_to_the_cpu_compositor() {
     assert!(toast.contains("Graphics driver is slow"), "{toast}");
     h.step();
     assert!(!h.app.gpu_in_use());
+}
+
+/// A swap chain that keeps skipping frames: the app leaves the GPU compositor at once, without waiting.
+#[test]
+fn a_run_of_skipped_frames_switches_the_app_to_the_cpu_compositor() {
+    let Some(state) = render_state() else { return };
+    let mut h = harness(Some(&state), 256, 256);
+    h.step();
+    assert!(h.app.gpu_in_use());
+    h.app.trouble_probe = || true;
+    let t = Instant::now();
+    h.step();
+    assert!(t.elapsed() < Duration::from_secs(2));
+    assert!(!h.app.gpu_in_use(), "the CPU compositor takes over");
+    assert!(h.app.gpu.is_none());
+    let toast = h.app.toast.as_ref().map(|t| t.text.clone()).unwrap_or_default();
+    assert!(toast.contains("Graphics driver is slow"), "{toast}");
+}
+
+/// The backlog gate relies on the driver reporting finished composites when it is polled without
+/// waiting. If that never happened, every frame would be deferred and the app would leave the GPU.
+#[test]
+fn finished_composites_are_reported_without_waiting() {
+    let Some(state) = render_state() else { return };
+    let mut h = harness(Some(&state), 256, 256);
+    h.step();
+    assert!(h.app.gpu_in_use());
+    let start = Instant::now();
+    loop {
+        let left = h.app.gpu.as_ref().expect("gpu").unfinished();
+        if left == 0 {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "{left} composites never reported done");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Many frames with edits in a row never leave the GPU behind for good.
+    for _ in 0..30 {
+        h.app.gpu.as_mut().expect("gpu").canvas_mut().mark_all();
+        h.step();
+    }
+    assert!(h.app.gpu_in_use(), "a GPU that keeps up must stay in use");
 }

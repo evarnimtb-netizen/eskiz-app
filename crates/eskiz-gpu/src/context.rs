@@ -340,6 +340,17 @@ impl GpuContext {
         let _ = self.device.poll(wgpu::PollType::Poll);
     }
 
+    /// How long a wait on the driver may take before the context counts as stalled.
+    pub fn wait_bound(&self) -> Duration {
+        self.wait_bound
+    }
+
+    /// Let the driver retire finished submissions and run their completion callbacks
+    /// (`Queue::on_submitted_work_done`), without waiting for anything.
+    pub fn retire_finished(&self) {
+        let _ = self.device.poll(wgpu::PollType::Poll);
+    }
+
     /// Wait for all submitted work, at most the wait bound. Returns false on a timeout (and marks
     /// the context stalled); never blocks longer.
     pub fn wait_idle(&self) -> bool {

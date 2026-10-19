@@ -26,6 +26,7 @@ use eframe::egui_wgpu::WgpuSetup;
 use eframe::{wgpu, CreationContext, NativeOptions};
 
 use crate::gpu_blocklist::{self, Adapter};
+use crate::stall;
 use crate::startup::{self, Ladder, Stage};
 
 /// What the user asked for.
@@ -240,6 +241,28 @@ pub fn choices() -> Vec<Mode> {
         .collect()
 }
 
+/// What to do about a frame the swap chain did not give a texture for: egui-wgpu's own choices,
+/// plus a count of the frames lost in a row (an acquire that times out blocks the UI thread for
+/// about a second each time; [`stall::take_surface_trouble`] ends the GPU compositor after a run).
+fn surface_action(status: &wgpu::CurrentSurfaceTexture) -> eframe::egui_wgpu::SurfaceErrorAction {
+    use eframe::egui_wgpu::SurfaceErrorAction as Act;
+    use wgpu::CurrentSurfaceTexture as S;
+    let (action, counts) = match status {
+        S::Outdated => (Act::Reconfigure, false),
+        S::Lost => (Act::RecreateSurface, true),
+        S::Occluded => (Act::SkipFrame, false),
+        _ => (Act::SkipFrame, true),
+    };
+    if counts {
+        let n = stall::surface_problem();
+        if n == 1 || n.is_multiple_of(5) {
+            startup::log(&format!("surface: frame skipped ({status:?}), {n} in a row"));
+        }
+        stall::crumb(stall::Phase::Idle);
+    }
+    action
+}
+
 /// What an app creator returns.
 pub type AppResult = Result<Box<dyn eframe::App>, Box<dyn Error + Send + Sync>>;
 
@@ -408,6 +431,7 @@ pub fn run_native(
                 }));
             }
         }
+        o.wgpu_options.on_surface_status = Arc::new(surface_action);
         if skips.no_vsync {
             // An earlier run froze while presenting: do not wait for the display.
             o.wgpu_options.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
@@ -422,8 +446,14 @@ pub fn run_native(
         } else {
             startup::log(&format!("present mode requested: {:?}", o.wgpu_options.surface.present_mode));
         }
-        // The software rung composites on the CPU, like OpenGL.
-        let app_mode = if stage.cpu_compositor() && mode.gpu_compositing() { Mode::Cpu } else { mode };
+        // The software rung composites on the CPU, like OpenGL; so does a renderer whose last
+        // freeze happened with the GPU compositor sharing its device (unless the user chose a
+        // compositor explicitly on the command line or in Settings).
+        let learned_cpu = skips.cpu_compositor && mode == Mode::Auto;
+        if learned_cpu && stage != Stage::Glow {
+            startup::log("compositor: CPU (the last run froze with the GPU compositor)");
+        }
+        let app_mode = if (stage.cpu_compositor() || learned_cpu) && mode.gpu_compositing() { Mode::Cpu } else { mode };
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             eframe::run_native(
                 title,

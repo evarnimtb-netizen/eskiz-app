@@ -335,6 +335,7 @@ impl GpuCanvas {
         let live: HashSet<u64> = ids.iter().copied().collect();
         self.mirrors.retain(|id, _| live.contains(id));
         let mut uploaded = 0;
+        crate::stall::crumb(crate::stall::Phase::GpuUpload);
         for &id in &ids {
             let epoch = session.layer_epoch(id);
             // A mirror of the wrong depth (the document was converted) is rebuilt.
@@ -413,7 +414,10 @@ impl GpuCanvas {
         scene.display = display;
         scene.items = scene_items(&doc.root, &self.mirrors, preview);
         let comp = self.comp.as_mut().expect("resized above");
-        let stats = comp.composite(&self.ctx, &scene, &region)?;
+        crate::stall::crumb(crate::stall::Phase::GpuComposite);
+        let stats = comp.composite(&self.ctx, &scene, &region);
+        crate::stall::crumb(crate::stall::Phase::CanvasComposite);
+        let stats = stats?;
         self.pending = Pending::default();
         self.display = display;
         self.last = FlushStats {

@@ -5,7 +5,9 @@ name: Windows smoke
 # one stroke painted with real mouse input, Ctrl+Z, and closing the window
 # (packaging/windows/smoke.ps1). The script also fails when the window turns "Not Responding"
 # (IsHungAppWindow) or the app's watchdog leaves a stalled.marker, and it opens the document a second
-# time with `--renderer gl` (compatibility mode). The runner has no GPU, so wgpu runs on the WARP software adapter.
+# time with `--renderer gl` (reported as SKIP when the VM has no usable OpenGL). The window run is made three times:
+# the default start, `--renderer dx12` (GPU compositor) and `--renderer software` (CPU compositor), each with
+# a 30 s idle and strokes. The runner has no GPU, so wgpu runs on the WARP software adapter.
 # Screenshots, logs and the report are uploaded as the `windows-smoke` artifact; the report is also
 # the job summary.
 #
@@ -58,7 +60,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Release build
         run: cargo build --release --locked -p eskiz-app
-      - name: Smoke test (self-test, diagnose, real window, stroke, undo, close)
+      - name: Smoke test (self-test, diagnose, real windows, strokes, undo, 30 s idle, close)
         shell: pwsh
         env:
           STRICT_INPUT: ${{ inputs.strict_input }}

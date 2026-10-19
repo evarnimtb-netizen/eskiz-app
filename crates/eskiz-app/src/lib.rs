@@ -149,6 +149,7 @@ mod qa_capture;
 pub mod tablet;
 pub mod tablet_backend;
 pub mod exit;
+pub mod paint_marks;
 pub mod stall;
 pub mod startup;
 #[cfg(any(target_os = "macos", test))]

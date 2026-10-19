@@ -22,7 +22,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -50,6 +50,15 @@ pub enum Phase {
     PaintPresent = 5,
     /// A phase used by tests.
     Fake = 6,
+    /// The compositor is queueing tile uploads (`Queue::write_texture`, staging hand-over).
+    GpuUpload = 7,
+    /// The compositor is recording and submitting its compute passes.
+    GpuComposite = 8,
+    /// egui-wgpu has prepared the frame; the next step is `Surface::get_current_texture`.
+    SurfaceAcquire = 9,
+    /// The surface texture was acquired and the render pass is recorded; what follows is the
+    /// encoder finish, `Queue::submit` and `Queue::present`.
+    SubmitPresent = 10,
 }
 
 impl Phase {
@@ -62,7 +71,35 @@ impl Phase {
             Self::GpuReadback => "GPU readback",
             Self::PaintPresent => "egui paint + present",
             Self::Fake => "fake phase",
+            Self::GpuUpload => "GPU upload",
+            Self::GpuComposite => "GPU composite submit",
+            Self::SurfaceAcquire => "surface acquire",
+            Self::SubmitPresent => "queue submit + present",
         }
+    }
+
+    /// Phases from the end of `ui` to the swap-chain present: where a driver that never
+    /// returns from a vsync wait or a present leaves the thread.
+    pub fn is_present_path(self) -> bool {
+        matches!(self, Self::PaintPresent | Self::SurfaceAcquire | Self::SubmitPresent)
+    }
+
+    /// Phases that are the GPU compositor's own work.
+    pub fn is_gpu_work(self) -> bool {
+        matches!(self, Self::GpuReadback | Self::GpuUpload | Self::GpuComposite)
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::PaintPresent,
+            Self::GpuReadback,
+            Self::GpuUpload,
+            Self::GpuComposite,
+            Self::SurfaceAcquire,
+            Self::SubmitPresent,
+        ]
+        .into_iter()
+        .find(|p| p.name() == name)
     }
 
     fn from_u8(n: u8) -> Self {
@@ -73,6 +110,10 @@ impl Phase {
             4 => Self::GpuReadback,
             5 => Self::PaintPresent,
             6 => Self::Fake,
+            7 => Self::GpuUpload,
+            8 => Self::GpuComposite,
+            9 => Self::SurfaceAcquire,
+            10 => Self::SubmitPresent,
             _ => Self::Idle,
         }
     }
@@ -82,6 +123,13 @@ impl Phase {
 static PHASE: AtomicU8 = AtomicU8::new(0);
 static LAST_BEAT_MS: AtomicU64 = AtomicU64::new(0);
 static VISIBLE: AtomicBool = AtomicBool::new(true);
+/// The GPU compositor is the one on screen (written by the UI thread, read by the watchdog).
+static GPU_COMPOSITOR: AtomicBool = AtomicBool::new(false);
+
+/// Tell the watchdog which compositor is in use, so a stall report names it.
+pub fn set_gpu_compositor(on: bool) {
+    GPU_COMPOSITOR.store(on, Ordering::Relaxed);
+}
 
 fn epoch() -> Instant {
     static E: OnceLock<Instant> = OnceLock::new();
@@ -156,28 +204,40 @@ impl Watch {
 pub struct StallMarker {
     pub stage: Stage,
     pub phase: String,
+    /// The GPU compositor was in use when the stall began.
+    pub gpu_compositor: bool,
 }
 
 impl StallMarker {
     pub fn encode(&self) -> String {
-        format!("renderer={}\nphase={}\n", self.stage.name(), self.phase)
+        format!("renderer={}\nphase={}\ncompositor={}\n", self.stage.name(), self.phase, if self.gpu_compositor { "gpu" } else { "cpu" })
     }
 
     pub fn parse(text: &str) -> Option<Self> {
         let mut stage = None;
         let mut phase = String::new();
+        let mut gpu_compositor = false;
         for line in text.lines() {
             match line.split_once('=') {
                 Some(("renderer", v)) => stage = Stage::parse(v),
                 Some(("phase", v)) => phase = v.trim().to_owned(),
+                Some(("compositor", v)) => gpu_compositor = v.trim() == "gpu",
                 _ => {}
             }
         }
-        Some(Self { stage: stage?, phase })
+        Some(Self { stage: stage?, phase, gpu_compositor })
+    }
+
+    fn phase(&self) -> Option<Phase> {
+        Phase::from_name(&self.phase)
     }
 
     pub fn is_present(&self) -> bool {
-        self.phase == Phase::PaintPresent.name()
+        self.phase().is_some_and(Phase::is_present_path)
+    }
+
+    fn is_gpu_work(&self) -> bool {
+        self.phase().is_some_and(Phase::is_gpu_work)
     }
 }
 
@@ -205,6 +265,9 @@ pub struct Skips {
     pub stages: Vec<Stage>,
     /// Present without waiting for the display (AutoNoVsync).
     pub no_vsync: bool,
+    /// Composite on the CPU even on a wgpu renderer: the last freeze happened with the GPU
+    /// compositor sharing the device with the window.
+    pub cpu_compositor: bool,
 }
 
 impl Skips {
@@ -220,6 +283,7 @@ impl Skips {
                     }
                 }
                 Some(("novsync", v)) => s.no_vsync = v.trim() == "1",
+                Some(("cpucomp", v)) => s.cpu_compositor = v.trim() == "1",
                 _ => {}
             }
         }
@@ -231,6 +295,9 @@ impl Skips {
         if self.no_vsync {
             out.push_str("novsync=1\n");
         }
+        if self.cpu_compositor {
+            out.push_str("cpucomp=1\n");
+        }
         out
     }
 
@@ -239,7 +306,7 @@ impl Skips {
     }
 
     pub fn save(&self, dir: &Path) {
-        if self.stages.is_empty() && !self.no_vsync {
+        if self.stages.is_empty() && !self.no_vsync && !self.cpu_compositor {
             let _ = fs::remove_file(dir.join(SKIP_FILE));
         } else {
             let _ = fs::write(dir.join(SKIP_FILE), self.encode());
@@ -250,6 +317,16 @@ impl Skips {
     /// non-blocking present mode; a second one (or any other phase) gives the renderer up, unless
     /// it is `last`, the bottom of the ladder. Returns a sentence for the log and the toast.
     pub fn learn(&mut self, m: &StallMarker, last: Stage) -> String {
+        // The compositor and the window share one device there: first take the compositor away
+        // (the CPU compositor on the same renderer is what a software adapter runs fine).
+        if m.gpu_compositor && !self.cpu_compositor && (m.is_present() || m.is_gpu_work()) {
+            self.cpu_compositor = true;
+            return format!(
+                "The last run froze in '{}' ({}) with the GPU compositor. Eskiz now composites on the CPU and keeps the renderer.",
+                m.phase,
+                m.stage.name()
+            );
+        }
         if m.is_present() && !self.no_vsync {
             self.no_vsync = true;
             return format!(
@@ -273,6 +350,66 @@ impl Skips {
             m.stage.name()
         )
     }
+}
+
+/// Frames in a row for which the swap chain gave no texture (acquire timed out, surface lost)
+/// before the session gives the GPU compositor up.
+pub const SURFACE_TROUBLE_AFTER: u32 = 5;
+
+/// Counts consecutive frames the swap chain would not hand out a texture. wgpu bounds the
+/// acquire itself (about a second, then `Timeout`), so a driver that stops presenting shows up
+/// as a run of skipped frames before it shows up as a freeze.
+pub struct SurfaceTrouble {
+    bad: AtomicU32,
+    tripped: AtomicBool,
+}
+
+impl SurfaceTrouble {
+    pub const fn new() -> Self {
+        Self { bad: AtomicU32::new(0), tripped: AtomicBool::new(false) }
+    }
+
+    /// A frame was skipped. Returns the length of the run.
+    pub fn problem(&self) -> u32 {
+        let n = self.bad.fetch_add(1, Ordering::Relaxed) + 1;
+        if n >= SURFACE_TROUBLE_AFTER {
+            self.tripped.store(true, Ordering::Relaxed);
+        }
+        n
+    }
+
+    /// A frame got its texture: the run is over.
+    pub fn ok(&self) {
+        self.bad.store(0, Ordering::Relaxed);
+    }
+
+    /// True once after the run reached [`SURFACE_TROUBLE_AFTER`].
+    pub fn take_tripped(&self) -> bool {
+        self.tripped.swap(false, Ordering::Relaxed)
+    }
+}
+
+impl Default for SurfaceTrouble {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static SURFACE: SurfaceTrouble = SurfaceTrouble::new();
+
+/// The window's swap chain skipped a frame. Returns the length of the run.
+pub fn surface_problem() -> u32 {
+    SURFACE.problem()
+}
+
+/// The window's swap chain gave a texture.
+pub fn surface_ok() {
+    SURFACE.ok();
+}
+
+/// Has the swap chain failed often enough in a row to leave the GPU compositor? Once per run.
+pub fn take_surface_trouble() -> bool {
+    SURFACE.take_tripped()
 }
 
 /// Shared state of the running watchdog.
@@ -301,7 +438,7 @@ fn watch_loop(run: &Running, poke: &dyn Fn()) {
             Verdict::Healthy => {}
             Verdict::Poke => poke(),
             Verdict::Stalled { phase, secs } => {
-                report_stall(run.dir.as_deref(), run.stage, phase, secs);
+                report_stall(run.dir.as_deref(), run.stage, phase, secs, GPU_COMPOSITOR.load(Ordering::Relaxed));
             }
             Verdict::Recovered { .. } => {
                 if let Some(d) = &run.dir {
@@ -320,12 +457,17 @@ fn append_log(dir: &Path, line: &str) {
 }
 
 /// Write the log line and the marker for a stall. Also callable from tests.
-pub fn report_stall(dir: Option<&Path>, stage: Stage, phase: Phase, secs: f64) {
-    let line = format!("STALL: the UI thread has not finished a frame for {secs:.1}s; last phase: {}; renderer: {}", phase.name(), stage.name());
+pub fn report_stall(dir: Option<&Path>, stage: Stage, phase: Phase, secs: f64, gpu_compositor: bool) {
+    let line = format!(
+        "STALL: the UI thread has not finished a frame for {secs:.1}s; last phase: {}; renderer: {}; compositor: {}",
+        phase.name(),
+        stage.name(),
+        if gpu_compositor { "gpu" } else { "cpu" }
+    );
     eprintln!("eskiz: {line}");
     if let Some(d) = dir {
         append_log(d, &line);
-        write_marker(d, &StallMarker { stage, phase: phase.name().to_owned() });
+        write_marker(d, &StallMarker { stage, phase: phase.name().to_owned(), gpu_compositor });
     }
 }
 
@@ -370,13 +512,13 @@ mod tests {
     #[test]
     fn a_stall_writes_log_and_marker_that_the_next_start_reads() {
         let d = tmp("marker");
-        report_stall(Some(&d), Stage::WgpuDx12, Phase::Fake, 3.2);
+        report_stall(Some(&d), Stage::WgpuDx12, Phase::Fake, 3.2, false);
         let log = fs::read_to_string(d.join("startup.log")).unwrap();
         assert!(log.contains("STALL") && log.contains("fake phase") && log.contains("wgpu-dx12"), "{log}");
         let m = take_marker(&d).expect("marker");
-        assert_eq!(m, StallMarker { stage: Stage::WgpuDx12, phase: "fake phase".into() });
+        assert_eq!(m, StallMarker { stage: Stage::WgpuDx12, phase: "fake phase".into(), gpu_compositor: false });
         assert!(take_marker(&d).is_none(), "read once");
-        report_stall(Some(&d), Stage::Wgpu, Phase::Gallery, 4.0);
+        report_stall(Some(&d), Stage::Wgpu, Phase::Gallery, 4.0, false);
         remove_marker(&d);
         assert!(take_marker(&d).is_none(), "a recovered stall leaves no marker");
     }
@@ -384,21 +526,21 @@ mod tests {
     #[test]
     fn a_stall_teaches_the_skip_list() {
         let mut s = Skips::default();
-        let m = StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into() };
+        let m = StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into(), gpu_compositor: false };
         let last = Stage::WgpuSoftware;
         let msg = s.learn(&m, last);
         assert!(msg.contains("skips") && s.stages == [Stage::Wgpu]);
         // Present stalls try the non-blocking present mode first.
-        let p = StallMarker { stage: Stage::WgpuDx12, phase: Phase::PaintPresent.name().into() };
+        let p = StallMarker { stage: Stage::WgpuDx12, phase: Phase::PaintPresent.name().into(), gpu_compositor: false };
         s.learn(&p, last);
         assert!(s.no_vsync && s.stages == [Stage::Wgpu]);
         s.learn(&p, last);
         assert_eq!(s.stages, [Stage::Wgpu, Stage::WgpuDx12]);
         // OpenGL is not the bottom on Windows and Linux: a frozen glow is skipped too.
-        s.learn(&StallMarker { stage: Stage::Glow, phase: Phase::Gallery.name().into() }, last);
+        s.learn(&StallMarker { stage: Stage::Glow, phase: Phase::Gallery.name().into(), gpu_compositor: false }, last);
         assert_eq!(s.stages, [Stage::Wgpu, Stage::WgpuDx12, Stage::Glow]);
         // The bottom rung is never given up.
-        let msg = s.learn(&StallMarker { stage: last, phase: Phase::Gallery.name().into() }, last);
+        let msg = s.learn(&StallMarker { stage: last, phase: Phase::Gallery.name().into(), gpu_compositor: false }, last);
         assert!(msg.contains("nothing else is left") && !s.stages.contains(&last), "{msg}");
         let again = Skips::parse(&s.encode());
         assert_eq!(again, s);
@@ -407,5 +549,56 @@ mod tests {
         assert_eq!(Skips::load(&d), s);
         Skips::default().save(&d);
         assert_eq!(Skips::load(&d), Skips::default());
+    }
+
+    #[test]
+    fn a_freeze_with_the_gpu_compositor_takes_the_compositor_away_first() {
+        let last = Stage::WgpuSoftware;
+        for phase in [Phase::SubmitPresent, Phase::SurfaceAcquire, Phase::PaintPresent, Phase::GpuComposite, Phase::GpuUpload, Phase::GpuReadback] {
+            let mut s = Skips::default();
+            let m = StallMarker { stage: Stage::WgpuDx12, phase: phase.name().into(), gpu_compositor: true };
+            let msg = s.learn(&m, last);
+            assert!(s.cpu_compositor && !s.no_vsync && s.stages.is_empty(), "{phase:?}: {msg}");
+            // It survives the file, and a second freeze (now on the CPU compositor) moves on.
+            assert_eq!(Skips::parse(&s.encode()), s);
+            let again = StallMarker { gpu_compositor: false, ..m };
+            s.learn(&again, last);
+            assert!(s.cpu_compositor);
+            assert!(s.no_vsync || s.stages == [Stage::WgpuDx12], "{phase:?}");
+        }
+        // A freeze in the UI itself says nothing about the compositor.
+        let mut s = Skips::default();
+        s.learn(&StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into(), gpu_compositor: true }, last);
+        assert!(!s.cpu_compositor);
+    }
+
+    #[test]
+    fn the_marker_names_the_compositor_and_old_markers_still_read() {
+        let m = StallMarker { stage: Stage::WgpuDx12, phase: Phase::SubmitPresent.name().into(), gpu_compositor: true };
+        assert_eq!(StallMarker::parse(&m.encode()), Some(m.clone()));
+        assert!(m.is_present());
+        let old = StallMarker::parse("renderer=wgpu-dx12\nphase=egui paint + present\n").unwrap();
+        assert!(old.is_present() && !old.gpu_compositor);
+        for n in 0..=10u8 {
+            let p = Phase::from_u8(n);
+            assert_eq!(p as u8, n, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn a_run_of_skipped_frames_trips_once_and_a_good_frame_ends_the_run() {
+        let t = SurfaceTrouble::new();
+        for _ in 0..SURFACE_TROUBLE_AFTER - 1 {
+            t.problem();
+        }
+        assert!(!t.take_tripped());
+        t.ok();
+        for _ in 0..SURFACE_TROUBLE_AFTER - 1 {
+            t.problem();
+        }
+        assert!(!t.take_tripped(), "the good frame restarted the count");
+        assert_eq!(t.problem(), SURFACE_TROUBLE_AFTER);
+        assert!(t.take_tripped());
+        assert!(!t.take_tripped(), "reported once");
     }
 }

@@ -4,9 +4,12 @@
 #      --diagnose --window (GPU adapter and backend, scale factor of a real window).
 #   2. Opens the real window on selftest.procreate, takes screenshots, paints one stroke with real
 #      mouse input, presses Ctrl+Z, and counts how many pixels each step changed.
-#   3. Closes the window and checks that the app never exited on its own, and that it never turned
-#      "Not Responding" (IsHungAppWindow) or left a stalled.marker.
-#   4. Opens the same document again with `--renderer gl` (compatibility mode) and checks the same.
+#   3. Idles for 30 s with a stroke every 10 s, closes the window, and checks that the app never exited
+#      on its own, never turned "Not Responding" (IsHungAppWindow) and never left a stalled.marker.
+#   4. Does 2 and 3 three times: the default start, `--renderer dx12` (DX12 with the GPU compositor)
+#      and `--renderer software` (the same adapter, CPU compositor).
+#   5. Opens the document with `--renderer gl`. Without a usable OpenGL (GitHub's VM) the step says
+#      SKIP with the reason; it does not count the software fallback as an OpenGL pass.
 #
 # Output folder (default eskiz\target\windows-smoke): numbered *.png screenshots (whole screen and
 # the window alone), one log per command, eskiz-diagnose.md and smoke-report.md. In GitHub Actions
@@ -274,15 +277,15 @@ function Focus-Window([IntPtr]$hwnd) {
 }
 
 # One left-button drag across the middle of the client area, a gentle wave, about 1 s long.
-function Invoke-Stroke([IntPtr]$hwnd) {
+function Invoke-Stroke([IntPtr]$hwnd, [double]$y = 0.50) {
     $steps = 60
-    $start = Get-ClientPoint $hwnd 0.30 0.50
+    $start = Get-ClientPoint $hwnd 0.30 $y
     [void][SmokeWin]::SetCursorPos($start.X, $start.Y)
     Start-Sleep -Milliseconds 200
     [SmokeWin]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # left down
     for ($i = 1; $i -le $steps; $i++) {
         $t = $i / $steps
-        $p = Get-ClientPoint $hwnd (0.30 + 0.40 * $t) (0.50 + 0.08 * [Math]::Sin($t * 2 * [Math]::PI))
+        $p = Get-ClientPoint $hwnd (0.30 + 0.40 * $t) ($y + 0.08 * [Math]::Sin($t * 2 * [Math]::PI))
         [void][SmokeWin]::SetCursorPos($p.X, $p.Y)
         Start-Sleep -Milliseconds 16
     }
@@ -304,14 +307,152 @@ function Invoke-Undo {
 # ------------------------------------------------------------------------------------- run
 
 $sample = Join-Path ([System.IO.Path]::GetTempPath()) 'selftest.procreate'
-$app = $null
-# The same document once more with --renderer gl (the compatibility mode in the zip): it must open,
-# stay responsive and close cleanly.
-function Invoke-CompatRun {
+
+# Forget the previous run's start-up log, markers and remembered skips, so every window run starts
+# the way a first start does and its log is its own.
+function Reset-Logs {
+    foreach ($f in 'startup.log', 'starting.marker', 'stalled.marker', 'renderer-skip.txt', 'graphics.pref') {
+        Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $script:logDir $f)
+    }
+}
+
+# The first log line matching a pattern, or ''.
+function Find-LogLine([string]$pattern) {
+    $logFile = Join-Path $script:logDir 'startup.log'
+    if (-not (Test-Path $logFile)) { return '' }
+    $hit = Select-String -Path $logFile -Pattern $pattern | Select-Object -First 1
+    if ($hit) { $hit.Line } else { '' }
+}
+
+# Open the sample document in a real window with the given renderer arguments and use it: a stroke,
+# Ctrl+Z, then 30 s of idling with a stroke every 10 s (the frozen DX12 window stopped answering while
+# idle), then close. $label names the run in the report and the screenshots; $expect is a regex the
+# log's "renderer:" line must match so a silent fallback to another renderer is not taken for a pass.
+function Invoke-WindowRun([string]$label, [string[]]$extra, [string]$expect) {
+    Write-Host "== window run '$label' ($($extra -join ' '))"
+    if (-not (Test-Path $sample)) { Fail "window ($label)" "no $sample (the self-test writes it)"; return }
+    Reset-Logs
+    $app = Start-Eskiz "window-$label" (@($extra) + @("`"$sample`""))
+    try {
+        $deadline = (Get-Date).AddSeconds($WindowTimeout)
+        while ((Get-Date) -lt $deadline -and -not $app.HasExited) {
+            $app.Refresh()
+            if ($app.MainWindowHandle -ne [IntPtr]::Zero) { break }
+            Start-Sleep -Milliseconds 250
+        }
+        $hwnd = $app.MainWindowHandle
+        if ($app.HasExited) {
+            Fail "window opens ($label)" "the app exited with $($app.ExitCode) before its window appeared. $(Tail (Join-Path $OutDir "window-$label.err.log"))"
+            return
+        }
+        if ($hwnd -eq [IntPtr]::Zero) {
+            [void](Save-Screen "$label-00-no-window")
+            Fail "window opens ($label)" "no window after $WindowTimeout s"
+            return
+        }
+        Add-Row "window opens ($label)" 'PASS' "title '$($app.MainWindowTitle)'"
+        # Let it draw a few frames on a slow software renderer.
+        Start-Sleep -Seconds 5
+        $chosen = Find-LogLine 'renderer: '
+        $comp = Find-LogLine 'compositor: '
+        Add-Row "renderer ($label)" 'info' "$chosen $comp"
+        if ($expect -and $chosen -notmatch $expect) {
+            Warn "renderer ($label)" "expected '$expect' in the log's renderer line, got: $chosen"
+        }
+        if (-not (Test-Hung $app $hwnd "$label after opening")) { Add-Row "responsive after opening ($label)" 'PASS' 'not hung' }
+        $opened = Save-Shot $hwnd "$label-01-opened"
+        if ([SmokeWin]::NotLikeFirst($opened.Screen) -eq 0) { Warn "screen capture ($label)" 'the screenshot is one flat colour' }
+
+        [void][SmokeWin]::ShowWindow($hwnd, 3) # SW_MAXIMIZE: the same layout on every run
+        Focus-Window $hwnd
+        Start-Sleep -Seconds 3
+        $before = Save-Shot $hwnd "$label-02-maximized"
+        if ($before.Window -and [SmokeWin]::NotLikeFirst($before.Window) -eq 0) {
+            Warn "window capture ($label)" 'PrintWindow returned one flat colour (GPU content not captured)'
+        }
+
+        Write-Host "== stroke"
+        Invoke-Stroke $hwnd 0.50
+        Start-Sleep -Seconds 2
+        $stroke = Save-Shot $hwnd "$label-03-stroke"
+        [void](Test-Hung $app $hwnd "$label after the stroke")
+        $change = Describe-Change $before $stroke
+        if ($app.HasExited) { Fail "stroke ($label)" "the app exited with $($app.ExitCode)" }
+        elseif ($change.Screen -gt 200 -or $change.Window -gt 200) { Add-Row "stroke ($label)" 'PASS' "changed: $($change.Text)" }
+        else { Input-Problem "stroke ($label)" "the drag changed almost nothing: $($change.Text)" }
+
+        Write-Host "== undo (Ctrl+Z)"
+        Focus-Window $hwnd
+        Invoke-Undo
+        Start-Sleep -Seconds 2
+        $undo = Save-Shot $hwnd "$label-04-undo"
+        [void](Test-Hung $app $hwnd "$label after undo")
+        $back = Describe-Change $stroke $undo
+        $left = Describe-Change $before $undo
+        if ($app.HasExited) { Fail "undo ($label)" "the app exited with $($app.ExitCode)" }
+        elseif ($back.Screen -gt 200 -or $back.Window -gt 200) { Add-Row "undo ($label)" 'PASS' "changed: $($back.Text); left vs before the stroke: $($left.Text)" }
+        else { Input-Problem "undo ($label)" "Ctrl+Z changed almost nothing: $($back.Text)" }
+
+        # 30 s of idling, with a stroke after each 10 s: the window must stay responsive (looked at
+        # every 5 s) and must still draw afterwards, which an app stuck in a present would not.
+        Write-Host "== idle 30 s with strokes"
+        $last = $undo
+        foreach ($round in 1..3) {
+            foreach ($slice in 1..2) {
+                Start-Sleep -Seconds 5
+                $app.Refresh()
+                if ($app.HasExited) { break }
+                [void](Test-Hung $app $hwnd "$label idle round $round")
+            }
+            if ($app.HasExited) { break }
+            if ($round -lt 3) {
+                Focus-Window $hwnd
+                $y = 0.30 + 0.15 * $round
+                $beforeStroke = Save-Shot $hwnd "$label-05-idle-$round"
+                Invoke-Stroke $hwnd $y
+                Start-Sleep -Seconds 1
+                $afterStroke = Save-Shot $hwnd "$label-06-stroke-after-idle-$round"
+                $c = Describe-Change $beforeStroke $afterStroke
+                if ($c.Screen -gt 200 -or $c.Window -gt 200) { Add-Row "stroke after idle $round ($label)" 'PASS' "changed: $($c.Text)" }
+                else { Input-Problem "stroke after idle $round ($label)" "the window did not draw the stroke: $($c.Text)" }
+            }
+        }
+        if ($app.HasExited) { Fail "idle ($label)" "the app exited with $($app.ExitCode)" }
+        else { Add-Row "idle 30 s ($label)" 'PASS' "still running, $([math]::Round($app.WorkingSet64 / 1MB)) MB working set" }
+        [void](Save-Shot $hwnd "$label-07-end")
+        $stall = Find-LogLine 'STALL|surface: frame skipped|GPU compositor stopped'
+        if ($stall) { Warn "driver notes ($label)" $stall }
+    }
+    finally {
+        if (-not $app.HasExited) {
+            Write-Host "== close"
+            [void]$app.CloseMainWindow()
+            # The app ends the close by itself after about 2 s (it has no unsaved-changes prompt:
+            # work is saved on the way out), so 15 s is generous.
+            $closeTimer = [System.Diagnostics.Stopwatch]::StartNew()
+            if (-not $app.WaitForExit(15000)) {
+                # Something kept it open: record what is on screen, then stop it.
+                [void](Save-Screen "$label-08-close-blocked")
+                $app.Kill()
+                $app.WaitForExit()
+                Fail "close ($label)" "the window did not close within 15 s of WM_CLOSE; killed (see $label-08-close-blocked-screen.png and the exit: lines in $label-startup.log)"
+            }
+            else {
+                $app.WaitForExit()
+                if ($app.ExitCode -eq 0) { Add-Row "close ($label)" 'PASS' "exit 0 after $([math]::Round($closeTimer.Elapsed.TotalSeconds, 1)) s" } else { Fail "close ($label)" "exit $($app.ExitCode). $(Tail (Join-Path $OutDir "window-$label.err.log"))" }
+            }
+        }
+        Save-StartupLog $label
+    }
+}
+
+# `--renderer gl` asks for OpenGL (glow). GitHub's Windows VM only has OpenGL 1.1, which eskiz's OpenGL
+# renderer cannot use, so Eskiz falls back to the software rung. That is not a test of OpenGL: the
+# step says so (SKIP with the reason) instead of passing the software path under the OpenGL name.
+function Invoke-GlRun {
     Write-Host "== window with --renderer gl"
     if (-not (Test-Path $sample)) { Fail 'window (--renderer gl)' "no $sample"; return }
-    Save-StartupLog 'main'
-    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $script:logDir 'startup.log'), (Join-Path $script:logDir 'starting.marker'), (Join-Path $script:logDir 'stalled.marker')
+    Reset-Logs
     $gl = Start-Eskiz 'window-gl' @('--renderer', 'gl', "`"$sample`"")
     try {
         $deadline = (Get-Date).AddSeconds($WindowTimeout)
@@ -324,13 +465,16 @@ function Invoke-CompatRun {
         if ($gl.HasExited) { Fail 'window (--renderer gl)' "exited with $($gl.ExitCode) before its window appeared. $(Tail (Join-Path $OutDir 'window-gl.err.log'))"; return }
         if ($h -eq [IntPtr]::Zero) { Fail 'window (--renderer gl)' "no window after $WindowTimeout s"; return }
         Start-Sleep -Seconds 6
-        [void](Save-Shot $h '07-gl-opened')
+        [void](Save-Shot $h 'gl-01-opened')
         $hung = Test-Hung $gl $h '--renderer gl'
-        $logFile = Join-Path $script:logDir 'startup.log'
-        $chosen = ''
-        if (Test-Path $logFile) { $chosen = (Select-String -Path $logFile -Pattern 'renderer: ' | Select-Object -First 1).Line }
-        if (-not $hung) { Add-Row 'window (--renderer gl)' 'PASS' "responsive. $chosen" }
-        if ($chosen -and $chosen -notmatch 'glow|OpenGL') { Warn 'window (--renderer gl)' "the log does not say OpenGL: $chosen" }
+        $chosen = Find-LogLine 'renderer: '
+        if ($chosen -match 'glow|OpenGL') {
+            if (-not $hung) { Add-Row 'window (--renderer gl)' 'PASS' "OpenGL, responsive. $chosen" }
+        }
+        else {
+            $why = Find-LogLine 'glow|OpenGL|GL_'
+            Warn 'window (--renderer gl)' "SKIP: OpenGL could not be tested on this machine (no usable OpenGL 2.0 here); Eskiz fell back to: $chosen. $why"
+        }
     }
     finally {
         if (-not $gl.HasExited) {
@@ -357,100 +501,25 @@ try {
     if (Test-Path (Join-Path $OutDir 'eskiz-diagnose.md')) {
         Move-Item -Force (Join-Path $OutDir 'eskiz-diagnose.md') (Join-Path $OutDir 'diagnose-window.md')
     }
-
-    Write-Host "== window on $sample"
-    if (-not (Test-Path $sample)) {
-        Fail 'window' "no $sample (the self-test writes it)"
-    }
-    else {
-        $app = Start-Eskiz 'window' @("`"$sample`"")
-        $deadline = (Get-Date).AddSeconds($WindowTimeout)
-        while ((Get-Date) -lt $deadline -and -not $app.HasExited) {
-            $app.Refresh()
-            if ($app.MainWindowHandle -ne [IntPtr]::Zero) { break }
-            Start-Sleep -Milliseconds 250
-        }
-        $hwnd = $app.MainWindowHandle
-        if ($app.HasExited) {
-            Fail 'window opens' "the app exited with $($app.ExitCode) before its window appeared. $(Tail (Join-Path $OutDir 'window.err.log'))"
-        }
-        elseif ($hwnd -eq [IntPtr]::Zero) {
-            [void](Save-Screen '00-no-window')
-            Fail 'window opens' "no window after $WindowTimeout s"
-        }
-        else {
-            Add-Row 'window opens' 'PASS' "title '$($app.MainWindowTitle)'"
-            # Let it draw a few frames on a slow software renderer.
-            Start-Sleep -Seconds 5
-            if (-not (Test-Hung $app $hwnd 'after opening')) { Add-Row 'responsive after opening' 'PASS' 'not hung' }
-            $opened = Save-Shot $hwnd '01-opened'
-            if ([SmokeWin]::NotLikeFirst($opened.Screen) -eq 0) { Warn 'screen capture' 'the screenshot is one flat colour' }
-
-            [void][SmokeWin]::ShowWindow($hwnd, 3) # SW_MAXIMIZE: the same layout on every run
-            Focus-Window $hwnd
-            Start-Sleep -Seconds 3
-            $before = Save-Shot $hwnd '02-maximized'
-            if ($before.Window -and [SmokeWin]::NotLikeFirst($before.Window) -eq 0) {
-                Warn 'window capture' 'PrintWindow returned one flat colour (GPU content not captured)'
-            }
-
-            Write-Host "== stroke"
-            Invoke-Stroke $hwnd
-            Start-Sleep -Seconds 2
-            $stroke = Save-Shot $hwnd '03-stroke'
-            [void](Test-Hung $app $hwnd 'after the stroke')
-            $change = Describe-Change $before $stroke
-            if ($app.HasExited) { Fail 'stroke' "the app exited with $($app.ExitCode)" }
-            elseif ($change.Screen -gt 200 -or $change.Window -gt 200) { Add-Row 'stroke' 'PASS' "changed: $($change.Text)" }
-            else { Input-Problem 'stroke' "the drag changed almost nothing: $($change.Text)" }
-
-            Write-Host "== undo (Ctrl+Z)"
-            Focus-Window $hwnd
-            Invoke-Undo
-            Start-Sleep -Seconds 2
-            $undo = Save-Shot $hwnd '04-undo'
-            [void](Test-Hung $app $hwnd 'after undo')
-            $back = Describe-Change $stroke $undo
-            $left = Describe-Change $before $undo
-            if ($app.HasExited) { Fail 'undo' "the app exited with $($app.ExitCode)" }
-            elseif ($back.Screen -gt 200 -or $back.Window -gt 200) { Add-Row 'undo' 'PASS' "changed: $($back.Text); left vs before the stroke: $($left.Text)" }
-            else { Input-Problem 'undo' "Ctrl+Z changed almost nothing: $($back.Text)" }
-
-            Write-Host "== idle 5 s"
-            Start-Sleep -Seconds 5
-            $app.Refresh()
-            [void](Test-Hung $app $hwnd 'idle')
-            if ($app.HasExited) { Fail 'idle' "the app exited with $($app.ExitCode)" } else { Add-Row 'idle 5 s' 'PASS' "still running, $([math]::Round($app.WorkingSet64 / 1MB)) MB working set" }
-            [void](Save-Shot $hwnd '05-idle')
-        }
-
-        if (-not $app.HasExited) {
-            Write-Host "== close"
-            [void]$app.CloseMainWindow()
-            # The app ends the close by itself after about 2 s (it has no unsaved-changes prompt:
-            # work is saved on the way out), so 15 s is generous.
-            $closeTimer = [System.Diagnostics.Stopwatch]::StartNew()
-            if (-not $app.WaitForExit(15000)) {
-                # Something kept it open: record what is on screen, then stop it.
-                [void](Save-Screen '06-close-blocked')
-                $app.Kill()
-                $app.WaitForExit()
-                Fail 'close' 'the window did not close within 15 s of WM_CLOSE; killed (see 06-close-blocked-screen.png and the exit: lines in startup.log)'
-            }
-            else {
-                $app.WaitForExit()
-                if ($app.ExitCode -eq 0) { Add-Row 'close' 'PASS' "exit 0 after $([math]::Round($closeTimer.Elapsed.TotalSeconds, 1)) s" } else { Fail 'close' "exit $($app.ExitCode). $(Tail (Join-Path $OutDir 'window.err.log'))" }
-            }
-        }
-    }
 }
 catch {
-    # An error in the script itself: record it, stop the app, and still write the report.
     Fail 'smoke script' "$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))"
-    if ($app -and -not $app.HasExited) { $app.Kill() }
 }
 
-try { Invoke-CompatRun } catch { Fail 'compat run' "$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" }
+# Each run is independent: an error in one is recorded and the next still happens.
+#   main      the default start, as a user gets it (automatic renderer, GPU compositor where the ladder allows)
+#   dx12      `--renderer dx12`: DX12 with the GPU compositor, forced (the combination that froze)
+#   software  `--renderer software`: the same WARP adapter with the CPU compositor
+$runs = @(
+    @{ Label = 'main'; Args = @(); Expect = 'wgpu' },
+    @{ Label = 'dx12'; Args = @('--renderer', 'dx12'); Expect = 'wgpu-dx12' },
+    @{ Label = 'software'; Args = @('--renderer', 'software'); Expect = 'wgpu-software' }
+)
+foreach ($r in $runs) {
+    try { Invoke-WindowRun $r.Label $r.Args $r.Expect }
+    catch { Fail "window run ($($r.Label))" "$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" }
+}
+try { Invoke-GlRun } catch { Fail 'compat run' "$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" }
 
 # ------------------------------------------------------------------------------------- summary
 

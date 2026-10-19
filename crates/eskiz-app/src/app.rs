@@ -462,6 +462,10 @@ pub struct EskizApp {
     /// The renderer this window runs on (Settings > Graphics shows it).
     pub(crate) renderer_in_use: Option<crate::startup::Stage>,
     watchdog_started: bool,
+    /// Leave breadcrumbs inside egui-wgpu's frame (set on a wgpu window only).
+    pub(crate) paint_marks: bool,
+    /// Has the swap chain failed often enough to leave the GPU compositor? Tests replace it.
+    pub(crate) trouble_probe: fn() -> bool,
     pub(crate) now: f64,
     pub(crate) fullscreen: bool,
     /// When the sidebar Pick Color button went down (app clock), while it is held.
@@ -667,6 +671,8 @@ impl EskizApp {
             normal_graphics_next: false,
             renderer_in_use: None,
             watchdog_started: false,
+            paint_marks: false,
+            trouble_probe: crate::stall::take_surface_trouble,
             now: 0.0,
             fullscreen: false,
             modify_press: None,
@@ -2221,6 +2227,9 @@ impl eframe::App for EskizApp {
             self.lifecycle_frame(&ctx);
         }
         self.ui_root(ui);
+        if self.paint_marks {
+            crate::paint_marks::add(ui.ctx());
+        }
         crate::stall::crumb(crate::stall::Phase::PaintPresent);
     }
 
@@ -2467,6 +2476,7 @@ pub fn run_shared(file: Option<PathBuf>, tweak: impl Fn(&mut eframe::NativeOptio
             if crate::renderer::saved_choice_was_reset() {
                 app.prefs.graphics = crate::renderer::Mode::Auto;
             }
+            app.paint_marks = cc.wgpu_render_state.is_some();
             app.safe_mode = crate::startup::safe_mode();
             app.renderer_in_use = crate::startup::current_stage();
             app.safe_banner = crate::startup::take_safe_banner().is_some();
