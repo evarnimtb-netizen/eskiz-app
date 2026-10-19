@@ -366,6 +366,13 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "unknown panic".to_owned())
 }
 
+/// Did the renderer chosen in Settings > Graphics crash the last start or freeze the last run? Then
+/// the choice goes back to Automatic. A command-line or environment request is kept.
+fn saved_choice_failed(source: &str, mode: Mode, crashed: Option<Stage>, skipped: &[Stage]) -> bool {
+    let Some(stage) = mode.stage() else { return false };
+    source == "Settings > Graphics" && (crashed == Some(stage) || skipped.contains(&stage))
+}
+
 /// Open the window. `options` builds fresh [`NativeOptions`] (it is called once per attempt) and
 /// `creator` builds the app; it is told the requested [`Mode`], and finds out whether wgpu is in
 /// use from `cc.wgpu_render_state`.
@@ -391,13 +398,13 @@ pub fn run_native(
     let crashed = startup::previous_crash();
     // A saved choice that crashed the last start goes back to Automatic: the user may not be
     // able to reach Settings to change it. (A command-line or environment request is kept.)
-    if source == "Settings > Graphics" && crashed.is_some() && crashed == mode.stage() {
-        startup::log(&format!("the saved renderer '{}' crashed the last start; Settings > Graphics is back to Automatic", mode.name()));
+    let skips = startup::skips();
+    if saved_choice_failed(source, mode, crashed, &skips.stages) {
+        startup::log(&format!("the saved renderer '{}' crashed or froze the last run; Settings > Graphics is back to Automatic", mode.name()));
         mode = Mode::Auto;
         write_graphics_pref(Mode::Auto);
         SAVED_CHOICE_RESET.store(true, Ordering::SeqCst);
     }
-    let skips = startup::skips();
     let order = startup::this_order();
     #[cfg(not(feature = "gl-fallback"))]
     if mode == Mode::Gl {
@@ -482,6 +489,7 @@ pub fn run_native(
             // The window ran and drew: this is a runtime failure, not a start-up one.
             Err(e) if startup::started_ok() => return Err(e),
             Err(e) => {
+                startup::attempt_failed();
                 startup::log(&format!("renderer '{}' failed to start: {e}", stage.name()));
                 eprintln!("eskiz: the {} renderer failed to start ({e}); trying the next one", stage.name());
                 first_error.get_or_insert(e);
@@ -644,6 +652,16 @@ mod tests {
         assert!(requirements(true).contains("Vulkan 1.1"));
         assert!(!requirements(true).contains("OpenGL"), "no GLES fallback is promised on Android");
         assert!(requirements(false).contains("Metal") && requirements(false).contains("OpenGL"));
+    }
+
+    #[test]
+    fn a_saved_renderer_that_froze_is_reset_but_a_command_line_one_is_kept() {
+        let dx12 = Mode::Dx12;
+        assert!(saved_choice_failed("Settings > Graphics", dx12, None, &[Stage::WgpuDx12]));
+        assert!(saved_choice_failed("Settings > Graphics", dx12, Some(Stage::WgpuDx12), &[]));
+        assert!(!saved_choice_failed("Settings > Graphics", dx12, None, &[Stage::Glow]));
+        assert!(!saved_choice_failed("--renderer", dx12, None, &[Stage::WgpuDx12]));
+        assert!(!saved_choice_failed("Settings > Graphics", Mode::Auto, None, &[Stage::WgpuDx12]));
     }
 
     fn stages(mode: Mode, crashed: Option<Stage>, skipped: &[Stage], platform: Platform) -> Option<Vec<Stage>> {

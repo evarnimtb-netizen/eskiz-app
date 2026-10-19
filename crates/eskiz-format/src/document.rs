@@ -3,9 +3,9 @@
 //! Layer pixels are returned as premultiplied RGBA8, top row first, exactly as stored.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -409,6 +409,21 @@ impl<R: Read + Seek> Document<R> {
         }
         let mut layers = Vec::new();
         collect_layers(&tree, &mut layers);
+        let layer_bytes: u64 = layers
+            .iter()
+            .map(|l| {
+                u64::from(l.width)
+                    .saturating_mul(u64::from(l.height))
+                    .saturating_mul(4)
+            })
+            .fold(0, u64::saturating_add);
+        if layer_bytes > limits::MAX_DOCUMENT_DECODED_BYTES {
+            return Err(limits::exceeded(format!(
+                "the document's {} layers need {layer_bytes} bytes at full size; the most Eskiz opens is {}",
+                layers.len(),
+                limits::MAX_DOCUMENT_DECODED_BYTES
+            )));
+        }
 
         let background_color = a.data("backgroundColor").filter(|b| b.len() == 16).map(|b| {
             let mut color = [0f32; 4];
@@ -1596,20 +1611,7 @@ impl DocumentBuilder {
 pub fn write(path: impl AsRef<Path>, builder: &DocumentBuilder) -> Result<()> {
     let path = path.as_ref();
     let bytes = builder.to_bytes()?;
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    let result = write_file(&tmp, &bytes).and_then(|()| fs::rename(&tmp, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    Ok(result?)
-}
-
-fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+    Ok(crate::fsutil::write_atomic(path, &bytes)?)
 }
 
 fn invalid<T>(msg: impl Into<String>) -> Result<T> {

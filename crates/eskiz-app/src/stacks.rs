@@ -117,6 +117,11 @@ impl LibraryIndex {
         self.stacks.iter_mut().find(|s| s.id == id)
     }
 
+    /// Whether the index lists `id` as a document (in the root list or in a stack).
+    pub fn contains_doc(&self, id: &str) -> bool {
+        self.order.iter().any(|it| matches!(it, Item::Doc(d) if d == id)) || self.stacks.iter().any(|s| s.docs.iter().any(|d| d == id))
+    }
+
     pub fn is_stack(&self, id: &str) -> bool {
         self.stack(id).is_some()
     }

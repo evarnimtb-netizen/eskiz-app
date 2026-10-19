@@ -14,6 +14,7 @@ pub mod document;
 pub mod export;
 pub mod icc;
 mod error;
+pub mod fsutil;
 pub mod keyedarchive;
 pub mod limits;
 mod pack;

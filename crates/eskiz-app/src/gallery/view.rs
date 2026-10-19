@@ -230,8 +230,14 @@ impl EskizApp {
             self.gal.menu = None;
         }
         if clicked.1 {
-            let anchor = self.gal.header.import;
-            self.toggle_menu(Menu::Import, anchor);
+            if cfg!(target_os = "android") {
+                // No typed paths or window drops on a tablet: go straight to the system picker.
+                self.gal.menu = None;
+                self.request_pick_near(crate::file_access::PickPurpose::GalleryImport, "", None);
+            } else {
+                let anchor = self.gal.header.import;
+                self.toggle_menu(Menu::Import, anchor);
+            }
         }
         if clicked.2 {
             let anchor = self.gal.header.plus;

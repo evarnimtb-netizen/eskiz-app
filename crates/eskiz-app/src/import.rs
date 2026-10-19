@@ -100,9 +100,61 @@ pub fn decode_image(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
     }
 }
 
+/// Most pixels of a picture Eskiz decodes (100 megapixels). Checked from the header, before any
+/// pixel memory is allocated.
+pub const MAX_PICTURE_PIXELS: u64 = 100_000_000;
+
+fn check_picture_size(path: &Path, w: u64, h: u64) -> Result<(), String> {
+    if w == 0 || h == 0 || w.saturating_mul(h) > MAX_PICTURE_PIXELS {
+        return Err(format!(
+            "{}: the picture is {w} x {h}; the largest Eskiz opens is 100 megapixels",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Shrink straight RGBA8 so its longest side is at most `max_side` (box average). Returns the
+/// input unchanged when it already fits.
+pub fn limit_side(w: usize, h: usize, rgba: Vec<u8>, max_side: usize) -> (usize, usize, Vec<u8>) {
+    let max_side = max_side.max(1);
+    if w <= max_side && h <= max_side || rgba.len() != w * h * 4 {
+        return (w, h, rgba);
+    }
+    let f = w.max(h).div_ceil(max_side);
+    let (nw, nh) = (w.div_ceil(f), h.div_ceil(f));
+    let mut out = vec![0u8; nw * nh * 4];
+    for y in 0..nh {
+        for x in 0..nw {
+            let mut sum = [0u32; 4];
+            let mut n = 0u32;
+            for sy in (y * f)..((y + 1) * f).min(h) {
+                for sx in (x * f)..((x + 1) * f).min(w) {
+                    let i = (sy * w + sx) * 4;
+                    for c in 0..4 {
+                        sum[c] += u32::from(rgba[i + c]);
+                    }
+                    n += 1;
+                }
+            }
+            let o = (y * nw + x) * 4;
+            for c in 0..4 {
+                out[o + c] = ((sum[c] + n / 2) / n.max(1)) as u8;
+            }
+        }
+    }
+    (nw, nh, out)
+}
+
 fn decode_webp(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
     let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
-    let reader = image::ImageReader::open(path).map_err(|e| err(&e))?;
+    let mut reader = image::ImageReader::open(path).map_err(|e| err(&e))?;
+    let (iw, ih) = reader.into_dimensions().map_err(|e| err(&e))?;
+    check_picture_size(path, u64::from(iw), u64::from(ih))?;
+    reader = image::ImageReader::open(path).map_err(|e| err(&e))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(1 << 30);
+    reader.limits(limits);
     let rgba = reader.decode().map_err(|e| err(&e))?.to_rgba8();
     let (w, h) = (rgba.width() as usize, rgba.height() as usize);
     Ok((w, h, rgba.into_raw()))
@@ -173,7 +225,16 @@ fn decode_png(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
     let mut decoder = png::Decoder::new(BufReader::new(file));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut buf = vec![0; reader.output_buffer_size().ok_or("image is too large")?];
+    check_picture_size(
+        path,
+        u64::from(reader.info().width),
+        u64::from(reader.info().height),
+    )?;
+    let size = reader.output_buffer_size().ok_or("image is too large")?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(size)
+        .map_err(|_| format!("{}: the picture is too large", path.display()))?;
+    buf.resize(size, 0);
     let info = reader.next_frame(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
     let (w, h) = (info.width as usize, info.height as usize);
     let data = &buf[..info.buffer_size()];
@@ -195,6 +256,9 @@ fn decode_jpeg(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(&bytes), options);
+    decoder.decode_headers().map_err(|e| format!("{}: {e:?}", path.display()))?;
+    let head = decoder.info().ok_or_else(|| format!("{}: no image header", path.display()))?;
+    check_picture_size(path, u64::from(head.width), u64::from(head.height))?;
     let rgba = decoder.decode().map_err(|e| format!("{}: {e:?}", path.display()))?;
     let info = decoder.info().ok_or_else(|| format!("{}: no image header", path.display()))?;
     let (w, h) = (usize::from(info.width), usize::from(info.height));
@@ -411,6 +475,33 @@ fn place(src: &[u8], sw: usize, sh: usize, w: usize, h: usize, fill: u8) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn png_that_declares_a_huge_size_is_refused_from_the_header() {
+        let mut bytes = Vec::new();
+        {
+            let enc = png::Encoder::new(&mut bytes, 60_000, 60_000);
+            let mut writer = enc.write_header().unwrap();
+            writer.write_chunk(png::chunk::IDAT, &[0u8]).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("eskiz-hostile-png-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.png");
+        std::fs::write(&path, &bytes).unwrap();
+        let err = super::decode_image(&path).unwrap_err();
+        assert!(err.contains("100 megapixels"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn limit_side_shrinks_wide_pictures() {
+        let (w, h, px) = super::limit_side(10, 4, vec![200; 10 * 4 * 4], 5);
+        assert_eq!((w, h), (5, 2));
+        assert_eq!(px.len(), 5 * 2 * 4);
+        assert!(px.iter().all(|&v| v == 200));
+        let (w, h, _) = super::limit_side(3, 3, vec![0; 36], 5);
+        assert_eq!((w, h), (3, 3));
+    }
+
     use super::*;
 
     #[test]

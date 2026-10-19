@@ -290,11 +290,22 @@ fn max_id(nodes: &[Node]) -> u64 {
 /// Write a planned snapshot: the changed tiles, then the manifest, then remove the tile files
 /// the manifest no longer lists.
 pub fn execute(plan: &Plan) -> Result<(), String> {
+    let _writing = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    execute_locked(plan)
+}
+
+/// Journal writes (the worker's and a panic flush) never run at the same time.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn execute_locked(plan: &Plan) -> Result<(), String> {
     fs::create_dir_all(&plan.dir).map_err(|e| format!("{}: {e}", plan.dir.display()))?;
     for (name, tile) in &plan.tiles {
-        write_atomic(&plan.dir.join(name), &encode_tile(tile))?;
+        crate::storage::write_atomic_nodir(&plan.dir.join(name), &encode_tile(tile))?;
     }
+    // The tiles and the manifest's name must be on disk before the files it no longer lists go.
+    crate::storage::sync_dir(&plan.dir);
     write_atomic(&plan.dir.join(MANIFEST), &plan.manifest)?;
+    crate::storage::sync_dir(&plan.dir);
     if let Ok(entries) = fs::read_dir(&plan.dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -312,8 +323,10 @@ pub fn execute(plan: &Plan) -> Result<(), String> {
 /// to die: the last planned state goes to disk before the panic continues.
 pub fn write_now(root: &Path, id: &str, title: &str, doc: &Document) -> Result<(), String> {
     let mut planner = Planner::unsaved();
+    // Tile names of this write never collide with the ones the worker writes.
+    planner.seq = 1 << 32;
     let plan = planner.plan(doc, root, id, title);
-    execute(&plan)
+    execute_locked(&plan)
 }
 
 /// Remove a document's journal (after a save, or when the user discards it).
@@ -392,6 +405,13 @@ pub fn scan(recovery: &Path, library: &Library) -> Vec<Pending> {
 
 /// Rebuild the document of `id` from its package and its journal in `recovery`.
 pub fn restore(recovery: &Path, library: &Library, id: &str) -> Result<Document, String> {
+    restore_counted(recovery, library, id).map(|(doc, _)| doc)
+}
+
+/// Like [`restore`], and also the number of tiles that could not be read (those keep the
+/// pixels of the saved package, or stay empty).
+pub fn restore_counted(recovery: &Path, library: &Library, id: &str) -> Result<(Document, usize), String> {
+    let mut skipped = 0usize;
     let dir = recovery.join(id);
     let text = fs::read(dir.join(MANIFEST)).map_err(|e| format!("{}: {e}", dir.display()))?;
     let m: Value = serde_json::from_slice(&text).map_err(|e| format!("journal: {e}"))?;
@@ -458,8 +478,13 @@ pub fn restore(recovery: &Path, library: &Library, id: &str) -> Result<Document,
             let tile = match file {
                 None => None,
                 Some(name) => {
-                    let bytes = fs::read(dir.join(&name)).map_err(|e| format!("{}: {e}", dir.join(&name).display()))?;
-                    Some(Arc::new(decode_tile(&bytes)?))
+                    match fs::read(dir.join(&name)).map_err(|e| e.to_string()).and_then(|b| decode_tile(&b)) {
+                        Ok(t) => Some(Arc::new(t)),
+                        Err(_) => {
+                            skipped += 1;
+                            continue;
+                        }
+                    }
                 }
             };
             layer.set_tile(tx, ty, tile);
@@ -477,7 +502,7 @@ pub fn restore(recovery: &Path, library: &Library, id: &str) -> Result<Document,
             }
         }
     }
-    Ok(doc)
+    Ok((doc, skipped))
 }
 
 /// Delete a journal without restoring it.
@@ -519,6 +544,13 @@ pub fn set_panic_snapshot(root: &Path, id: &str, title: &str, doc: &Document) {
 pub fn flush_for_panic() {
     let Ok(slot) = PANIC_SLOT.try_lock() else {
         return;
+    };
+    // If the worker is in the middle of a write (or this is the worker), its last complete
+    // manifest stays valid; do not write over it.
+    let _writing = match WRITE_LOCK.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
     };
     if let Some(s) = slot.as_ref() {
         let _ = write_now(&s.root, &s.id, &s.title, &s.doc);

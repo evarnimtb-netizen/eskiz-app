@@ -196,15 +196,19 @@ impl EskizApp {
             return;
         };
         let (pos, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        if !down {
+            // A finger or pen that lifts takes the pointer position with it on the same frame:
+            // the release still commits, at the last position seen.
+            let at = pos.unwrap_or(st.pos);
+            st.pos = at;
+            self.finish_pour_fill(ctx, st, Some(at), true);
+            return;
+        }
         let Some(pos) = pos else {
             self.finish_pour_fill(ctx, st, None, false);
             return;
         };
         st.pos = pos;
-        if !down {
-            self.finish_pour_fill(ctx, st, Some(pos), true);
-            return;
-        }
         match st.phase {
             DropPhase::Carry { anchor, since } => {
                 if pos.distance(anchor) > REST_SLOP {

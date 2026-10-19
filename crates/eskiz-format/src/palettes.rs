@@ -141,17 +141,7 @@ pub(crate) fn zip_members(members: &[(&str, &[u8])]) -> Result<Vec<u8>> {
 /// Writes `bytes` to `path` through a temporary file in the same folder, then renames it into
 /// place, so the destination is never left half-written.
 pub fn save_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "palette".into());
-    let tmp = path.with_file_name(format!(".{file_name}.tmp"));
-    {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
+    crate::fsutil::write_atomic(path, bytes)
 }
 
 // ------------------------------------------------------------------ .swatches

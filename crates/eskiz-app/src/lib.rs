@@ -72,6 +72,7 @@ pub mod liquify_tool;
 #[cfg(target_os = "android")]
 pub mod android_bridge;
 pub mod android_input;
+mod jni_contract;
 pub mod android_queue;
 pub mod android_source;
 pub mod safe_area;
@@ -428,6 +429,7 @@ fn android_main(android_app: android_activity::AndroidApp) {
     // Phones throttle hard on many threads: the global rayon pool gets the same cap as the
     // hand-rolled worker pools (`eskiz_core::parallelism`).
     let _ = rayon::ThreadPoolBuilder::new().num_threads(eskiz_core::parallelism::cpus()).build_global();
+    android_bridge::register_activity(&android_app);
     let data = android_app.internal_data_path();
     if let Some(dir) = &data {
         storage::set_app_data_dir(dir);

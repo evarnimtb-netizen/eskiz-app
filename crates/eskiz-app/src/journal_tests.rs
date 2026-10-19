@@ -216,3 +216,33 @@ fn a_flush_for_a_panic_writes_the_last_planned_state() {
     assert!(same_pixels(&back, &doc));
     let _ = dir;
 }
+
+#[test]
+fn restore_skips_a_missing_tile_and_counts_it() {
+    let (lib, dir) = library("missing-tile");
+    let doc = sample_document(300, 200);
+    let root = lib.recovery_root().to_owned();
+    let mut planner = Planner::unsaved();
+    execute(&planner.plan(&doc, &root, "fresh-2", "Fresh")).unwrap();
+    let tile = fs::read_dir(root.join("fresh-2")).unwrap().flatten().find(|e| e.path().extension().and_then(|x| x.to_str()) == Some(TILE_EXT)).unwrap();
+    fs::remove_file(tile.path()).unwrap();
+    assert!(restore(&root, &lib, "fresh-2").is_ok());
+    let (_, skipped) = restore_counted(&root, &lib, "fresh-2").unwrap();
+    assert_eq!(skipped, 1);
+    let _ = dir;
+}
+
+#[test]
+fn a_panic_flush_uses_tile_names_the_worker_never_writes() {
+    let (lib, dir) = library("flush-names");
+    let doc = sample_document(300, 200);
+    let root = lib.recovery_root().to_owned();
+    let mut planner = Planner::unsaved();
+    let plan = planner.plan(&doc, &root, "fresh-3", "Fresh");
+    let worker_names: Vec<String> = plan.tiles.iter().map(|(n, _)| n.clone()).collect();
+    write_now(&root, "fresh-3", "Fresh", &doc).unwrap();
+    for entry in fs::read_dir(root.join("fresh-3")).unwrap().flatten() {
+        assert!(!worker_names.contains(&entry.file_name().to_string_lossy().into_owned()));
+    }
+    let _ = dir;
+}

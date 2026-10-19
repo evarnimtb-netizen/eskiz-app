@@ -94,6 +94,8 @@ pub struct SelectionTool {
     pub banner: Option<String>,
     /// Automatic: the active layer's pixels, taken when the press began.
     pub auto_source: Option<Image>,
+    /// Automatic: the threshold the preview was last computed for during this drag.
+    pub auto_last: Option<f32>,
     /// Marching ants for the committed selection, keyed by the session's edit counter.
     pub ants: Option<(u64, Vec<Polyline>)>,
 }
@@ -113,6 +115,7 @@ impl Default for SelectionTool {
             preview: None,
             banner: None,
             auto_source: None,
+            auto_last: None,
             ants: None,
         }
     }
@@ -568,6 +571,7 @@ impl EskizApp {
                 match self.sel.shape {
                     Shape::Automatic => {
                         self.sel.auto_source = layer_image(&self.session, self.active);
+                        self.sel.auto_last = None;
                         if self.sel.auto_source.is_some() {
                             let seed = (c.x.floor() as i64, c.y.floor() as i64);
                             self.sel.pending = Pending::Auto {
@@ -621,7 +625,10 @@ impl EskizApp {
                 if let Some((seed, threshold)) = auto_update {
                     self.sel.threshold = threshold;
                     self.sel.banner = Some(format!("Threshold {:.0}%", threshold * 100.0));
-                    if let Some(src) = &self.sel.auto_source {
+                    // A pen that rests keeps the same threshold: the preview is already right.
+                    let unchanged = self.sel.auto_last == Some(threshold);
+                    if let (false, Some(src)) = (unchanged, &self.sel.auto_source) {
+                        self.sel.auto_last = Some(threshold);
                         let mask = flood_select(src, seed, threshold);
                         self.sel.preview = Some(outline(&mask, OUTLINE_LEVEL));
                     }

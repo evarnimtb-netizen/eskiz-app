@@ -103,7 +103,15 @@ pub const MAX_TILE_SIDE: u32 = 4096;
 /// Most bytes of decoded pixels one PSD import may hold (every layer is a full canvas). Past
 /// this the import cannot fit in memory on any machine Eskiz targets, so it fails early with a
 /// clear message instead of being killed by the OS.
-pub const MAX_DECODED_BYTES: u64 = 16 << 30;
+pub const MAX_DECODED_BYTES: u64 = 8 << 30;
+
+/// Most bytes of decoded brush-tip pixels one ABR import may hold. Counted while decoding, so a
+/// small file of repeat runs cannot expand past it. Photoshop packs are far smaller.
+pub const MAX_BRUSH_DECODED_BYTES: u64 = 1 << 30;
+
+/// Most bytes a `.procreate` document may need if every layer were decoded to a full canvas.
+/// Real documents are far below this; it stops a package that claims thousands of huge layers.
+pub const MAX_DOCUMENT_DECODED_BYTES: u64 = 32 << 30;
 
 // ----------------------------------------------------------------------------- brushes
 

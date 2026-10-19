@@ -250,6 +250,7 @@ impl FrameList {
                 visible: item.layer.visible,
                 opacity: item.layer.opacity,
                 blend: item.blend,
+                clipped: item.clipped,
                 ..eskiz_core::Props::new("")
             };
             doc.push_raster(None, props, None, item.layer.clone());

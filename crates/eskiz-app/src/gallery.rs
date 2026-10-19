@@ -132,6 +132,10 @@ pub(crate) struct Gallery {
     worker: Option<Worker>,
     jobs_in_flight: usize,
     saves_in_flight: usize,
+    /// Set when a job could not be queued because the storage thread has stopped.
+    worker_lost: bool,
+    /// The ID a document got at its first save (so its saved selections stay with it).
+    pub(crate) assigned_id: Option<String>,
     pub current: Option<CurrentDoc>,
     clock: AutosaveClock,
     /// Seconds between autosaves (a field so tests can shorten it).
@@ -220,6 +224,8 @@ impl Default for Gallery {
             worker: None,
             jobs_in_flight: 0,
             saves_in_flight: 0,
+            worker_lost: false,
+            assigned_id: None,
             current: None,
             clock: AutosaveClock::default(),
             autosave_secs: AUTOSAVE_SECS,
@@ -336,12 +342,9 @@ impl Gallery {
     /// new go to the front of the root list, and missing ones are dropped from it).
     pub fn refresh(&mut self) {
         if let Some(lib) = &self.library {
-            self.entries = lib.list();
+            let (entries, index) = lib.sync_index();
+            self.entries = entries;
             let docs: Vec<String> = self.entries.iter().map(|e| e.id.clone()).collect();
-            let mut index = lib.read_index();
-            if index.reconcile(&docs) {
-                let _ = lib.write_index(&index);
-            }
             self.index = index;
             if self.open_stack.as_ref().is_some_and(|s| !self.index.is_stack(s)) {
                 self.open_stack = None;
@@ -354,11 +357,19 @@ impl Gallery {
 
     fn send(&mut self, job: Job) {
         if let Some(w) = &self.worker {
-            if matches!(job, Job::Save(_)) {
+            let is_save = matches!(job, Job::Save(_));
+            if is_save {
                 self.saves_in_flight += 1;
             }
             self.jobs_in_flight += 1;
-            w.send(job);
+            if !w.send(job) {
+                // The storage thread is gone: nothing will answer, so do not wait for it.
+                self.jobs_in_flight = self.jobs_in_flight.saturating_sub(1);
+                if is_save {
+                    self.saves_in_flight = self.saves_in_flight.saturating_sub(1);
+                }
+                self.worker_lost = true;
+            }
         }
     }
 
@@ -516,7 +527,11 @@ impl EskizApp {
         let Some(cur) = self.gal.current.as_mut() else {
             return;
         };
+        let fresh = cur.id.is_none();
         let id = cur.id.get_or_insert_with(new_id).clone();
+        if fresh {
+            self.gal.assigned_id = Some(id.clone());
+        }
         let req = SaveRequest { id, title: cur.title.clone(), doc: Box::new(self.session.doc.clone()), edits, sig };
         self.gal.send(Job::Save(req));
     }
@@ -741,6 +756,9 @@ impl EskizApp {
 
     /// Apply finished background jobs.
     pub(crate) fn poll_worker(&mut self) {
+        if std::mem::take(&mut self.gal.worker_lost) {
+            self.show_toast("Saving has stopped working. Please restart Eskiz; your work is kept on screen.", 6.0);
+        }
         let done: Vec<Done> = match &self.gal.worker {
             Some(w) => w.rx.try_iter().collect(),
             None => return,
@@ -790,10 +808,13 @@ impl EskizApp {
                         self.show_toast(format!("Recovery copy not written: {e}"), 4.0);
                     }
                 }
-                Done::Restored { id, title, result } => {
+                Done::Restored { id, title, result, skipped } => {
                     self.gal.restoring = None;
                     match result {
                         Ok(doc) => {
+                            if skipped > 0 {
+                                self.show_toast(format!("{skipped} part(s) of the recovery copy could not be read and were left out."), 5.0);
+                            }
                             self.gal.offers.retain(|o| o.id != id);
                             self.gal.restored = Some((id, title, doc));
                         }

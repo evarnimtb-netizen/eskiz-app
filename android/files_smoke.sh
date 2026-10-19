@@ -93,6 +93,10 @@ until [[ "$(adb shell getprop sys.boot_completed 2> /dev/null | tr -d '\r')" == 
 adb shell input keyevent KEYCODE_WAKEUP > /dev/null 2>&1; adb shell wm dismiss-keyguard > /dev/null 2>&1
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 0
+# Keep the screen on for the whole run: a sleeping display gives black screenshots and no system dialogs.
+adb shell svc power stayon true > /dev/null 2>&1
+adb shell settings put system screen_off_timeout 1800000 > /dev/null 2>&1
+adb shell input keyevent KEYCODE_WAKEUP > /dev/null 2>&1
 if [[ ! -f "$fixtures/fixture.procreate" ]]; then
   log "writing fixtures to $fixtures"
   (cd "$here/.." && ESKIZ_FIXTURES_DIR="$(cd "$(dirname "$fixtures")" && pwd)/$(basename "$fixtures")" \
@@ -130,7 +134,7 @@ if tap_node 15 --desc "Show roots" || true; then
   tap_node 8 --text "Documents" || tap_node 8 --text-contains "documents"
   tap_node 10 --text "EskizTest" \
     && tap_node 10 --text-contains "use this folder" \
-    && { tap_node 10 --text "Allow" || tap_node 10 --text-contains "allow"; } && ok=0
+    && { tap_node 10 --text "Allow" || tap_node 10 --text "ALLOW" || tap_node 10 --text-contains "allow"; } && ok=0
 fi
 wait_log "saf: tree persisted" 20 || ok=1; verdict "2 choose folder (tree persisted)" $ok
 shot 02-folder

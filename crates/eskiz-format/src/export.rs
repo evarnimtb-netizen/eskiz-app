@@ -27,7 +27,6 @@
 //! PDF are not composited from layers here; the caller passes finished rasters.
 
 use std::borrow::Cow;
-use std::ffi::OsString;
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -1020,26 +1019,8 @@ fn unique_path(dir: &Path, file_name: &str) -> PathBuf {
 /// Writes `bytes` to a temporary file in the same folder, flushes it, then renames it over
 /// `path`. On failure the temporary file is removed and `path` is left untouched.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| Error::InvalidInput(format!("no file name in {}", path.display())))?;
-    let dir = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    let mut tmp_name = OsString::from(".");
-    tmp_name.push(file_name);
-    tmp_name.push(".tmp");
-    let tmp = dir.join(tmp_name);
-
-    let result = (|| -> std::io::Result<()> {
-        let mut file = fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+    if path.file_name().is_none() {
+        return Err(Error::InvalidInput(format!("no file name in {}", path.display())));
     }
-    result.map_err(Error::Io)
+    crate::fsutil::write_atomic(path, bytes).map_err(Error::Io)
 }

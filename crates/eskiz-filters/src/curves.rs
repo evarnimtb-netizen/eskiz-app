@@ -14,9 +14,7 @@ pub struct Curve {
 }
 
 impl Curve {
-    /// Identity curve. Entry `i` is `i / 256`, which matches the half-texel lookup of
-    /// so that the lookup is exact (the identity is within 1/255 at every
-    /// input).
+    /// Identity curve. Entry `i` is `i / 256`; `lookup` maps every input to itself.
     pub fn identity() -> Self {
         Self {
             table: std::array::from_fn(|i| i as f32 / 256.0),
@@ -30,14 +28,17 @@ impl Curve {
         }
     }
 
-    /// Lookup with the half-texel correction `u = c + 0.5/256` and linear interpolation.
+    /// Lookup at `c` in [0, 1] with linear interpolation. Entry `i` sits at `i / 256`; the last
+    /// interval (255/256 to 1) continues the slope of the one before it, so the identity maps
+    /// every input to itself, white included.
     pub fn lookup(&self, c: f32) -> f32 {
-        let u = c.clamp(0.0, 1.0) + 0.5 / 256.0;
-        let pos = (u * 256.0 - 0.5).clamp(0.0, 255.0);
-        let i0 = pos.floor() as usize;
+        let pos = (c.clamp(0.0, 1.0) * 256.0).clamp(0.0, 256.0);
+        let i0 = (pos.floor() as usize).min(LUT_LEN - 1);
         let i1 = (i0 + 1).min(LUT_LEN - 1);
+        let (lo, hi) = if i0 == LUT_LEN - 1 { (LUT_LEN - 2, LUT_LEN - 1) } else { (i0, i1) };
         let t = pos - i0 as f32;
-        self.table[i0] + (self.table[i1] - self.table[i0]) * t
+        let slope = self.table[hi] - self.table[lo];
+        (self.table[i0] + slope * t).clamp(0.0, 1.0)
     }
 }
 
@@ -114,4 +115,20 @@ pub fn curves_rgb(c: [f32; 3], params: &CurvesParams) -> [f32; 3] {
 pub fn apply(src: &Image, mask: Option<&[f32]>, params: &CurvesParams) -> Image {
     let out = src.map(|_, _, px| premultiply(curves_rgb(unpremultiply(px), params), px[3]));
     mix_masked(src, &out, mask)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn the_identity_maps_every_8_bit_value_to_itself() {
+        let c = Curve::identity();
+        for v in 0..=255u32 {
+            let x = v as f32 / 255.0;
+            assert_eq!((c.lookup(x) * 255.0).round() as u32, v);
+        }
+        let out = curves_rgb([1.0, 254.0 / 255.0, 0.5], &CurvesParams::default());
+        assert_eq!((out[0] * 255.0).round() as u32, 255);
+    }
 }

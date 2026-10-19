@@ -507,7 +507,7 @@ fn current_frame_is_never_tinted_and_covers_the_onion_skin() {
 
 #[test]
 fn export_repeats_holds_at_one_over_fps() {
-    // Holds 0, 2 and 0: five frames in total at 15 fps.
+    // Holds 0, 2 and 0: three pictures lasting five ticks in total at 15 fps.
     let mut a = item(solid([10, 0, 0]));
     a.hold = 0;
     let mut b = item(solid([20, 0, 0]));
@@ -516,12 +516,13 @@ fn export_repeats_holds_at_one_over_fps() {
     c.hold = 0;
     let frames = FrameList::build(snapshot(vec![a, b, c])).expect("valid stack");
     let out = export_frames(&AnimationSettings::default(), &frames);
-    assert_eq!(out.len(), 5);
+    assert_eq!(out.len(), 3);
     let reds: Vec<u8> = out.iter().map(|f| f.pixels()[0]).collect();
-    assert_eq!(reds, vec![10, 20, 20, 20, 30]);
+    assert_eq!(reds, vec![10, 20, 30]);
     let one_frame = eskiz_media::duration_for_fps(15);
-    for f in &out {
-        assert_eq!(f.duration(), one_frame);
+    let ticks: Vec<u32> = vec![1, 3, 1];
+    for (f, t) in out.iter().zip(ticks) {
+        assert_eq!(f.duration(), one_frame * t);
         assert_eq!((f.width(), f.height()), (W as u32, H as u32));
     }
     let total: f64 = out.iter().map(|f| f.duration().as_secs_f64()).sum();
@@ -555,11 +556,10 @@ fn reverse_direction_exports_in_reverse_order() {
         direction: PlaybackDirection::Reverse,
         ..AnimationSettings::default()
     };
-    let reds: Vec<u8> = export_frames(&settings, &frames)
-        .iter()
-        .map(|f| f.pixels()[0])
-        .collect();
-    assert_eq!(reds, vec![30, 20, 20, 20, 10]);
+    let out = export_frames(&settings, &frames);
+    let reds: Vec<u8> = out.iter().map(|f| f.pixels()[0]).collect();
+    assert_eq!(reds, vec![30, 20, 10]);
+    assert_eq!(out[1].duration(), eskiz_media::duration_for_fps(15) * 3);
 }
 
 #[test]
@@ -582,4 +582,24 @@ fn export_includes_the_background_and_excludes_hidden_and_private() {
 fn export_of_an_empty_stack_is_empty() {
     let frames = FrameList::build(snapshot(Vec::new())).expect("empty stack is valid");
     assert!(export_frames(&AnimationSettings::default(), &frames).is_empty());
+}
+
+#[test]
+fn clipped_layer_does_not_paint_outside_its_base() {
+    let mut px = vec![0u8; W * H * 4];
+    px[..4].copy_from_slice(&[255, 0, 0, 255]);
+    let base = item(Layer::from_rgba(W, H, px));
+    let mut shade = item(solid([0, 0, 255]));
+    shade.clipped = true;
+    let frames = FrameList::build(snapshot(vec![base, shade])).expect("valid stack");
+    assert_eq!(frames.len(), 1);
+    let out = frames.render(0);
+    assert_eq!(&out[..4], &[0, 0, 255, 255], "inside the base");
+    assert_eq!(
+        &out[4..8],
+        &[255, 255, 255, 255],
+        "outside the base stays paper"
+    );
+    let t = frames.render_transparent(0);
+    assert_eq!(t[7], 0, "no spill in the transparent export");
 }

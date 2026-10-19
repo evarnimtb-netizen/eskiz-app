@@ -72,6 +72,24 @@ pub(crate) struct Img {
     pub rgba: Vec<u8>,
 }
 
+/// Largest texture side kept after import; bigger pictures are sampled down.
+pub(crate) const MAX_TEXTURE_SIDE: usize = 8192;
+/// Largest picture side accepted by the decoder.
+const MAX_DECODE_SIDE: u32 = 16384;
+
+/// Decode a texture with explicit size and memory limits.
+pub(crate) fn decode_texture(
+    reader: image::ImageReader<impl std::io::BufRead + std::io::Seek>,
+) -> Result<image::DynamicImage, image::ImageError> {
+    let mut reader = reader;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_SIDE);
+    limits.max_image_height = Some(MAX_DECODE_SIDE);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode()
+}
+
 impl Img {
     fn at(&self, x: usize, y: usize, size: (usize, usize)) -> [u8; 4] {
         // Nearest-neighbour resample to `size`.
@@ -104,6 +122,7 @@ pub(crate) struct MaterialSources {
 }
 
 pub(crate) fn assemble(src: MaterialSources, default_size: usize) -> TextureSet {
+    let default_size = default_size.clamp(1, 4096);
     let size = [
         src.colour.as_ref(),
         src.roughness.as_ref().map(|r| &r.0),
@@ -115,7 +134,9 @@ pub(crate) fn assemble(src: MaterialSources, default_size: usize) -> TextureSet 
     .flatten()
     .map(|i| (i.w, i.h))
     .next()
-    .unwrap_or((default_size, default_size));
+    .map_or((default_size, default_size), |(w, h)| {
+        (w.clamp(1, MAX_TEXTURE_SIDE), h.clamp(1, MAX_TEXTURE_SIDE))
+    });
 
     let colour_const = {
         let f = src.colour_factor;
@@ -424,7 +445,12 @@ fn build_gltf(
         let mut stack: Vec<(gltf::Node<'_>, Mat4)> =
             scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
         stack.reverse();
+        let mut seen = vec![false; doc.nodes().len()];
         while let Some((node, parent)) = stack.pop() {
+            // glTF forbids a node with two parents, so a revisit is a cycle or a shared node.
+            if std::mem::replace(&mut seen[node.index()], true) {
+                return Err(ImportError::Parse("node graph has a cycle".into()));
+            }
             let xf = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
             if let Some(mesh) = node.mesh() {
                 visit(mesh, xf, &mut sets)?;
@@ -464,7 +490,11 @@ fn read_texture(base: Option<&Path>, name: &str, notes: &mut Vec<String>) -> Opt
     let base = base?;
     let name = name.trim();
     let path = base.join(name.replace('\\', "/"));
-    match image::open(&path) {
+    let decoded = image::ImageReader::open(&path)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(image::ImageError::IoError)
+        .and_then(decode_texture);
+    match decoded {
         Ok(i) => {
             let i = i.to_rgba8();
             Some(Img {

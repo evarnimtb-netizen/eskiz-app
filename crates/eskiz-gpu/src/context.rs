@@ -31,6 +31,15 @@ pub enum GpuError {
 /// How long a GPU wait on the UI thread may take before the driver counts as stalled.
 pub const GPU_WAIT_BOUND: Duration = Duration::from_millis(1800);
 
+/// The wait bound for an adapter. A CPU rasteriser needs several seconds for a full-canvas
+/// recomposite that a GPU finishes in milliseconds, and is slow rather than stuck.
+pub fn bound_for(kind: AdapterKind) -> Duration {
+    match kind {
+        AdapterKind::Hardware => GPU_WAIT_BOUND,
+        AdapterKind::Software => GPU_WAIT_BOUND * 3,
+    }
+}
+
 /// Wait until `done` reports completion, giving `pump` slices of at most 25 ms to make progress
 /// (it is where the real code polls the device). Returns `false` when `bound` elapsed first, so a
 /// driver that never signals cannot block the caller for longer than `bound` plus one slice.
@@ -246,14 +255,15 @@ impl GpuContext {
             };
             match block_on(adapter.request_device(&desc)) {
                 Ok((device, queue)) => {
+                    let kind = adapter_kind(&info);
                     return Ok(Self {
-                        kind: adapter_kind(&info),
+                        kind,
                         info,
                         adapter,
                         device,
                         queue,
                         stalled: Arc::new(AtomicBool::new(false)),
-                        wait_bound: GPU_WAIT_BOUND,
+                        wait_bound: bound_for(kind),
                     });
                 }
                 Err(e) => last_err = format!("{}: {e}", info.name),
@@ -272,14 +282,15 @@ impl GpuContext {
         queue: wgpu::Queue,
     ) -> Self {
         let info = adapter.get_info();
+        let kind = adapter_kind(&info);
         Self {
-            kind: adapter_kind(&info),
+            kind,
             info,
             adapter,
             device,
             queue,
             stalled: Arc::new(AtomicBool::new(false)),
-            wait_bound: GPU_WAIT_BOUND,
+            wait_bound: bound_for(kind),
         }
     }
 
@@ -365,6 +376,7 @@ impl GpuContext {
             || self.device.poll(wgpu::PollType::Poll).is_ok_and(|s| s.is_queue_empty()),
         );
         if !ok {
+            eprintln!("eskiz-gpu: no answer from the driver within {:?} (waiting for all submitted work); GPU path off", self.wait_bound);
             self.mark_stalled();
         }
         ok
@@ -393,6 +405,7 @@ impl GpuContext {
             },
         );
         if !ok {
+            eprintln!("eskiz-gpu: no answer from the driver within {:?} (readback); GPU path off", self.wait_bound);
             self.mark_stalled();
             return Err(GpuError::Stalled(self.wait_bound));
         }
@@ -411,6 +424,12 @@ impl GpuContext {
 #[cfg(test)]
 mod bound_tests {
     use super::*;
+
+    #[test]
+    fn a_software_adapter_gets_a_longer_wait_bound() {
+        assert!(bound_for(AdapterKind::Software) > bound_for(AdapterKind::Hardware));
+        assert_eq!(bound_for(AdapterKind::Hardware), GPU_WAIT_BOUND);
+    }
 
     /// A readback that never completes (the driver never signals): the wait returns within the bound.
     #[test]

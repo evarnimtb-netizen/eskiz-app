@@ -472,27 +472,10 @@ fn assemble(doc: &PsdDocument, entries: &[Entry], wide: bool, merged: Vec<u8>) -
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| Error::InvalidInput("output path has no file name".into()))?;
-    let dir = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(file_name);
-    tmp_name.push(".tmp");
-    let tmp = dir.join(tmp_name);
-    let result = fs::File::create(&tmp)
-        .and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&tmp, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+    if path.file_name().is_none() {
+        return Err(Error::InvalidInput("output path has no file name".into()));
     }
-    Ok(result?)
+    Ok(crate::fsutil::write_atomic(path, bytes)?)
 }
 
 // ---------------------------------------------------------------------------------------------

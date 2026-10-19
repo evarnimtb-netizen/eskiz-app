@@ -22,7 +22,7 @@ use std::io::{Read, Seek};
 use zip::ZipArchive;
 
 use crate::keyedarchive::{self, ArchivedObject, NsObject, NsValue, Object};
-use crate::limits::{self, MAX_BRUSHES, MAX_BRUSH_TIP_SIDE, MAX_DECODED_BYTES, MAX_DESCRIPTOR_DEPTH};
+use crate::limits::{self, MAX_BRUSHES, MAX_BRUSH_DECODED_BYTES, MAX_BRUSH_TIP_SIDE, MAX_DESCRIPTOR_DEPTH};
 use crate::palettes::zip_members;
 use crate::{Error, Result};
 
@@ -757,7 +757,10 @@ pub fn read_abr(bytes: &[u8]) -> Result<AbrImport> {
             r.take(1)?;
         }
         match key.as_slice() {
-            b"samp" => samples.extend(parse_samples(data, &mut warnings)?),
+            b"samp" => {
+                let used: u64 = samples.iter().map(|s: &Sample| s.gray.len() as u64).sum();
+                samples.extend(parse_samples(data, &mut warnings, used)?);
+            }
             b"desc" => presets.extend(parse_presets(data)?),
             _ => {}
         }
@@ -767,8 +770,8 @@ pub fn read_abr(bytes: &[u8]) -> Result<AbrImport> {
             )));
         }
         let tip_bytes: u64 = samples.iter().map(|s| s.gray.len() as u64).sum();
-        if tip_bytes > MAX_DECODED_BYTES {
-            return Err(limits::exceeded(format!("the brush tips decode to more than {MAX_DECODED_BYTES} bytes")));
+        if tip_bytes > MAX_BRUSH_DECODED_BYTES {
+            return Err(limits::exceeded(format!("the brush tips decode to more than {MAX_BRUSH_DECODED_BYTES} bytes")));
         }
     }
 
@@ -798,14 +801,27 @@ struct Sample {
 /// Each sample entry: a 32-bit length (after the length field), a null-terminated id, bounds as
 /// four 32-bit values (top, left, bottom, right), a 16-bit depth (8 or 16), an 8-bit compression
 /// code (0 raw, 1 PackBits per row with a 16-bit byte count per row), then the pixels.
-fn parse_samples(data: &[u8], warnings: &mut Vec<String>) -> Result<Vec<Sample>> {
+fn parse_samples(
+    data: &[u8],
+    warnings: &mut Vec<String>,
+    already_decoded: u64,
+) -> Result<Vec<Sample>> {
     let mut r = Reader::new(data);
     let mut samples = Vec::new();
+    let mut decoded = already_decoded;
     while r.remaining() > 0 {
         let len = r.u32()? as usize;
         let entry = r.take(len)?;
         match parse_sample(entry) {
-            Ok(sample) => samples.push(sample),
+            Ok(sample) => {
+                decoded += sample.gray.len() as u64;
+                if decoded > MAX_BRUSH_DECODED_BYTES {
+                    return Err(limits::exceeded(format!(
+                        "the brush tips decode to more than {MAX_BRUSH_DECODED_BYTES} bytes"
+                    )));
+                }
+                samples.push(sample);
+            }
             Err(e) => warnings.push(format!("sample skipped: {e}")),
         }
     }
@@ -888,6 +904,11 @@ fn packbits_decode(src: &[u8], expected: usize) -> Result<Vec<u8>> {
                 .ok_or_else(|| Error::Format("truncated PackBits row".into()))?;
             i += 1;
             out.extend(std::iter::repeat_n(value, (1 - i32::from(n)) as usize));
+        }
+        if out.len() > expected {
+            return Err(Error::Format(format!(
+                "PackBits row decodes to more than {expected} bytes"
+            )));
         }
     }
     if out.len() != expected {

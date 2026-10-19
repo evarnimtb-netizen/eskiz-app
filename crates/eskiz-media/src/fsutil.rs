@@ -12,11 +12,18 @@ pub(crate) fn write_atomic(path: &Path, write: impl FnOnce(&mut File) -> Result<
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("export");
-    let temp = path.with_file_name(format!(".{name}.{}.partial", std::process::id()));
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_file_name(format!(".{name}.{}-{n}.partial", std::process::id()));
     let outcome =
         write_temp(&temp, write).and_then(|()| fs::rename(&temp, path).map_err(MediaError::from));
     if outcome.is_err() {
         let _ = fs::remove_file(&temp);
+    } else {
+        #[cfg(unix)]
+        if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            let _ = File::open(dir).and_then(|d| d.sync_all());
+        }
     }
     outcome
 }

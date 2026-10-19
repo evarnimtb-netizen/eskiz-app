@@ -186,3 +186,19 @@ fn pour_fill_drops_on_the_canvas_pixel_under_a_rotated_view() {
         assert_eq!(pixel(&h, 100, 100)[3], 0, "{deg}: outside the circle stays empty");
     }
 }
+
+/// A finger that lifts: egui reports the release and the pointer leaving in the same frame.
+#[test]
+fn lifting_a_finger_commits_even_when_the_pointer_is_gone() {
+    let mut h = scene(true);
+    let target = screen(&h, 1000.0, 500.0);
+    drag_to(&mut h, target);
+    h.advance(0.5);
+    settle(&mut h);
+    h.press(target, false);
+    h.event(eframe::egui::Event::PointerGone);
+    h.step();
+    assert!(h.app.pour_fill.is_none());
+    assert_eq!(pixel(&h, 1000, 500), [226, 84, 60, 255]);
+    assert_eq!(h.app.session.undo_name(), Some("Pour Fill"));
+}

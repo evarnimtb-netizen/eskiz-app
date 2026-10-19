@@ -131,15 +131,20 @@ fn hsb(c: vec3<f32>) -> vec3<f32> {
 // ---------------------------------------------------------------------------------------
 
 fn curve_lookup(curve: u32, c: f32) -> f32 {
-    let u = clamp(c, 0.0, 1.0) + 0.5 / 256.0;
-    let pos = clamp(u * 256.0 - 0.5, 0.0, 255.0);
-    let i0f = floor(pos);
+    let pos = clamp(clamp(c, 0.0, 1.0) * 256.0, 0.0, 256.0);
+    let i0f = min(floor(pos), 255.0);
     let i0 = u32(i0f);
     let i1 = min(i0 + 1u, 255u);
+    var lo = i0;
+    var hi = i1;
+    if (i0 == 255u) {
+        lo = 254u;
+        hi = 255u;
+    }
     let t = pos - i0f;
     let a = lut_f(curve * 256u + i0);
-    let b = lut_f(curve * 256u + i1);
-    return a + (b - a) * t;
+    let slope = lut_f(curve * 256u + hi) - lut_f(curve * 256u + lo);
+    return clamp(a + slope * t, 0.0, 1.0);
 }
 
 fn curve_channel(cset: u32, k: u32, c: f32) -> f32 {

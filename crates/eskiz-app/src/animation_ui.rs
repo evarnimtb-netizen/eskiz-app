@@ -799,14 +799,16 @@ mod tests {
     }
 
     #[test]
-    fn holds_repeat_frames_in_export() {
-        // A held item gives extra repeats: the export writes hold + 1 copies of its frame.
+    fn holds_lengthen_the_frame_in_export() {
+        // A held item is one exported frame shown for hold + 1 ticks.
         let mut doc = eskiz_core::Document::empty(8, 8);
         doc.push_layer(None, eskiz_core::Props { hold: 2, ..eskiz_core::Props::new("a") }, None, vec![255; 8 * 8 * 4]);
         let (snapshot, _) = snapshot_from_document(&doc);
         let built = FrameList::build(snapshot).unwrap();
         assert_eq!(built.hold(0), 2);
-        assert_eq!(eskiz_anim::export_frames(&AnimationSettings::default(), &built).len(), 3);
+        let out = eskiz_anim::export_frames(&AnimationSettings::default(), &built);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].duration(), eskiz_media::duration_for_fps(AnimationSettings::default().export_fps()) * 3);
     }
 
     #[test]

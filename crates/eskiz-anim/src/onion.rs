@@ -97,6 +97,7 @@ pub fn render_with_onion(
 ) -> Vec<u8> {
     let (width, height) = list.size();
     let mut stack: Vec<(Layer, BlendMode)> = Vec::new();
+    let mut clips: Vec<bool> = Vec::new();
 
     if let Some(item) = list
         .background_item()
@@ -104,14 +105,17 @@ pub fn render_with_onion(
         .and_then(|i| list.item(i))
     {
         stack.push(entry(item));
+        clips.push(false);
     }
     let mut ordered: Vec<&OnionSkin> = skins.iter().collect();
     ordered.sort_by_key(|skin| std::cmp::Reverse(skin.distance));
     for skin in ordered {
         stack.push((tinted_layer(list, skin), onion_blend));
+        clips.push(false);
     }
     for item in list.frame_items(current) {
         stack.push(entry(item));
+        clips.push(item.clipped);
     }
     if let Some(item) = list
         .foreground_item()
@@ -119,8 +123,12 @@ pub fn render_with_onion(
         .and_then(|i| list.item(i))
     {
         stack.push(entry(item));
+        clips.push(false);
     }
 
+    if clips.iter().any(|&c| c) {
+        return composite_clipped(width, height, stack, &clips);
+    }
     let (layers, modes): (Vec<Layer>, Vec<BlendMode>) = stack.into_iter().unzip();
     let canvas = Canvas {
         width,
@@ -128,6 +136,44 @@ pub fn render_with_onion(
         layers,
     };
     blend::flatten(&canvas, &modes)
+}
+
+/// Composite a stack that has clipped layers through the document compositor, over white paper.
+fn composite_clipped(
+    width: usize,
+    height: usize,
+    stack: Vec<(Layer, BlendMode)>,
+    clips: &[bool],
+) -> Vec<u8> {
+    let mut doc = eskiz_core::Document::empty(width, height);
+    for ((layer, blend), &clipped) in stack.into_iter().zip(clips) {
+        let props = eskiz_core::Props {
+            visible: layer.visible,
+            opacity: layer.opacity,
+            blend,
+            clipped,
+            ..eskiz_core::Props::new("")
+        };
+        doc.push_raster(None, props, None, layer);
+    }
+    let straight = eskiz_core::composite::composite(
+        &doc,
+        eskiz_core::composite::CompositeOpts {
+            skip_private: true,
+            background: false,
+        },
+    );
+    straight
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| {
+        // Straight RGBA over white paper.
+        let a = u32::from(p[3]);
+        let over = |c: u8| ((u32::from(c) * a + 255 * (255 - a) + 127) / 255) as u8;
+        [over(p[0]), over(p[1]), over(p[2]), 255]
+        })
+        .collect()
 }
 
 /// Layer and blend of a stack item.

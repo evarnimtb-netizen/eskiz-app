@@ -93,6 +93,38 @@ The full list of changes follows.
 - Files from other people are checked more carefully: damaged or oversized `.procreate`, PSD, brush and swatch files are refused with a message instead of exhausting memory.
 - 3D documents are saved through a backup copy, so a failed save no longer loses the previous version.
 
+### Fixed (eighth release candidate)
+
+- **Windows: the window no longer freezes ("Not Responding") with DirectX 12.** The canvas no longer queues more drawing work than the graphics driver can finish; if frames still cannot be shown, Eskiz switches to drawing the canvas on the processor for that session instead of freezing, and remembers it for the next start.
+- Android: the file picker, Share, the picture clipboard and the Back button now work on a device. Earlier builds could not reach the app's Java side and showed "Method not found"; Import now opens the system picker directly.
+
+### Fixed (code review)
+
+- Saving and crash recovery keep working if one save or recovery job fails; you now see a message instead of silence.
+- Documents no longer drop out of their stacks or the gallery order when the library folder or one file is briefly unreadable (for example while a sync tool holds it). A damaged gallery order file falls back to the last good copy.
+- Crash recovery restores what it can when a recovery file is missing, and tells you what was left out. Recovery and saved files are flushed to disk more safely.
+- Exporting a drawing whose name contains a dot (such as `Sketch v1.2`) keeps the whole name, and Windows device names such as `CON` or `NUL` no longer break an export.
+- Saved selections of one drawing no longer carry over into another drawing that you open next.
+- A new drawing's timelapse is no longer cut when the drawing is first saved, and each run of the app records to its own folder. A failed frame or disk write no longer discards the recording so far.
+- Two saves or exports to the same file at the same time can no longer mix their data.
+- A 3D model with a looping node list no longer freezes the importer; it is refused with a short message.
+- 3D painting now works on models whose texture coordinates go past the 0 to 1 square (tiled textures).
+- Very large 3D textures are scaled down on import instead of using several gigabytes of memory.
+- Animation exports (GIF, APNG, MP4) keep clipped layers inside their base layer, and held frames no longer copy the picture for every tick.
+- Text with an enormous size, outline or scale is skipped instead of using all memory.
+- Huge pictures (over 100 megapixels) are refused from the file header, and pictures larger than the screen's texture limit are shrunk in the Reference window.
+- Brush packs, PSD files and documents that would expand to more memory than is reasonable are refused with a clear message.
+- Crop and Resize Canvas refuses a size that is too large for the number of layers, instead of running out of memory.
+- Groups that hold a layer with a blend mode other than Normal now look the same on screen as in exports and thumbnails.
+- Curves keep pure white white.
+- A failed start no longer makes the next start think Eskiz crashed.
+- A renderer chosen in Settings that froze the last run goes back to Automatic.
+- Fewer false "froze while presenting" reports after sleep, a locked screen or a hidden window.
+- Pen input that fails inside the tablet driver no longer closes Eskiz.
+- Pour Fill now applies when you lift a finger or pen.
+- Magic wand drags no longer redo the work when the threshold has not changed.
+- On a slow software graphics adapter, Eskiz waits longer before giving up on the GPU.
+
 ### Known issues
 
 - **Builds are not code-signed.** Your system will warn you the first time you open Eskiz.
@@ -100,7 +132,7 @@ The full list of changes follows.
   - Windows: extract the whole zip (Extract All) before running eskiz.exe. In the SmartScreen dialog, choose More info, then Run anyway.
   - Linux: make the AppImage executable with `chmod +x`.
   - Android: allow installing apps from your browser or file manager when asked.
-- **Windows: the window can stop responding on some graphics drivers** (DirectX 12), usually within the first minute. A fix is in progress. Eskiz notices the freeze and starts in a safer graphics mode next time; you can also start it with `Eskiz (compatibility mode).bat` from the zip. If it happens to you, please [report it](https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml) and attach `startup.log` from `%LOCALAPPDATA%\Eskiz\logs`.
+- **Windows has been tested on GitHub's Windows machines, and on real PCs only by a few testers so far.** If the window ever stops responding, Eskiz starts in a safer graphics mode next time; you can also start it with `Eskiz (compatibility mode).bat` from the zip. Please [report it](https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml) and attach `startup.log` from `%LOCALAPPDATA%\Eskiz\logs`.
 - **Android is experimental.** Only arm64 devices running Android 10 or newer are supported. The APK is signed with a public debug key.
 - **MP4 export is not included.** It needs the OpenH264 codec, which these builds do not bundle. GIF, APNG and PNG sequence export work. Developers can build with `--features mp4`.
 - Some adjustment defaults and several 3D and Liquify details are approximations and may change.

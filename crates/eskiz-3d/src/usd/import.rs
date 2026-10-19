@@ -787,7 +787,11 @@ impl<'a> Reader<'a> {
             self.note(format!("Texture {authored} was not found in the file and was skipped."));
             return None;
         };
-        match image::load_from_memory(&bytes) {
+        let decoded = image::ImageReader::new(std::io::Cursor::new(&bytes[..]))
+            .with_guessed_format()
+            .map_err(image::ImageError::IoError)
+            .and_then(crate::load::decode_texture);
+        match decoded {
             Ok(i) => {
                 let i = i.to_rgba8();
                 Some(Img { w: i.width() as usize, h: i.height() as usize, rgba: i.into_raw() })

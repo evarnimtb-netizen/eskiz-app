@@ -18,7 +18,7 @@ pub enum Paper {
 /// Sequences the animation frames into `eskiz-media` frames.
 ///
 /// The export is one pass through the frames: in reverse order for [`PlaybackDirection::Reverse`],
-/// otherwise forward. Each frame is written `hold + 1` times, each for `1 / export fps` seconds.
+/// otherwise forward. Each frame is written once and shown for `(hold + 1) / export fps` seconds.
 /// The playback mode does not change the export, so a
 /// three-frame animation with no holds lasts `3 / fps` seconds.
 ///
@@ -58,12 +58,12 @@ pub fn export_frames_with(
             Paper::White => frames.render(index),
             Paper::Transparent => frames.render_transparent(index),
         };
-        for _ in 0..=frames.hold(index) {
-            // The pixel count always matches the size, so this only fails on a zero-size canvas,
-            // which FrameList::build rejects.
-            if let Ok(frame) = Frame::new(width as u32, height as u32, pixels.clone(), duration) {
-                out.push(frame);
-            }
+        // A hold is one picture shown for (hold + 1) ticks, not copies of the pixels.
+        let shown = duration.saturating_mul(frames.hold(index) + 1);
+        // The pixel count always matches the size, so this only fails on a zero-size canvas,
+        // which FrameList::build rejects.
+        if let Ok(frame) = Frame::new(width as u32, height as u32, pixels, shown) {
+            out.push(frame);
         }
     }
     progress(n, n);

@@ -283,6 +283,11 @@ pub trait PenSource {
     fn set_scale(&mut self, _native_pixels_per_point: f32, _zoom: f32) {}
     /// Non-pen egui events the source produced during the last `poll` (Android fingers, mouse
     /// and keys, which it receives instead of winit). Empty for desktop tablet backends.
+    /// True once the backend panicked while polling: the app drops the source and carries on
+    /// with the mouse and touch.
+    fn failed(&self) -> bool {
+        false
+    }
     fn take_ui_events(&mut self) -> Vec<eframe::egui::Event> {
         Vec::new()
     }

@@ -13,7 +13,7 @@
 
 use std::borrow::Cow;
 use std::fs::{self, File};
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::{MediaError, Result};
@@ -269,7 +269,11 @@ impl TimelapseRecorder {
         };
         let small =
             frame.resize_box(self.capture.0, self.capture.1, duration_for_fps(active.fps))?;
-        active.encoder.push_frame(&small)?;
+        if let Err(e) = active.encoder.push_frame(&small) {
+            // Keep the segment: the frames already in it are not lost to one bad frame.
+            self.active = Some(active);
+            return Err(e);
+        }
         active.frames += 1;
         if active.frames >= active.frames_limit {
             self.store_segment(active)?;
@@ -313,16 +317,23 @@ impl TimelapseRecorder {
             MediaError::InvalidFrame("the encoder produced no parameter sets".into())
         })?;
         let index = self.segments.len() as u32 + 1;
+        let mut out = Cursor::new(Vec::new());
+        active.encoder.finish(&mut out)?;
+        let bytes = out.into_inner();
+        // When the disk write fails the segment stays in memory, so its frames are not lost;
+        // the error is still reported (once, for this segment).
+        let mut write_error = None;
         let data = match &self.store {
-            SegmentStore::Memory => {
-                let mut out = Cursor::new(Vec::new());
-                active.encoder.finish(&mut out)?;
-                SegmentData::Memory(out.into_inner())
-            }
+            SegmentStore::Memory => SegmentData::Memory(bytes),
             SegmentStore::Directory(dir) => {
                 let path = dir.join(format!("segment_{index:04}.mp4"));
-                write_atomic(&path, |file: &mut File| active.encoder.finish(file))?;
-                SegmentData::File(path)
+                match write_atomic(&path, |file: &mut File| file.write_all(&bytes).map_err(MediaError::from)) {
+                    Ok(()) => SegmentData::File(path),
+                    Err(e) => {
+                        write_error = Some(e);
+                        SegmentData::Memory(bytes)
+                    }
+                }
             }
         };
         let (width, height) = self.capture;
@@ -338,7 +349,10 @@ impl TimelapseRecorder {
             sps,
             pps,
         });
-        Ok(())
+        match write_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Writes the full recording to one MP4 and returns the frame count. Finalises the open segment first.

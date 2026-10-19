@@ -155,13 +155,29 @@ impl Library {
 
     /// Every document, newest first. Unreadable packages are skipped.
     pub fn list(&self) -> Vec<DocEntry> {
+        self.scan().map(|(entries, _)| entries).unwrap_or_default()
+    }
+
+    /// Like `list`, but `None` when the library folder cannot be read at all, and with the IDs of
+    /// packages that exist but could not be opened right now (locked by a sync client or virus
+    /// scanner, say). Those must not be dropped from the library index.
+    pub fn scan(&self) -> Option<(Vec<DocEntry>, Vec<String>)> {
         let Ok(dir) = fs::read_dir(&self.root) else {
-            return Vec::new();
+            return None;
         };
+        let mut unreadable = Vec::new();
         let mut out = Vec::new();
+        let stale = SystemTime::now() - Duration::from_secs(3600);
         let mut backups = Vec::new();
         for item in dir.flatten() {
             let path = item.path();
+            // Half-written temporary files left by a crash.
+            if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp")) {
+                if item.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < stale) && item.metadata().is_ok_and(|m| m.is_file()) {
+                    let _ = fs::remove_file(&path);
+                }
+                continue;
+            }
             if let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix('.')?.strip_suffix(".bak")?.strip_suffix(&format!(".{MODEL_EXT}"))) {
                 backups.push(id.to_owned());
                 continue;
@@ -179,6 +195,8 @@ impl Library {
             let modified = item.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
             if let Some(entry) = self.entry(&id, modified) {
                 out.push(entry);
+            } else {
+                unreadable.push(id);
             }
         }
         // A 3D save that was cut off can leave the document only under its backup name.
@@ -189,7 +207,10 @@ impl Library {
             }
         }
         out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.id.cmp(&b.id)));
-        out
+        unreadable.retain(|id| !out.iter().any(|e| &e.id == id));
+        unreadable.sort();
+        unreadable.dedup();
+        Some((out, unreadable))
     }
 
     /// One entry, read from the `.meta` cache or (for a package copied in by hand) the package.
@@ -261,6 +282,7 @@ impl Library {
             let _ = fs::remove_file(&bak);
             return Err(format!("{}: {}", path.display(), friendly(&e)));
         }
+        sync_dir(&self.root);
         match verify_package(&path, width, height).and_then(|()| check_fault()) {
             Ok(()) => {
                 let _ = fs::remove_file(&bak);
@@ -369,15 +391,45 @@ impl Library {
         Ok(())
     }
 
+    /// The documents, and the library index brought in line with them. A folder that cannot be
+    /// read, or a package that cannot be opened right now, never removes a document from its
+    /// stack or from the manual order.
+    pub fn sync_index(&self) -> (Vec<DocEntry>, LibraryIndex) {
+        let mut index = self.read_index();
+        let Some((entries, unreadable)) = self.scan() else {
+            return (Vec::new(), index);
+        };
+        let mut docs: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+        docs.extend(unreadable.into_iter().filter(|id| index.contains_doc(id)));
+        if index.reconcile(&docs) {
+            let _ = self.write_index(&index);
+        }
+        (entries, index)
+    }
+
     /// The library index. An empty one when the file is missing or unreadable.
     pub fn read_index(&self) -> LibraryIndex {
-        fs::read_to_string(self.root.join(INDEX_FILE)).ok().and_then(|t| LibraryIndex::decode(&t)).unwrap_or_default()
+        let main = self.root.join(INDEX_FILE);
+        let read = |p: &Path| fs::read_to_string(p).ok().and_then(|t| LibraryIndex::decode(&t));
+        if let Some(ix) = read(&main) {
+            return ix;
+        }
+        let backup = self.root.join(format!("{INDEX_FILE}.bak"));
+        if main.exists() {
+            // A damaged index: keep it aside and fall back to the last good copy.
+            let _ = fs::rename(&main, self.root.join(format!("{INDEX_FILE}.damaged")));
+        }
+        read(&backup).unwrap_or_default()
     }
 
     /// Write the library index atomically.
     pub fn write_index(&self, index: &LibraryIndex) -> Result<(), String> {
         fs::create_dir_all(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
-        write_atomic(&self.root.join(INDEX_FILE), index.encode().as_bytes())
+        let main = self.root.join(INDEX_FILE);
+        if fs::read_to_string(&main).ok().is_some_and(|t| LibraryIndex::decode(&t).is_some()) {
+            let _ = fs::copy(&main, self.root.join(format!("{INDEX_FILE}.bak")));
+        }
+        write_atomic(&main, index.encode().as_bytes())
     }
 
     /// Copy a `.procreate` file into the library under a new ID, after checking that it opens.
@@ -776,7 +828,20 @@ fn file_safe(title: &str) -> String {
     if s.is_empty() {
         "Eskiz".to_owned()
     } else {
-        s
+        avoid_device_name(&s)
+    }
+}
+
+/// Windows cannot create files named after its devices (`CON`, `NUL`, `COM1`, ..., with or
+/// without an extension): such a name gets a leading underscore.
+pub(crate) fn avoid_device_name(name: &str) -> String {
+    let stem = name.split('.').next().unwrap_or(name).trim_end().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|p| stem.strip_prefix(p).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")));
+    if reserved {
+        format!("_{name}")
+    } else {
+        name.to_owned()
     }
 }
 
@@ -794,6 +859,15 @@ fn parse_meta(text: &str) -> Option<(String, usize, usize)> {
 
 /// Write to a temporary file in the same folder, then rename over the target.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic_nodir(path, bytes)?;
+    if let Some(parent) = path.parent() {
+        sync_dir(parent);
+    }
+    Ok(())
+}
+
+/// [`write_atomic`] without flushing the folder (for batches that flush it once afterwards).
+pub(crate) fn write_atomic_nodir(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = path.with_file_name(format!(".{name}.{}.tmp", COUNTER.fetch_add(1, Ordering::Relaxed)));
     let result = (|| {
@@ -937,6 +1011,22 @@ pub enum Job {
     Barrier(std::sync::mpsc::Sender<()>),
 }
 
+/// Run one job body; a panic inside it becomes an error for that job, so the worker thread
+/// (and with it saving and crash recovery) keeps running.
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(p) => {
+            let what = p
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            Err(format!("internal error{}{what}", if what.is_empty() { "" } else { ": " }))
+        }
+    }
+}
+
 pub enum Done {
     /// `doc` is the snapshot that was saved, handed back to the UI (for the journal).
     Saved { id: String, edits: u64, sig: u64, result: Result<DocEntry, String>, doc: Box<Document> },
@@ -944,7 +1034,7 @@ pub enum Done {
     Imported(Result<DocEntry, String>),
     Exported(Result<PathBuf, String>),
     Journal { id: String, result: Result<(), String> },
-    Restored { id: String, title: String, result: Result<Box<Document>, String> },
+    Restored { id: String, title: String, result: Result<Box<Document>, String>, skipped: usize },
 }
 
 /// One background thread that runs jobs in order, so two saves of a document can never
@@ -969,30 +1059,33 @@ impl Worker {
                 for job in jobs {
                     let done = match job {
                         Job::Save(r) => {
-                            let result = library.save(&r.id, &r.title, &r.doc);
+                            let result = guarded(|| library.save(&r.id, &r.title, &r.doc));
                             crate::exit::save_done();
                             Done::Saved { result, id: r.id, edits: r.edits, sig: r.sig, doc: r.doc }
                         }
-                        Job::Load(id) => Done::Loaded { result: library.load(&id).map(Box::new), id },
-                        Job::Import(path) => Done::Imported(library.import(&path)),
-                        Job::Export { id, dir } => Done::Exported(library.export_png(&id, &dir)),
+                        Job::Load(id) => Done::Loaded { result: guarded(|| library.load(&id)).map(Box::new), id },
+                        Job::Import(path) => Done::Imported(guarded(|| library.import(&path))),
+                        Job::Export { id, dir } => Done::Exported(guarded(|| library.export_png(&id, &dir))),
                         Job::Journal(plan) => {
                             let result = if journal_failed && !plan.reset {
                                 Err("an earlier recovery write failed".to_owned())
                             } else {
-                                crate::journal::execute(&plan)
+                                guarded(|| crate::journal::execute(&plan))
                             };
                             journal_failed = result.is_err();
                             Done::Journal { id: plan.id, result }
                         }
                         Job::RemoveJournal(id) => {
                             journal_failed = false;
-                            let _ = crate::journal::remove(library.recovery_root(), &id);
+                            let _ = guarded(|| crate::journal::remove(library.recovery_root(), &id));
                             continue;
                         }
                         Job::Restore { id, title } => {
-                            let result = crate::journal::restore(library.recovery_root(), &library, &id).map(Box::new);
-                            Done::Restored { id, title, result }
+                            let (result, skipped) = match guarded(|| crate::journal::restore_counted(library.recovery_root(), &library, &id)) {
+                                Ok((doc, n)) => (Ok(Box::new(doc)), n),
+                                Err(e) => (Err(e), 0),
+                            };
+                            Done::Restored { id, title, result, skipped }
                         }
                         Job::Barrier(reply) => {
                             let _ = reply.send(());
@@ -1009,16 +1102,21 @@ impl Worker {
         Self { tx: Some(tx), rx, handle }
     }
 
-    pub fn send(&self, job: Job) {
+    /// Queue a job. Returns false when the worker thread is gone (the job was not queued).
+    pub fn send(&self, job: Job) -> bool {
         if let Some(tx) = &self.tx {
             let is_save = matches!(job, Job::Save(_));
             if is_save {
                 crate::exit::save_queued();
             }
-            if tx.send(job).is_err() && is_save {
-                crate::exit::save_done();
+            if tx.send(job).is_err() {
+                if is_save {
+                    crate::exit::save_done();
+                }
+                return false;
             }
         }
+        true
     }
 
     /// Finish every queued job, waiting at most `budget`. Jobs that are still running after that
@@ -1626,6 +1724,80 @@ mod tests {
         lib.write_index(&ix).unwrap();
         assert_eq!(Library::at(&dir).read_index(), ix);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panicking_job_becomes_an_error() {
+        let r: Result<u8, String> = guarded(|| panic!("boom"));
+        assert!(r.unwrap_err().contains("boom"));
+        assert_eq!(guarded(|| Ok::<_, String>(3)).unwrap(), 3);
+    }
+
+    #[test]
+    fn a_damaged_index_falls_back_to_the_backup() {
+        let dir = temp("index-bak");
+        let lib = Library::at(&dir);
+        let mut ix = LibraryIndex::default();
+        ix.order.push(crate::stacks::Item::Doc("a".into()));
+        lib.write_index(&ix).unwrap();
+        lib.write_index(&ix).unwrap(); // the second write leaves the first as the backup
+        fs::write(dir.join(INDEX_FILE), "{ truncated").unwrap();
+        assert_eq!(lib.read_index(), ix);
+        assert!(dir.join(format!("{INDEX_FILE}.damaged")).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_package_or_folder_keeps_its_place_in_the_index() {
+        let dir = temp("sync-keeps");
+        let lib = Library::at(&dir);
+        let (a, b) = (new_id(), new_id());
+        lib.save(&a, "A", &sample_document(32, 24)).unwrap();
+        lib.save(&b, "B", &sample_document(32, 24)).unwrap();
+        let mut ix = lib.sync_index().1;
+        ix.stack_docs("s1".into(), "Stack".into(), &[a.clone(), b.clone()], &a);
+        lib.write_index(&ix).unwrap();
+        let grouped = lib.read_index();
+        assert_eq!(grouped.stacks.len(), 1);
+        // One package cannot be opened for a moment (its cache file is gone and it is damaged).
+        let _ = fs::remove_file(dir.join(format!("{a}.meta")));
+        let good = fs::read(dir.join(format!("{a}.{EXT}"))).unwrap();
+        fs::write(dir.join(format!("{a}.{EXT}")), b"locked").unwrap();
+        assert_eq!(lib.sync_index().1, grouped, "the stack survives");
+        fs::write(dir.join(format!("{a}.{EXT}")), good).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        // A library folder that cannot be listed changes nothing.
+        let gone = Library::at(dir.join("gone"));
+        assert!(gone.sync_index().0.is_empty());
+    }
+
+    #[test]
+    fn scan_reports_unreadable_packages_and_a_missing_folder() {
+        let dir = temp("scan-unreadable");
+        let lib = Library::at(&dir);
+        assert!(Library::at(dir.join("nope")).scan().is_none());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("broken.procreate"), b"not a package").unwrap();
+        let (entries, unreadable) = lib.scan().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(unreadable, vec!["broken".to_owned()]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_names_keep_dotted_titles_and_avoid_device_names() {
+        use crate::export::with_export_extension as w;
+        let p = |s: &str| w(Path::new(s), "png");
+        assert_eq!(p("/x/Sketch v1.2"), PathBuf::from("/x/Sketch v1.2.png"));
+        assert_ne!(p("/x/Sketch v1.2"), p("/x/Sketch v1.3"));
+        assert_eq!(p("/x/a.PNG"), PathBuf::from("/x/a.png"));
+        assert_eq!(w(Path::new("/x/a.png"), "pdf"), PathBuf::from("/x/a.pdf"));
+        assert_eq!(p("/x/Con"), PathBuf::from("/x/_Con.png"));
+        assert_eq!(p("/x/nul.txt"), PathBuf::from("/x/_nul.txt.png"));
+        assert_eq!(p("/x/COM1"), PathBuf::from("/x/_COM1.png"));
+        assert_eq!(p("/x/Console"), PathBuf::from("/x/Console.png"));
+        assert_eq!(p("/x/name. "), PathBuf::from("/x/name.png"));
+        assert_eq!(file_safe("LPT3"), "_LPT3");
     }
 
     #[test]

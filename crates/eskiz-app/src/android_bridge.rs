@@ -10,11 +10,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use jni::errors::Result as JniResult;
 use jni::objects::{JClass, JObject, JObjectArray, JString};
+use jni::refs::Global;
 use jni::sys::jobject;
 use jni::{jni_sig, jni_str, Env, EnvUnowned, JValue, JavaVM};
 
@@ -22,21 +23,57 @@ use crate::file_access::{ready_delivered, Delivered, FileAccess, PickKind, PickP
 use crate::saf::{self, Dest, Pending};
 use crate::system_clipboard::{ClipState, SystemClipboard};
 
+/// The activity instance the A4 calls go to. `ndk_context` cannot be used for this: android-activity
+/// stores the `Application` there (not the activity), which has no `pickOpen` and friends. Set by
+/// [`register_activity`] from `android_main`.
+static ACTIVITY: Mutex<Option<Arc<Global<JObject<'static>>>>> = Mutex::new(None);
+
+/// Keep a global reference to the `EskizActivity` of `app` for [`with_activity`].
+pub fn register_activity(app: &android_activity::AndroidApp) {
+    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    let raw: jobject = app.activity_as_ptr().cast();
+    let made = vm.attach_current_thread(|env| -> JniResult<Global<JObject<'static>>> {
+        // Safety: android-activity owns this global reference and keeps it valid while `app`
+        // lives; the cast borrows it, and the new global reference is ours.
+        let cast = unsafe { env.as_cast_raw::<JObject>(&raw)? };
+        let activity: &JObject = &cast;
+        if let Ok(class) = env.get_object_class(activity) {
+            if let Ok(name) = class.get_name(env).and_then(|n| n.try_to_string(env)) {
+                log::info!("bridge: activity class {name}");
+            }
+        }
+        env.new_global_ref(activity)
+    });
+    match made {
+        Ok(g) => *ACTIVITY.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(g)),
+        Err(e) => log::error!("bridge: the activity could not be kept: {e}"),
+    }
+}
+
 /// Run `f` on the current thread, attached to the JVM, with the activity object.
 fn with_activity<R>(f: impl FnOnce(&mut Env, &JObject) -> JniResult<R>) -> Result<R, String> {
     let ctx = ndk_context::android_context();
-    if ctx.vm().is_null() || ctx.context().is_null() {
+    if ctx.vm().is_null() {
         return Err("The Java side is not available.".to_owned());
     }
+    let Some(activity) = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return Err("The Java side is not available.".to_owned());
+    };
     // Safety: ndk-context promises the VM pointer is valid for the life of the process.
     let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
     vm.attach_current_thread(|env| -> JniResult<R> {
-        let raw: jobject = ctx.context().cast();
-        // Safety: ndk-context's context is a global reference to the activity, kept alive by
-        // android-activity. The cast does not take ownership, so it is never deleted here.
-        let cast = unsafe { env.as_cast_raw::<JObject>(&raw)? };
-        let activity: &JObject = &cast;
-        f(env, activity)
+        let r = f(env, &activity);
+        if let Err(e) = &r {
+            // Say which object the call went to, so a lookup failure explains itself.
+            env.exception_clear();
+            let who = env
+                .get_object_class(&*activity)
+                .and_then(|c| c.get_name(env))
+                .and_then(|n| n.try_to_string(env))
+                .unwrap_or_else(|_| "?".to_owned());
+            log::error!("bridge: call on {who} failed: {e}");
+        }
+        r
     })
     .map_err(|e| e.to_string())
 }

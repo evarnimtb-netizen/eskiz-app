@@ -174,6 +174,8 @@ pub enum Verdict {
 #[derive(Default)]
 pub struct Watch {
     reported: bool,
+    /// Looks in a row that asked the event loop for a frame.
+    poked: u32,
 }
 
 impl Watch {
@@ -186,15 +188,20 @@ impl Watch {
                 // here; the caller keeps the time it reported at.
                 return Verdict::Recovered { secs: 0.0 };
             }
+            self.poked = 0;
             return Verdict::Healthy;
         }
         if !visible {
+            self.poked = 0;
             return Verdict::Healthy;
         }
-        if age >= STALL_AFTER && !self.reported {
+        // A stall needs a frame we asked for and did not get. The first look after a long gap (the
+        // machine woke from sleep, the session was locked) only asks; it never reports.
+        if age >= STALL_AFTER && !self.reported && self.poked > 0 {
             self.reported = true;
             return Verdict::Stalled { phase, secs: age.as_secs_f64() };
         }
+        self.poked += 1;
         Verdict::Poke
     }
 }
@@ -434,6 +441,13 @@ fn watch_loop(run: &Running, poke: &dyn Fn()) {
         let age = Duration::from_millis(now_ms().saturating_sub(LAST_BEAT_MS.load(Ordering::Relaxed)));
         // A slow close is not a driver fault: it must not make the next start skip a renderer.
         let visible = VISIBLE.load(Ordering::Relaxed) && !crate::exit::closing();
+        if crate::exit::closing() {
+            // The UI thread got as far as closing: whatever it waited for ended, so a marker
+            // left by an earlier stall must not blame the renderer at the next start.
+            if let Some(d) = &run.dir {
+                remove_marker(d);
+            }
+        }
         match watch.look(age, current_phase(), visible) {
             Verdict::Healthy => {}
             Verdict::Poke => poke(),
@@ -501,6 +515,19 @@ mod tests {
         assert_eq!(w.look(Duration::from_millis(4000), Phase::Fake, true), Verdict::Poke);
         assert!(matches!(w.look(Duration::from_millis(10), Phase::Input, true), Verdict::Recovered { .. }));
         assert_eq!(w.look(Duration::from_millis(10), Phase::Input, true), Verdict::Healthy);
+    }
+
+    #[test]
+    fn the_first_look_after_a_long_gap_asks_for_a_frame_and_does_not_report() {
+        let mut w = Watch::default();
+        // The machine woke up: the first look sees a huge age.
+        assert_eq!(w.look(Duration::from_secs(600), Phase::PaintPresent, true), Verdict::Poke);
+        // The frame we asked for arrived.
+        assert_eq!(w.look(Duration::from_millis(20), Phase::Input, true), Verdict::Healthy);
+        // Had it not, the next look would report.
+        let mut w = Watch::default();
+        assert_eq!(w.look(Duration::from_secs(600), Phase::PaintPresent, true), Verdict::Poke);
+        assert!(matches!(w.look(Duration::from_secs(601), Phase::PaintPresent, true), Verdict::Stalled { .. }));
     }
 
     #[test]

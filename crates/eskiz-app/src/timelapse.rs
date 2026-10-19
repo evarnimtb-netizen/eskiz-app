@@ -77,6 +77,8 @@ struct Active {
     last_edits: u64,
     /// Hash of the composite at the last capture.
     last_hash: Option<u64>,
+    /// An error was already shown for this recording.
+    reported: bool,
 }
 
 /// A recorder job on a worker thread. The recorder comes back with the result.
@@ -152,6 +154,12 @@ impl EskizApp {
             .and_then(|c| c.id.clone())
             .unwrap_or_else(|| "scratch".to_owned());
         let settings = settings_from_prefs(&self.prefs);
+        // The first save of a new drawing gives it an ID: that is the same recording, not a new one.
+        if let Some(a) = self.timelapse.active.as_mut() {
+            if a.key == "scratch" && self.gal.assigned_id.as_deref() == Some(key.as_str()) {
+                a.key = key.clone();
+            }
+        }
         let stale = match &self.timelapse.active {
             None => true,
             Some(a) => a.key != key || a.settings != settings,
@@ -161,7 +169,11 @@ impl EskizApp {
                 let _ = old.finish_segment();
             }
             self.timelapse.generation += 1;
-            let folder = format!("{key}-{}", self.timelapse.generation);
+            // Each run of the app writes to its own folders, so an earlier run's segments are
+            // never overwritten or mixed with this one's.
+            static RUN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+            let run = *RUN.get_or_init(crate::journal::now_ms);
+            let folder = format!("{key}-{run:x}-{}", self.timelapse.generation);
             let store = match self.gal.library.as_ref() {
                 Some(lib) => SegmentStore::Directory(lib.root().join("timelapse").join(folder)),
                 None => SegmentStore::Memory,
@@ -180,6 +192,7 @@ impl EskizApp {
                 recorder,
                 last_edits: self.session.edits(),
                 last_hash: None,
+                reported: false,
             });
         }
         let edits = self.session.edits();
@@ -189,15 +202,19 @@ impl EskizApp {
             if edits != active.last_edits && !stroking {
                 active.last_edits = edits;
                 if let Some(rec) = active.recorder.as_mut() {
+                    // The recorder keeps what it has; one failed frame or segment write does not end
+                    // the recording. The error is shown once.
                     if let Err(e) = capture(rec, &self.session, &mut active.last_hash) {
-                        failure = Some(e);
-                        active.recorder = None;
+                        if !active.reported {
+                            active.reported = true;
+                            failure = Some(e);
+                        }
                     }
                 }
             }
         }
         if let Some(e) = failure {
-            self.show_toast(format!("Timelapse stopped: {e}"), 4.0);
+            self.show_toast(format!("Timelapse problem: {e}. Recording continues."), 4.0);
         }
     }
 

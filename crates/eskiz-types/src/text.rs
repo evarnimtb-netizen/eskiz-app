@@ -219,7 +219,7 @@ impl Attrs {
             self.baseline_shift_pt = 0.0;
         }
         self.outline_pt = if self.outline_pt.is_finite() {
-            self.outline_pt.max(0.0)
+            self.outline_pt.clamp(0.0, self.size_pt * 0.5)
         } else {
             0.0
         };

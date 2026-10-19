@@ -2205,7 +2205,7 @@ fn time_of(input: &FrameInput) -> f64 {
 impl eframe::App for EskizApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // The previous frame, present included, is complete: this is the watchdog's heartbeat.
-        let visible = !ui.ctx().input(|i| i.viewport().minimized.unwrap_or(false));
+        let visible = !ui.ctx().input(|i| i.viewport().minimized.unwrap_or(false) || i.viewport().occluded.unwrap_or(false));
         crate::stall::beat(visible);
         if ui.ctx().input(|i| i.viewport().close_requested()) && !cfg!(test) {
             // Nothing cancels a close: start the clock, and take the window off the screen so
@@ -2329,6 +2329,11 @@ impl EskizApp {
         let zoom = ctx.zoom_factor().max(0.1);
         source.set_scale(ctx.native_pixels_per_point().unwrap_or(1.0), zoom);
         let mut events = source.poll();
+        if source.failed() {
+            self.pen.source = None;
+            self.show_toast("Pen input stopped. Mouse and touch still work.", 3.0);
+            return;
+        }
         for e in &mut events {
             if let crate::tablet::PenEvent::Pose(p) = e {
                 p.pos = [p.pos[0] / zoom, p.pos[1] / zoom];

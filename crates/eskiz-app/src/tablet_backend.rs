@@ -60,6 +60,7 @@ mod imp {
         manager: Manager,
         backend: Backend,
         last_pose: Option<octotablet::axis::Pose>,
+        failed: bool,
     }
 
     /// Tools that are not pens: touch is handled by egui's touch events, and mice and
@@ -84,7 +85,7 @@ mod imp {
         match built {
             Ok(Ok(manager)) => {
                 let backend = manager.backed();
-                Ok(Box::new(OctoSource { manager, backend, last_pose: None }))
+                Ok(Box::new(OctoSource { manager, backend, last_pose: None, failed: false }))
             }
             Ok(Err(e)) => Err(format!("unsupported here ({e})")),
             Err(_) => Err("the tablet API failed to start".to_owned()),
@@ -94,9 +95,38 @@ mod imp {
     impl PenSource for OctoSource {
         fn poll(&mut self) -> Vec<PenEvent> {
             let mut out = Vec::new();
+            // The backend can panic inside `pump` as well as while it is set up.
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.drain(&mut out)));
+            if ran.is_err() {
+                self.failed = true;
+                out.clear();
+            }
+            out
+        }
+
+        fn failed(&self) -> bool {
+            self.failed
+        }
+
+        fn name(&self) -> &'static str {
+            match self.backend {
+                Backend::WaylandTabletUnstableV2 => "Wayland tablet protocol",
+                Backend::WindowsInkRealTimeStylus => "Windows Ink",
+            }
+        }
+
+        fn needs_pointer_events(&self) -> bool {
+            // On Wayland a client that binds the tablet protocol may not get the pen as
+            // pointer events; on Windows Ink the pen is also delivered as mouse input.
+            matches!(self.backend, Backend::WaylandTabletUnstableV2)
+        }
+    }
+
+    impl OctoSource {
+        fn drain(&mut self, out: &mut Vec<PenEvent>) {
             // (`PumpError` has no variants on Windows, so match it through `ok()`.)
             let Some(events) = self.manager.pump().ok() else {
-                return out;
+                return;
             };
             for event in events {
                 let Event::Tool { tool, event } = event else {
@@ -129,20 +159,6 @@ mod imp {
                     ToolEvent::Added | ToolEvent::Button { .. } => {}
                 }
             }
-            out
-        }
-
-        fn name(&self) -> &'static str {
-            match self.backend {
-                Backend::WaylandTabletUnstableV2 => "Wayland tablet protocol",
-                Backend::WindowsInkRealTimeStylus => "Windows Ink",
-            }
-        }
-
-        fn needs_pointer_events(&self) -> bool {
-            // On Wayland a client that binds the tablet protocol may not get the pen as
-            // pointer events; on Windows Ink the pen is also delivered as mouse input.
-            matches!(self.backend, Backend::WaylandTabletUnstableV2)
         }
     }
 }

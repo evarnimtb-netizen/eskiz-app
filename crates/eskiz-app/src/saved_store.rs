@@ -93,9 +93,12 @@ impl EskizApp {
     pub(crate) fn saved_selections_frame(&mut self) {
         let key = self.gal.current.as_ref().and_then(|c| c.id.clone());
         let dir = self.gal.library.as_ref().map(|l| l.root().to_path_buf());
+        let assigned = self.gal.assigned_id.clone();
         let tool = &mut self.sel;
         if key != tool.store_key {
-            let was_unsaved = tool.store_key.is_none();
+            // Only a document that has just been given its ID by its own first save keeps the
+            // selections it had; any other document starts from its own file.
+            let was_unsaved = tool.store_key.is_none() && key.is_some() && key == assigned;
             tool.store_key = key.clone();
             match (&key, &dir) {
                 (Some(id), Some(d)) => {

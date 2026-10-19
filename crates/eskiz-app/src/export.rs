@@ -135,12 +135,27 @@ impl ExportSettings {
     }
 }
 
+/// `path` with the export extension. A known picture or document extension that is already
+/// there is replaced (`a.png` exported as PDF gives `a.pdf`); any other dot is part of the name
+/// (`Sketch v1.2` gives `Sketch v1.2.png`). Windows device names get a leading underscore.
+pub(crate) fn with_export_extension(path: &Path, ext: &str) -> PathBuf {
+    const KNOWN: [&str; 10] = ["procreate", "psd", "pdf", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif"];
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Untitled");
+    let stem = match name.rsplit_once('.') {
+        Some((stem, old)) if !stem.is_empty() && KNOWN.contains(&old.to_ascii_lowercase().as_str()) => stem,
+        _ => name,
+    };
+    let stem = stem.trim_end_matches([' ', '.']);
+    let stem = if stem.is_empty() { "Untitled" } else { stem };
+    path.with_file_name(format!("{}.{ext}", crate::storage::avoid_device_name(stem)))
+}
+
 /// Write `doc` to `path` in `format` with `settings` and return what was written: the file (its
 /// extension is set from the format), or the folder for [`ExportFormat::Layers`]. Creates the
 /// parent folder when needed.
 pub fn export_with(doc: &Document, format: ExportFormat, path: &Path, settings: &ExportSettings) -> Result<PathBuf, String> {
     settings.validate()?;
-    let path = if format.is_folder() { path.to_path_buf() } else { path.with_extension(format.extension()) };
+    let path = if format.is_folder() { path.to_path_buf() } else { with_export_extension(path, format.extension()) };
     let folder = if format.is_folder() { Some(path.as_path()) } else { path.parent() };
     if let Some(dir) = folder.filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| fail(dir, e))?;

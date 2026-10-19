@@ -450,3 +450,24 @@ fn android_style_font_folder_gives_a_face_without_any_bundled_font() {
     assert!(empty.default_family().is_none());
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn absurd_scale_gives_an_empty_raster() {
+    let Some(mut fonts) = fonts_or_skip() else {
+        return;
+    };
+    let layer = TextLayer::new("Hello", attrs(1000.0), 10_000.0);
+    let r = layer.rasterise_at_scale(&mut fonts, 1.0e6);
+    assert_eq!((r.width, r.height), (0, 0));
+}
+
+#[test]
+fn outline_width_is_limited_by_the_text_size() {
+    let a = Attrs {
+        size_pt: 20.0,
+        outline_pt: 1.0e6,
+        ..Attrs::default()
+    }
+    .clamped();
+    assert!(a.outline_pt <= 10.0);
+}

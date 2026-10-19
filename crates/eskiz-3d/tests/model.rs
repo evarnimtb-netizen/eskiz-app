@@ -211,3 +211,47 @@ fn per_map_pngs_are_written() {
     assert_eq!(img.get_pixel(1, 1).0, [255, 0, 0, 255]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn gltf_node_cycle_is_rejected() {
+    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"children":[0]}]}"#;
+    let r = eskiz_3d::load_gltf_slice(json, &eskiz_3d::ImportOptions::default());
+    assert!(r.is_err());
+}
+
+#[test]
+fn gltf_shared_child_is_rejected() {
+    let json = br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"children":[1,2]},{"children":[3]},{"children":[3]},{}]}"#;
+    let r = eskiz_3d::load_gltf_slice(json, &eskiz_3d::ImportOptions::default());
+    assert!(r.is_err());
+}
+
+#[test]
+fn uv_mask_wraps_tiled_uvs() {
+    use glam::Vec2;
+    // A quad whose UVs sit entirely in tile (2, 1): the mask must still cover the 0..1 tile.
+    let m = quad_model(Vec2::new(2.0, 1.0), Vec2::new(3.0, 2.0), 16);
+    let mask = eskiz_3d::check::build_uv_mask(&m, 0);
+    assert!(mask.label.iter().filter(|&&l| l != 0).count() > 16 * 16 / 2);
+    // Tiled 0..4 covers everything.
+    let m = quad_model(Vec2::ZERO, Vec2::splat(4.0), 16);
+    let mask = eskiz_3d::check::build_uv_mask(&m, 0);
+    assert!(mask.label.iter().all(|&l| l != 0));
+}
+
+#[test]
+fn uv_mask_ignores_non_finite_uvs() {
+    use glam::Vec2;
+    let m = quad_model(Vec2::new(f32::NAN, 0.0), Vec2::new(1.0, f32::INFINITY), 8);
+    let mask = eskiz_3d::check::build_uv_mask(&m, 0);
+    assert_eq!(mask.label.len(), 64);
+}
+
+#[test]
+fn huge_default_texture_size_is_capped() {
+    let o = ImportOptions {
+        default_texture_size: 1 << 30,
+    };
+    let r = load_obj_str(&cube_obj(UvMode::Atlas, false), None, &o).unwrap();
+    assert!(r.model.texture_sets[0].width <= 4096);
+}

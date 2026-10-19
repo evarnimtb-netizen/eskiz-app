@@ -99,20 +99,25 @@ pub struct GpuCanvas {
 }
 
 /// Can the GPU compositor show this document exactly? Groups with their own opacity, blend mode
-/// or mask are not supported yet (see the module docs).
+/// or mask are not supported yet (see the module docs). Neither are groups holding an item with a
+/// blend mode other than Normal: the GPU blends such an item against the canvas below the group,
+/// while the CPU (export, thumbnails, the fallback) blends it inside the group's own buffer.
 pub fn supports(doc: &Document) -> bool {
-    fn ok(nodes: &[Node]) -> bool {
-        nodes.iter().all(|n| match &n.kind {
-            NodeKind::Layer => true,
-            NodeKind::Group { children, .. } => {
-                (n.props.opacity - 1.0).abs() < 1e-9
-                    && n.props.blend == eskiz_core::BlendMode::Normal
-                    && n.mask.is_none()
-                    && ok(children)
+    fn ok(nodes: &[Node], in_group: bool) -> bool {
+        nodes.iter().all(|n| {
+            let normal = n.props.blend == eskiz_core::BlendMode::Normal;
+            match &n.kind {
+                NodeKind::Layer => normal || !in_group,
+                NodeKind::Group { children, .. } => {
+                    (n.props.opacity - 1.0).abs() < 1e-9
+                        && normal
+                        && n.mask.is_none()
+                        && ok(children, true)
+                }
             }
         })
     }
-    ok(&doc.root)
+    ok(&doc.root, false)
 }
 
 fn unit(v: f64) -> f32 {
@@ -522,4 +527,33 @@ fn scene_items<'a>(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod group_support_tests {
+    use super::*;
+    use eskiz_core::document::Props;
+    use eskiz_core::BlendMode;
+
+    fn node(id: u64, kind: NodeKind, blend: BlendMode) -> Node {
+        let mut props = Props::new(format!("n{id}"));
+        props.blend = blend;
+        Node { id, props, mask: None, kind }
+    }
+
+    #[test]
+    fn a_group_with_a_non_normal_child_goes_to_the_cpu_display() {
+        let group = |blend| {
+            let kid = node(2, NodeKind::Layer, blend);
+            node(1, NodeKind::Group { children: vec![kid], collapsed: false }, BlendMode::Normal)
+        };
+        let mut doc = Document::new(8, 8);
+        doc.root = vec![group(BlendMode::Normal)];
+        assert!(supports(&doc));
+        doc.root = vec![group(BlendMode::Multiply)];
+        assert!(!supports(&doc));
+        // A non-Normal layer at the top level has the same backdrop on both paths.
+        doc.root = vec![node(3, NodeKind::Layer, BlendMode::Multiply)];
+        assert!(supports(&doc));
+    }
 }

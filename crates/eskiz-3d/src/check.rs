@@ -148,38 +148,66 @@ pub fn overlapping_texels(model: &Model, set: usize, res: usize) -> usize {
     let mut owner = vec![u32::MAX; res * res];
     let mut overlapped = vec![false; res * res];
     let rf = res as f32;
-    for (id, uv) in tris {
-        let c = [uv[0] * rf, uv[1] * rf, uv[2] * rf];
-        let area = (c[1] - c[0]).perp_dot(c[2] - c[0]);
-        if area.abs() < 1e-6 {
-            continue;
-        }
-        let min = c[0].min(c[1]).min(c[2]);
-        let max = c[0].max(c[1]).max(c[2]);
-        let x0 = (min.x - 0.5).floor().max(0.0) as usize;
-        let y0 = (min.y - 0.5).floor().max(0.0) as usize;
-        let x1 = ((max.x + 0.5).ceil().max(0.0) as usize).min(res);
-        let y1 = ((max.y + 0.5).ceil().max(0.0) as usize).min(res);
-        let eps = 1e-4 * area.abs();
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let q = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-                let w0 = (c[2] - c[1]).perp_dot(q - c[1]) / area;
-                let w1 = (c[0] - c[2]).perp_dot(q - c[2]) / area;
-                let w2 = (c[1] - c[0]).perp_dot(q - c[0]) / area;
-                let e = eps / area.abs();
-                if w0 > e && w1 > e && w2 > e {
-                    let i = y * res + x;
-                    if owner[i] == u32::MAX {
-                        owner[i] = id;
-                    } else if owner[i] != id {
-                        overlapped[i] = true;
+    for (id, uv0) in tris {
+        for shift in tile_shifts(&uv0) {
+            let uv = [uv0[0] + shift, uv0[1] + shift, uv0[2] + shift];
+            let c = [uv[0] * rf, uv[1] * rf, uv[2] * rf];
+            let area = (c[1] - c[0]).perp_dot(c[2] - c[0]);
+            if area.abs() < 1e-6 {
+                continue;
+            }
+            let min = c[0].min(c[1]).min(c[2]);
+            let max = c[0].max(c[1]).max(c[2]);
+            let x0 = (min.x - 0.5).floor().max(0.0) as usize;
+            let y0 = (min.y - 0.5).floor().max(0.0) as usize;
+            let x1 = ((max.x + 0.5).ceil().max(0.0) as usize).min(res);
+            let y1 = ((max.y + 0.5).ceil().max(0.0) as usize).min(res);
+            let eps = 1e-4 * area.abs();
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let q = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                    let w0 = (c[2] - c[1]).perp_dot(q - c[1]) / area;
+                    let w1 = (c[0] - c[2]).perp_dot(q - c[2]) / area;
+                    let w2 = (c[1] - c[0]).perp_dot(q - c[0]) / area;
+                    let e = eps / area.abs();
+                    if w0 > e && w1 > e && w2 > e {
+                        let i = y * res + x;
+                        if owner[i] == u32::MAX {
+                            owner[i] = id;
+                        } else if owner[i] != id {
+                            overlapped[i] = true;
+                        }
                     }
                 }
             }
         }
     }
     overlapped.iter().filter(|&&b| b).count()
+}
+
+/// Whole-tile shifts (in UV units) that bring a triangle's parts into the 0..1 tile,
+/// matching how the lookup wraps UVs. Non-finite triangles give none; the count is capped.
+fn tile_shifts(uv: &[Vec2; 3]) -> Vec<Vec2> {
+    const MAX_TILES: i64 = 16;
+    if uv.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+        return Vec::new();
+    }
+    let min = uv[0].min(uv[1]).min(uv[2]);
+    let max = uv[0].max(uv[1]).max(uv[2]);
+    let span = |lo: f32, hi: f32| {
+        let a = (lo.floor().clamp(-1e6, 1e6)) as i64;
+        let b = ((hi.ceil().clamp(-1e6, 1e6)) as i64 - 1).max(a);
+        (a, b.min(a + MAX_TILES - 1))
+    };
+    let (tx0, tx1) = span(min.x, max.x);
+    let (ty0, ty1) = span(min.y, max.y);
+    let mut out = Vec::new();
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            out.push(Vec2::new(-(tx as f32), -(ty as f32)));
+        }
+    }
+    out
 }
 
 fn find(parent: &mut [usize], mut i: usize) -> usize {
@@ -225,34 +253,37 @@ pub fn build_uv_mask(model: &Model, set: usize) -> UvMask {
         }
     }
     let (wf, hf) = (w as f32, h as f32);
-    for (ti, (_, uv)) in tris.iter().enumerate() {
+    for (ti, (_, uv0)) in tris.iter().enumerate() {
         let island = find(&mut parent, ti) as u32 + 1;
-        let mut c = [
-            Vec2::new(uv[0].x * wf, uv[0].y * hf),
-            Vec2::new(uv[1].x * wf, uv[1].y * hf),
-            Vec2::new(uv[2].x * wf, uv[2].y * hf),
-        ];
-        let area = (c[1] - c[0]).perp_dot(c[2] - c[0]);
-        if area.abs() < 1e-6 {
-            continue;
-        }
-        if area < 0.0 {
-            c.swap(1, 2);
-        }
-        let min = c[0].min(c[1]).min(c[2]);
-        let max = c[0].max(c[1]).max(c[2]);
-        let x0 = min.x.floor().max(0.0) as usize;
-        let y0 = min.y.floor().max(0.0) as usize;
-        let x1 = (max.x.ceil().max(0.0) as usize).min(w);
-        let y1 = (max.y.ceil().max(0.0) as usize).min(h);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                if box_hits_triangle(&c, x as f32, y as f32) {
-                    let l = &mut mask.label[y * w + x];
-                    if *l == 0 {
-                        *l = island;
-                    } else if *l != island {
-                        *l = UvMask::SHARED;
+        for shift in tile_shifts(uv0) {
+            let uv = [uv0[0] + shift, uv0[1] + shift, uv0[2] + shift];
+            let mut c = [
+                Vec2::new(uv[0].x * wf, uv[0].y * hf),
+                Vec2::new(uv[1].x * wf, uv[1].y * hf),
+                Vec2::new(uv[2].x * wf, uv[2].y * hf),
+            ];
+            let area = (c[1] - c[0]).perp_dot(c[2] - c[0]);
+            if area.abs() < 1e-6 {
+                continue;
+            }
+            if area < 0.0 {
+                c.swap(1, 2);
+            }
+            let min = c[0].min(c[1]).min(c[2]);
+            let max = c[0].max(c[1]).max(c[2]);
+            let x0 = min.x.floor().max(0.0) as usize;
+            let y0 = min.y.floor().max(0.0) as usize;
+            let x1 = (max.x.ceil().max(0.0) as usize).min(w);
+            let y1 = (max.y.ceil().max(0.0) as usize).min(h);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    if box_hits_triangle(&c, x as f32, y as f32) {
+                        let l = &mut mask.label[y * w + x];
+                        if *l == 0 {
+                            *l = island;
+                        } else if *l != island {
+                            *l = UvMask::SHARED;
+                        }
                     }
                 }
             }

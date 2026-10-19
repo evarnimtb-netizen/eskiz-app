@@ -473,6 +473,16 @@ pub fn frame_drawn() {
 
 fn first_frames_ok() {
     log("first frames drawn");
+    drop_marker();
+}
+
+/// An attempt ended with an error or a caught panic before it drew: the process is still alive, so
+/// this was not a crash and the next start must not read it as one.
+pub fn attempt_failed() {
+    drop_marker();
+}
+
+fn drop_marker() {
     with(|s| {
         if s.marker.take().is_some() {
             if let Some(d) = &s.dir {
@@ -696,6 +706,19 @@ mod tests {
         }
         begin_attempt(plan.stages[0]);
         plan
+    }
+
+    #[test]
+    fn a_failed_attempt_does_not_leave_a_crash_marker() {
+        let _g = global();
+        let d = tmp("failed");
+        let win = order(Platform::Windows, true);
+        init_in(Some(d.clone()), &[], &win);
+        begin_attempt(Stage::Glow);
+        attempt_failed();
+        assert!(!d.join(MARKER).exists());
+        assert_eq!(init_in(Some(d.clone()), &[], &win), None);
+        let _ = fs::remove_dir_all(&d);
     }
 
     /// The process dies (a driver crash, or the user ends a frozen start): the marker stays.

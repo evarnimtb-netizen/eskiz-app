@@ -593,3 +593,42 @@ fn fuzz_abr_sample_bounds_overflow() {
     ];
     let _ = read_abr(CRASH);
 }
+
+#[test]
+fn many_full_size_layers_are_rejected_by_the_total_budget() {
+    // Each layer is a legal 16384 x 16384 canvas, but 40 of them need 40 GiB at full size.
+    let layers = (0..40).map(|i| layer(&format!("L{i}"))).collect();
+    let archive = document_archive("{16384, 16384}", 256, layers);
+    assert!(is_limit(open(package(&[(
+        "Document.archive",
+        &archive,
+        CompressionMethod::Deflated
+    )]))));
+}
+
+#[test]
+fn abr_repeat_runs_cannot_expand_past_the_decode_budget() {
+    // 8192 x 8192 PackBits tips made of repeat runs: about 1 MB of input becomes 64 MB each.
+    let side = 8192usize;
+    let row: Vec<u8> = (0..side / 128).flat_map(|_| [0x81u8, 0]).collect();
+    let mut entry = b"rep\0".to_vec();
+    for v in [0i32, 0, side as i32, side as i32] {
+        entry.extend_from_slice(&v.to_be_bytes());
+    }
+    entry.extend_from_slice(&[0, 8, 1]);
+    for _ in 0..side {
+        entry.extend_from_slice(&(row.len() as u16).to_be_bytes());
+    }
+    for _ in 0..side {
+        entry.extend_from_slice(&row);
+    }
+    let mut samp = Vec::new();
+    for _ in 0..20 {
+        push_u32(&mut samp, entry.len() as u32);
+        samp.extend_from_slice(&entry);
+    }
+    let mut abr = abr_with("samp", &samp);
+    let preset = abr_with("desc", &abr_preset());
+    abr.extend_from_slice(&preset[4..]);
+    assert!(is_limit(read_abr(&abr)));
+}

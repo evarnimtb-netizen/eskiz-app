@@ -85,6 +85,9 @@ impl CropSpec {
     }
 }
 
+/// Most bytes of intermediate pixel buffers a crop or resize may need (4 GiB).
+const MAX_PLAN_BYTES: u64 = 4 << 30;
+
 /// Work out a crop and resize of `doc`: the new canvas, every layer and mask, and the new
 /// selection (`None` when there is no selection to change). Errors say what is wrong with the
 /// values on the sheet.
@@ -105,6 +108,15 @@ pub fn plan(doc: &Document, selection: &Selection, spec: &CropSpec) -> Result<(C
         return Err("The resolution must be between 1 and 10000 DPI.".to_owned());
     }
     let (cw, ch) = (doc.width, doc.height);
+    // Every layer is rebuilt at full size, so bound the total before allocating any of it.
+    let buffers = doc.layer_ids().len() as u64 * 2 + 2;
+    let largest = (spec.width as u64 * spec.height as u64).max(cw as u64 * ch as u64);
+    if largest.saturating_mul(4).saturating_mul(buffers) > MAX_PLAN_BYTES {
+        return Err(
+            "The canvas is too large for this many layers. Use a smaller size or fewer layers."
+                .to_owned(),
+        );
+    }
     let before = CanvasState {
         width: cw,
         height: ch,
@@ -796,6 +808,18 @@ mod tests {
         assert_eq!(growth_dirs(Anchor::Centre).len(), 4);
         let bottom_right = growth_dirs(Anchor::BottomRight);
         assert!(bottom_right.contains(&-right) && bottom_right.contains(&-down));
+    }
+
+    #[test]
+    fn crop_refuses_a_canvas_too_large_for_the_layer_count() {
+        let mut doc = Document::new(64, 64);
+        let first = doc.layer_ids()[0];
+        doc.add_layer_above(Some(first));
+        let spec = CropSpec::identity(16384, 16384, 132.0);
+        let err = plan(&doc, &Selection::default(), &spec)
+            .err()
+            .expect("refused");
+        assert!(err.contains("too large"), "{err}");
     }
 
     #[test]

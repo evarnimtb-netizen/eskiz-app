@@ -117,6 +117,9 @@ impl EskizApp {
     pub(crate) fn load_reference_image(&mut self, ctx: &egui::Context, path: &Path) {
         match decode_image(path) {
             Ok((w, h, rgba)) => {
+                // A picture wider than the GPU's texture limit would make the renderer fail.
+                let side = ctx.input(|i| i.max_texture_side).min(8192);
+                let (w, h, rgba) = crate::import::limit_side(w, h, rgba, side);
                 let image = ColorImage::from_rgba_unmultiplied([w, h], &rgba);
                 let tex = ctx.load_texture("reference-image", image, TextureOptions::LINEAR);
                 self.reference.image = Some(RefImage { tex, w, h });
