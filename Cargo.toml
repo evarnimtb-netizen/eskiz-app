@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# cargo-fuzz targets build on nightly only; see fuzz/README.md.
+exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2021"

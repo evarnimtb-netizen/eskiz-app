@@ -19,5 +19,7 @@ flate2 = "1.1.10"
 eskiz-guides = { path = "../eskiz-guides" }
 
 [dev-dependencies]
+# Property tests only; never a runtime dependency.
+proptest = { version = "1", default-features = false, features = ["std"] }
 lopdf = "0.45.0"
 psd = "0.3.5"

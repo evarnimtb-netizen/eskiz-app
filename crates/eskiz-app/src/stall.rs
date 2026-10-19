@@ -14,10 +14,10 @@
 //!   the last breadcrumb to `startup.log` and writes `stalled.marker` (renderer and phase). If the
 //!   thread recovers, the marker is removed again (a long import is not a driver fault).
 //! * **Next start.** A marker left behind (the user killed the frozen window) makes
-//!   [`crate::renderer::plan`] skip that renderer: wgpu auto, wgpu-dx12, wgpu-vulkan, then OpenGL
-//!   with the CPU compositor. The skip is remembered in `renderer-skip.txt` until
-//!   `--renderer auto` clears it. A stall in the present phase first switches to a
-//!   non-blocking present mode before a renderer is given up.
+//!   [`crate::renderer::plan`] skip that renderer and start one rung down the ladder
+//!   ([`crate::startup::order`]). The skip is remembered in `renderer-skip.txt` until
+//!   Try normal graphics or `--renderer auto` clears it. A stall in the present phase first
+//!   switches to a non-blocking present mode before a renderer is given up.
 
 use std::fs;
 use std::io::Write;
@@ -214,7 +214,7 @@ impl Skips {
             match line.split_once('=') {
                 Some(("skip", v)) => {
                     if let Some(st) = Stage::parse(v) {
-                        if st != Stage::Glow && !s.stages.contains(&st) {
+                        if !s.stages.contains(&st) {
                             s.stages.push(st);
                         }
                     }
@@ -247,18 +247,21 @@ impl Skips {
     }
 
     /// Fold in a stall from the last run. A stall while presenting first switches to the
-    /// non-blocking present mode; a second one (or any other phase) gives the renderer up.
-    /// Returns a sentence for the log and the toast.
-    pub fn learn(&mut self, m: &StallMarker) -> String {
-        if m.is_present() && !self.no_vsync && m.stage != Stage::Glow {
+    /// non-blocking present mode; a second one (or any other phase) gives the renderer up, unless
+    /// it is `last`, the bottom of the ladder. Returns a sentence for the log and the toast.
+    pub fn learn(&mut self, m: &StallMarker, last: Stage) -> String {
+        if m.is_present() && !self.no_vsync {
             self.no_vsync = true;
             return format!(
                 "The last run froze while presenting a frame ({}). Eskiz now presents without waiting for the display.",
                 m.stage.name()
             );
         }
-        if m.stage == Stage::Glow {
-            return "The last run froze with the compatible (OpenGL) renderer; it is still used because nothing else is left.".to_owned();
+        if m.stage == last {
+            return format!(
+                "The last run froze with the {} renderer; it is still used because nothing else is left.",
+                m.stage.label()
+            );
         }
         if !self.stages.contains(&m.stage) {
             self.stages.push(m.stage);
@@ -292,7 +295,9 @@ fn watch_loop(run: &Running, poke: &dyn Fn()) {
     loop {
         std::thread::sleep(Duration::from_millis(250));
         let age = Duration::from_millis(now_ms().saturating_sub(LAST_BEAT_MS.load(Ordering::Relaxed)));
-        match watch.look(age, current_phase(), VISIBLE.load(Ordering::Relaxed)) {
+        // A slow close is not a driver fault: it must not make the next start skip a renderer.
+        let visible = VISIBLE.load(Ordering::Relaxed) && !crate::exit::closing();
+        match watch.look(age, current_phase(), visible) {
             Verdict::Healthy => {}
             Verdict::Poke => poke(),
             Verdict::Stalled { phase, secs } => {
@@ -380,14 +385,21 @@ mod tests {
     fn a_stall_teaches_the_skip_list() {
         let mut s = Skips::default();
         let m = StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into() };
-        let msg = s.learn(&m);
+        let last = Stage::WgpuSoftware;
+        let msg = s.learn(&m, last);
         assert!(msg.contains("skips") && s.stages == [Stage::Wgpu]);
         // Present stalls try the non-blocking present mode first.
         let p = StallMarker { stage: Stage::WgpuDx12, phase: Phase::PaintPresent.name().into() };
-        s.learn(&p);
+        s.learn(&p, last);
         assert!(s.no_vsync && s.stages == [Stage::Wgpu]);
-        s.learn(&p);
+        s.learn(&p, last);
         assert_eq!(s.stages, [Stage::Wgpu, Stage::WgpuDx12]);
+        // OpenGL is not the bottom on Windows and Linux: a frozen glow is skipped too.
+        s.learn(&StallMarker { stage: Stage::Glow, phase: Phase::Gallery.name().into() }, last);
+        assert_eq!(s.stages, [Stage::Wgpu, Stage::WgpuDx12, Stage::Glow]);
+        // The bottom rung is never given up.
+        let msg = s.learn(&StallMarker { stage: last, phase: Phase::Gallery.name().into() }, last);
+        assert!(msg.contains("nothing else is left") && !s.stages.contains(&last), "{msg}");
         let again = Skips::parse(&s.encode());
         assert_eq!(again, s);
         let d = tmp("skips");

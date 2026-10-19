@@ -1,0 +1,9 @@
+[package]
+name = "eskiz-types"
+description = "Value types shared below eskiz-core: colour spaces, the gamma-encoded RGB colour and the text-layer data. A leaf crate with no dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

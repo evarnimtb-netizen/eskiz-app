@@ -83,4 +83,5 @@ def main():
     print(f"{100.0 * differ / ((x1 - x0) * (y1 - y0)):.4f}")
 
 
-main()
+if __name__ == "__main__":
+    main()

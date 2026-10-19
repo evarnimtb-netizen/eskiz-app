@@ -105,6 +105,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 [target.'cfg(target_os = "android")'.dependencies]
 log = "0.4"
 android_logger = "0.15"
+# The Rust to Java bridge for the file pickers, share sheet and clipboard (A4). Both were already
+# in the lock file through `webbrowser`.
+jni = "0.22.4"
+ndk-context = "0.1.1"
 
 # Linux only: the dlopen check of the libraries winit loads at run time (linux_runtime.rs).
 [target.'cfg(target_os = "linux")'.dependencies]

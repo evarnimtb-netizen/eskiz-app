@@ -143,6 +143,129 @@ fn saved_3d_document_reopens_with_its_paint() {
     assert_eq!(back.model.texture_sets[0].map(MapKind::Colour).pixel(texel.0, texel.1), painted);
 }
 
+/// Names in the library folder that only a save in progress should leave behind.
+fn leftovers(dir: &std::path::Path) -> Vec<String> {
+    let names = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned());
+    names.filter(|n| n.ends_with(".bak") || n.ends_with(".tmp") || n.ends_with(".writing")).collect()
+}
+
+/// The colour of `texel` in the first texture set of the saved document `id`.
+fn saved_colour(lib: &Library, id: &str, texel: (usize, usize)) -> [u8; 4] {
+    load_model_doc(lib, id).unwrap().model.texture_sets[0].map(MapKind::Colour).pixel(texel.0, texel.1)
+}
+
+#[test]
+fn resaving_a_3d_document_replaces_it_and_leaves_nothing_behind() {
+    let dir = temp_dir("resave");
+    let lib = Library::at(dir.clone());
+    let mut doc = cube_doc();
+    let (texel, before, _) = paint_centre(&mut doc);
+    let first = doc.model.texture_sets[0].map(MapKind::Colour).pixel(texel.0, texel.1);
+    save_model_doc(&lib, &cube_doc()).unwrap();
+    assert_eq!(saved_colour(&lib, &doc.id, texel), before);
+    // A folder from an older build's save is cleared up too.
+    std::fs::create_dir_all(lib.model_dir(&doc.id).with_extension("writing")).unwrap();
+    doc.title = "Painted cube".into();
+    save_model_doc(&lib, &doc).unwrap();
+    let back = load_model_doc(&lib, &doc.id).unwrap();
+    assert_eq!(back.title, "Painted cube");
+    assert_eq!(back.model.texture_sets[0].map(MapKind::Colour).pixel(texel.0, texel.1), first);
+    assert_eq!(lib.list().iter().filter(|e| e.id == doc.id).count(), 1);
+    assert!(leftovers(&dir).is_empty(), "left behind: {:?}", leftovers(&dir));
+}
+
+#[test]
+fn a_failed_3d_save_keeps_the_last_good_copy() {
+    use crate::storage::{FAIL_NEXT_CHECK, FAIL_NEXT_WRITE};
+    let dir = temp_dir("failed-save");
+    let lib = Library::at(dir.clone());
+    let mut doc = cube_doc();
+    save_model_doc(&lib, &doc).unwrap();
+    let (texel, before, painted) = paint_centre(&mut doc);
+    assert_ne!(before, painted);
+
+    // The new folder is written in full, swapped in, and then fails its check: the old one returns.
+    FAIL_NEXT_CHECK.with(|c| c.set(true));
+    assert!(save_model_doc(&lib, &doc).is_err());
+    assert_eq!(saved_colour(&lib, &doc.id, texel), before, "the original document is intact");
+    assert!(leftovers(&dir).is_empty(), "left behind: {:?}", leftovers(&dir));
+
+    // Writing the new folder fails (disk full): the old one is never touched.
+    FAIL_NEXT_WRITE.with(|c| c.set(Some(std::io::ErrorKind::StorageFull)));
+    let err = save_model_doc(&lib, &doc).unwrap_err();
+    assert!(err.contains("disk is full"), "{err}");
+    assert_eq!(saved_colour(&lib, &doc.id, texel), before);
+    assert!(leftovers(&dir).is_empty(), "left behind: {:?}", leftovers(&dir));
+
+    // The first save of a new document fails its check: nothing is left under its name.
+    let mut fresh = cube_doc();
+    fresh.id = "fresh".into();
+    FAIL_NEXT_CHECK.with(|c| c.set(true));
+    assert!(save_model_doc(&lib, &fresh).is_err());
+    assert!(!lib.model_dir("fresh").exists());
+
+    save_model_doc(&lib, &doc).unwrap();
+    assert_eq!(saved_colour(&lib, &doc.id, texel), painted, "the next save goes through");
+}
+
+#[test]
+fn an_interrupted_3d_save_is_recovered_from_its_backup() {
+    let dir = temp_dir("interrupted");
+    let lib = Library::at(dir.clone());
+    let mut doc = cube_doc();
+    save_model_doc(&lib, &doc).unwrap();
+    let (texel, before, painted) = paint_centre(&mut doc);
+    let (folder, bak, tmp) = (lib.model_dir(&doc.id), lib.model_bak(&doc.id), lib.model_tmp(&doc.id));
+
+    // Cut off after the old folder became the backup and before the new one moved in: the
+    // gallery still lists the document, and it opens with its last saved paint.
+    std::fs::rename(&folder, &bak).unwrap();
+    std::fs::create_dir_all(tmp.join("layers")).unwrap();
+    assert!(lib.list().iter().any(|e| e.id == doc.id), "the gallery finds the backup");
+    assert_eq!(saved_colour(&lib, &doc.id, texel), before);
+    assert!(!bak.exists());
+
+    // The same, found by opening the document rather than by the gallery.
+    std::fs::rename(&folder, &bak).unwrap();
+    assert_eq!(saved_colour(&lib, &doc.id, texel), before);
+    assert!(folder.is_dir() && !bak.exists());
+
+    // Cut off after the new folder moved in and before the backup was removed: the new copy
+    // checks out, so it stays and the backup goes.
+    let old = dir.join("old-copy");
+    copy_tree(&folder, &old);
+    save_model_doc(&lib, &doc).unwrap();
+    copy_tree(&old, &bak);
+    assert_eq!(saved_colour(&lib, &doc.id, texel), painted);
+    assert!(!bak.exists());
+
+    // A damaged folder beside a backup: the backup wins.
+    copy_tree(&old, &bak);
+    std::fs::write(folder.join("model.glb"), b"glTF").unwrap();
+    assert_eq!(saved_colour(&lib, &doc.id, texel), before);
+    assert!(!bak.exists());
+
+    // The next save also settles a leftover backup before it writes.
+    copy_tree(&old, &bak);
+    std::fs::remove_dir_all(&folder).unwrap();
+    save_model_doc(&lib, &doc).unwrap();
+    assert_eq!(saved_colour(&lib, &doc.id, texel), painted);
+    std::fs::remove_dir_all(&old).unwrap();
+    assert!(leftovers(&dir).is_empty(), "left behind: {:?}", leftovers(&dir));
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let dst = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &dst);
+        } else {
+            std::fs::copy(entry.path(), dst).unwrap();
+        }
+    }
+}
+
 #[test]
 fn headless_view_renders_the_model_with_a_banner() {
     let out = snapshot_dir();

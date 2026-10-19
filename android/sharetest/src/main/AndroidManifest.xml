@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="Eskiz Share Test"
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.DeviceDefault">
+
+        <!-- The share target: any type, one file or several. -->
+        <activity
+            android:name=".ReceiveActivity"
+            android:label="Eskiz Share Test"
+            android:exported="true"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Logs what is on the clipboard. Started with `am start`. -->
+        <activity android:name=".ClipReadActivity" android:exported="true" />
+
+        <!-- Puts a known 64 x 64 PNG on the clipboard, from this app's own provider. -->
+        <activity android:name=".ClipWriteActivity" android:exported="true" />
+
+        <provider
+            android:name=".TestProvider"
+            android:authorities="app.eskiz.sharetest.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

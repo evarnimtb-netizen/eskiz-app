@@ -36,3 +36,13 @@ The options above the list:
 Animations are exported from the same Share list (see Animation and timelapse). 3D documents show their own list with GLB and Texture PNGs (see 3D painting).
 
 Export runs in the background, and the panel shows "Writing" while it works. Every format that can hold a color profile carries the profile of the canvas's color space (see Color).
+
+## On Android
+
+Open, Import and the gallery's import use the system file picker, so files from Downloads, Drive or any other storage app can be chosen directly. Eskiz works on a private copy of the picked file; the original is never changed.
+
+The Share tab has two modes. **Save to folder** writes each export into a folder you choose once (the choice is remembered; Change... picks another). If no folder is chosen yet, or the folder has gone, Eskiz asks you to name the file instead. **Share** opens the system share sheet with the exported file, so you can send it straight to another app. The gallery's Share does the same for a whole drawing.
+
+Copy and Cut also place the image on the system clipboard, and Paste takes an image another app copied. Pasted images are fitted to the canvas and arrive as a floating layer you can move before applying.
+
+The Back button or gesture closes the topmost thing (a menu, sheet, panel or tool), then leaves the canvas for the gallery, and from the gallery leaves the app.

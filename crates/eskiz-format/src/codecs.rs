@@ -120,10 +120,11 @@ pub fn lz4_block_decompress(src: &[u8], out: &mut Vec<u8>, max_extra: usize) -> 
     Ok(())
 }
 
-/// The total decoded size the block headers of a framed stream declare, so the output can be
-/// allocated once. Stops at the end marker or the first header that does not parse; a lying
-/// header only makes the estimate wrong, never the decoding.
-fn declared_size(data: &[u8]) -> usize {
+/// The total decoded size the block headers (`bv41` / `bv4-` size prefixes) of a framed stream
+/// declare, so a caller can compare it with the size it expects before anything is allocated.
+/// Stops at the end marker or the first header that does not parse; a lying header only makes
+/// the estimate wrong, never the decoding, which counts its output against its own cap.
+pub fn apple_lz4_declared_size(data: &[u8]) -> usize {
     let mut total = 0usize;
     let mut i = 0usize;
     while i + 8 <= data.len() {
@@ -151,7 +152,7 @@ fn declared_size(data: &[u8]) -> usize {
 /// should compare the returned length against it.
 pub fn apple_lz4_decompress(data: &[u8], max_output: usize) -> Result<Vec<u8>> {
     // pre-size from the headers, but never trust them with a large allocation
-    let mut out = Vec::with_capacity(declared_size(data).min(max_output).min(16 << 20));
+    let mut out = Vec::with_capacity(apple_lz4_declared_size(data).min(max_output).min(16 << 20));
     let mut i = 0usize;
     while i + 4 <= data.len() {
         match &data[i..i + 4] {

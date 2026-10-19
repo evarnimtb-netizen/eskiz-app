@@ -143,7 +143,7 @@ pub struct WindowAdapter {
 pub struct DiagnoseData {
     pub system: SystemInfo,
     pub env: Vec<EnvVar>,
-    /// The renderer mode `ESKIZ_RENDERER` resolves to.
+    /// The renderer request (`--renderer`, `ESKIZ_BACKEND`, ...) and this OS's renderer ladder.
     pub renderer_mode: String,
     pub gpu: GpuInfo,
     pub dirs: Vec<DirInfo>,
@@ -182,7 +182,11 @@ pub fn collect() -> DiagnoseData {
     DiagnoseData {
         system,
         env: env_vars(),
-        renderer_mode: format!("{:?}", crate::renderer::Mode::from_env()),
+        renderer_mode: {
+            let (mode, source) = crate::renderer::Mode::requested();
+            let ladder: Vec<&str> = crate::startup::this_order().iter().map(|s| s.name()).collect();
+            format!("{} (from {source}); ladder: {}", mode.name(), ladder.join(" -> "))
+        },
         gpu: collect_gpu(),
         dirs: collect_dirs(),
         pen: pen_support().to_owned(),
@@ -212,7 +216,8 @@ fn env_vars() -> Vec<EnvVar> {
         ("WGPU_BACKEND", "limits wgpu to these backends (vulkan, dx12, metal, gl); the window and the GPU compositor both read it"),
         ("WGPU_POWER_PREF", "wgpu power preference for the window (high, low)"),
         ("WGPU_ADAPTER_NAME", "wgpu picks the adapter whose name contains this"),
-        ("ESKIZ_RENDERER", "gpu (default), cpu or gl"),
+        ("ESKIZ_BACKEND", "renderer: auto, dx12, vulkan, metal, wgpu-gl, gl or software (like --renderer)"),
+        ("ESKIZ_RENDERER", "older switch: gpu (default), cpu (CPU compositor) or gl"),
         ("ESKIZ_GPU_REQUIRE", "GPU tests fail instead of skipping when there is no adapter"),
         ("ESKIZ_LIBRARY_DIR", "document library folder"),
         ("ESKIZ_BRUSH_DIR", "imported brushes folder"),
@@ -733,7 +738,7 @@ pub fn render(data: &DiagnoseData) -> String {
             (e.name.to_owned(), format!("{value} - {}", e.effect))
         })
         .collect();
-    rows.push(("ESKIZ_RENDERER resolves to".into(), data.renderer_mode.clone()));
+    rows.push(("Renderer request".into(), data.renderer_mode.clone()));
     table(&mut out, &rows);
 
     out.push_str("## GPU backends\n\n");

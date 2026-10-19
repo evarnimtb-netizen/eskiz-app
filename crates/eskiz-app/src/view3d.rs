@@ -39,7 +39,7 @@ use crate::chrome::small_label;
 use crate::gallery::Screen;
 use crate::input::{sample_from, PointerKind, RawPointer};
 use crate::paint::StrokeSettings;
-use crate::storage::{clean_title, new_id, DocEntry, Library, AUTOSAVE_SECS};
+use crate::storage::{check_fault, clean_title, friendly, new_id, sync_dir, write_file, DocEntry, Library, AUTOSAVE_SECS};
 
 /// Stored light intensity that the shader scales by 50: 0.02 gives radiance 1.0.
 const DEFAULT_LIGHT: f32 = 0.02;
@@ -56,6 +56,8 @@ const EXPORT_DPI: u32 = 300;
 /// Name of the document metadata file inside a 3D document folder.
 const DOCUMENT_FILE: &str = "document.json";
 const FORMAT_NAME: &str = "eskiz-3d";
+/// Name of the model (GLB) inside a 3D document folder.
+const MODEL_FILE: &str = "model.glb";
 
 // ---------------------------------------------------------------- files and models
 
@@ -202,6 +204,13 @@ struct LookupCache {
 }
 
 /// The open 3D document and its view state.
+/// A model export running on a worker thread: the result carries the toast text and the path
+/// written.
+struct ModelExport {
+    rx: Receiver<Result<(String, PathBuf), String>>,
+    delivery: crate::deliver::Delivery,
+}
+
 pub struct ThreeD {
     pub doc: ModelDoc,
     pub settings: ViewSettings,
@@ -216,7 +225,7 @@ pub struct ThreeD {
     low_until: f64,
     last_save: f64,
     saving: Option<JoinHandle<Result<(), String>>>,
-    export: Option<Receiver<Result<String, String>>>,
+    export: Option<ModelExport>,
     /// Finished 3D strokes, oldest first, each as the texture maps it changed (see [`ThreeD::push_stroke`]).
     undo_steps: Vec<Vec<TexelChange>>,
     redo_steps: Vec<Vec<TexelChange>>,
@@ -313,14 +322,31 @@ impl ThreeD {
 // ---------------------------------------------------------------- storage
 
 /// Write `doc` as the folder `<id>.eskiz3d` in `lib`, with the gallery thumbnail and metadata.
-/// The new copy is written beside the old one and swapped in, so a failed save keeps the last
-/// good copy.
+/// The new folder is written and flushed beside the old one, checked, and swapped in by
+/// [`replace_model_dir`], so a failed or interrupted save keeps the last good copy.
 pub fn save_model_doc(lib: &Library, doc: &ModelDoc) -> Result<DocEntry, String> {
-    let dir = lib.model_dir(&doc.id);
-    let tmp = dir.with_extension("writing");
+    recover_model_dir(lib, &doc.id);
+    let tmp = lib.model_tmp(&doc.id);
     let _ = fs::remove_dir_all(&tmp);
-    let io = |e: std::io::Error| format!("{}: {e}", tmp.display());
-    fs::create_dir_all(tmp.join("layers")).map_err(io)?;
+    // Older builds wrote the new copy here.
+    let _ = fs::remove_dir_all(lib.model_dir(&doc.id).with_extension("writing"));
+    if let Err(e) = write_model_dir(&tmp, doc).and_then(|()| verify_model_dir(&tmp)) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+    replace_model_dir(lib, &doc.id, &tmp)?;
+    let (w, h, rgba) = match doc.model.texture_sets.first() {
+        Some(s) => (s.width, s.height, s.straight_rgba(MapKind::Colour)),
+        None => (1, 1, vec![128, 128, 128, 255]),
+    };
+    lib.write_model_meta(&doc.id, &doc.title, w, h, &rgba)?;
+    lib.get(&doc.id).ok_or_else(|| "saved document is missing".to_owned())
+}
+
+/// Write the files of `doc` into the new folder `dir` and flush them to disk.
+fn write_model_dir(dir: &Path, doc: &ModelDoc) -> Result<(), String> {
+    let layers = dir.join("layers");
+    fs::create_dir_all(&layers).map_err(|e| format!("{}: {}", layers.display(), friendly(&e)))?;
     let sets: Vec<Value> = doc
         .model
         .texture_sets
@@ -343,28 +369,138 @@ pub fn save_model_doc(lib: &Library, doc: &ModelDoc) -> Result<DocEntry, String>
         "paint_through": doc.paint_through,
         "texture_sets": sets,
     });
-    fs::write(tmp.join(DOCUMENT_FILE), meta.to_string()).map_err(io)?;
+    write_synced(&dir.join(DOCUMENT_FILE), meta.to_string().as_bytes())?;
     let glb = write_glb_bytes(&doc.model).map_err(|e| e.to_string())?;
-    fs::write(tmp.join("model.glb"), glb).map_err(io)?;
+    write_synced(&dir.join(MODEL_FILE), &glb)?;
     for (i, set) in doc.model.texture_sets.iter().enumerate() {
         for kind in MapKind::ALL {
             let png = encode_png(&set.straight_rgba(kind), set.width, set.height, None).map_err(|e| e.to_string())?;
-            fs::write(tmp.join("layers").join(layer_file(i, kind)), png).map_err(io)?;
+            write_synced(&layers.join(layer_file(i, kind)), &png)?;
         }
     }
-    let _ = fs::remove_dir_all(&dir);
-    fs::rename(&tmp, &dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let (w, h, rgba) = match doc.model.texture_sets.first() {
-        Some(s) => (s.width, s.height, s.straight_rgba(MapKind::Colour)),
-        None => (1, 1, vec![128, 128, 128, 255]),
-    };
-    lib.write_model_meta(&doc.id, &doc.title, w, h, &rgba)?;
-    lib.get(&doc.id).ok_or_else(|| "saved document is missing".to_owned())
+    sync_dir(&layers);
+    sync_dir(dir);
+    Ok(())
+}
+
+/// Write `bytes` to a new file at `path` and flush it to disk.
+fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let written = write_file(path).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    written.map_err(|e| format!("{}: {}", path.display(), friendly(&e)))
+}
+
+/// Swap the checked folder `tmp` in as the document `id`. The old folder is renamed to its
+/// backup name first and removed only once the new one has been checked in place; if any step
+/// fails it is put back. A crash part-way leaves the backup, which [`recover_model_dir`] settles.
+fn replace_model_dir(lib: &Library, id: &str, tmp: &Path) -> Result<(), String> {
+    let (dir, bak) = (lib.model_dir(id), lib.model_bak(id));
+    let had_old = dir.exists();
+    if had_old {
+        let _ = fs::remove_dir_all(&bak);
+        if let Err(e) = fs::rename(&dir, &bak) {
+            let _ = fs::remove_dir_all(tmp);
+            return Err(format!("{}: {}", bak.display(), friendly(&e)));
+        }
+    }
+    if let Err(e) = fs::rename(tmp, &dir) {
+        if had_old {
+            let _ = fs::rename(&bak, &dir);
+        }
+        let _ = fs::remove_dir_all(tmp);
+        sync_dir(lib.root());
+        return Err(format!("{}: {}", dir.display(), friendly(&e)));
+    }
+    sync_dir(lib.root());
+    match verify_model_dir(&dir).and_then(|()| check_fault()) {
+        Ok(()) => {
+            if had_old {
+                let _ = fs::remove_dir_all(&bak);
+                sync_dir(lib.root());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            put_back(lib, id);
+            Err(e)
+        }
+    }
+}
+
+/// Put the backup of `id` back in place of its folder. The folder is first moved aside, so a
+/// crash part-way never leaves a half-deleted folder under the document's name.
+fn put_back(lib: &Library, id: &str) {
+    let (dir, bak, aside) = (lib.model_dir(id), lib.model_bak(id), lib.model_tmp(id));
+    let _ = fs::remove_dir_all(&aside);
+    if dir.exists() && fs::rename(&dir, &aside).is_err() {
+        return;
+    }
+    if bak.exists() {
+        let _ = fs::rename(&bak, &dir);
+    }
+    sync_dir(lib.root());
+    let _ = fs::remove_dir_all(&aside);
+}
+
+/// Settle a backup left by an interrupted save of `id`. If the document folder checks out, the
+/// backup is the older copy and is removed; otherwise the backup is put back.
+pub(crate) fn recover_model_dir(lib: &Library, id: &str) {
+    let bak = lib.model_bak(id);
+    if !bak.is_dir() {
+        return;
+    }
+    if verify_model_dir(&lib.model_dir(id)).is_ok() {
+        let _ = fs::remove_dir_all(&bak);
+        sync_dir(lib.root());
+    } else {
+        put_back(lib, id);
+    }
+}
+
+/// Check that a document folder is complete: `document.json` parses as a 3D document, the GLB
+/// header is whole, and every layer PNG it names starts with a PNG signature.
+fn verify_model_dir(dir: &Path) -> Result<(), String> {
+    let bad = |what: &str| format!("{}: the saved 3D document {what}", dir.display());
+    let text = fs::read_to_string(dir.join(DOCUMENT_FILE)).map_err(|e| bad(&format!("has no readable {DOCUMENT_FILE} ({e})")))?;
+    let meta: Value = serde_json::from_str(&text).map_err(|_| bad(&format!("has a damaged {DOCUMENT_FILE}")))?;
+    if meta["format"].as_str() != Some(FORMAT_NAME) {
+        return Err(bad("is not a 3D document"));
+    }
+    let (head, len) = read_head(&dir.join(MODEL_FILE), 12).map_err(|_| bad(&format!("has no readable {MODEL_FILE}")))?;
+    let declared = head.get(8..12).map(|b| u64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+    if !head.starts_with(b"glTF") || declared != Some(len) {
+        return Err(bad(&format!("has a damaged {MODEL_FILE}")));
+    }
+    let sets = meta["texture_sets"].as_array().map_or(0, Vec::len);
+    for i in 0..sets {
+        for kind in MapKind::ALL {
+            let (head, _) = read_head(&dir.join("layers").join(layer_file(i, kind)), 8).map_err(|_| bad("is missing a layer"))?;
+            if head != b"\x89PNG\r\n\x1a\n" {
+                return Err(bad("has a damaged layer"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The first `n` bytes of a file (fewer if it is shorter) and its length.
+fn read_head(path: &Path, n: usize) -> std::io::Result<(Vec<u8>, u64)> {
+    use std::io::Read;
+    let file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut head = Vec::with_capacity(n);
+    file.take(n as u64).read_to_end(&mut head)?;
+    Ok((head, len))
 }
 
 /// Read a 3D document folder back. The geometry comes from the GLB. Each texture set's maps come
 /// from its layer PNGs when the sizes agree.
+/// A backup left by an interrupted save is settled first (see [`recover_model_dir`]).
 pub fn load_model_doc(lib: &Library, id: &str) -> Result<ModelDoc, String> {
+    recover_model_dir(lib, id);
     let dir = lib.model_dir(id);
     let text = fs::read_to_string(dir.join(DOCUMENT_FILE)).map_err(|e| format!("{}: {e}", dir.display()))?;
     let meta: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
@@ -372,7 +508,7 @@ pub fn load_model_doc(lib: &Library, id: &str) -> Result<ModelDoc, String> {
         return Err("not a 3D document".into());
     }
     let title = meta["title"].as_str().unwrap_or("Untitled").to_owned();
-    let glb = fs::read(dir.join("model.glb")).map_err(|e| format!("model.glb: {e}"))?;
+    let glb = fs::read(dir.join(MODEL_FILE)).map_err(|e| format!("{MODEL_FILE}: {e}"))?;
     let mut model = load_gltf_slice(&glb, &ImportOptions::default()).map_err(|e| e.to_string())?.model;
     let saved = meta["texture_sets"].as_array().cloned().unwrap_or_default();
     if saved.len() != model.texture_sets.len() {
@@ -786,62 +922,66 @@ impl EskizApp {
     }
 
     /// Export the model as a GLB, in the background.
-    pub(crate) fn start_glb_export(&mut self, path: PathBuf) {
+    pub(crate) fn start_glb_export(&mut self, path: PathBuf, delivery: crate::deliver::Delivery) {
         let Some(three) = self.three_d.as_mut() else { return };
         let model = three.doc.model.clone();
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new().name("eskiz-3d-export".into()).spawn(move || {
-            let result = export_glb(&model, &path).map(|()| format!("GLB to {}", path.display()));
+            let result = export_glb(&model, &path).map(|()| (format!("GLB to {}", path.display()), path));
             let _ = tx.send(result.map_err(|e| e.to_string()));
         });
         if spawned.is_ok() {
-            three.export = Some(rx);
+            three.export = Some(ModelExport { rx, delivery });
         }
     }
 
     /// Export the model as a USDZ package, in the background.
-    pub(crate) fn start_usdz_export(&mut self, path: PathBuf) {
+    pub(crate) fn start_usdz_export(&mut self, path: PathBuf, delivery: crate::deliver::Delivery) {
         let Some(three) = self.three_d.as_mut() else { return };
         let model = three.doc.model.clone();
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new().name("eskiz-3d-export".into()).spawn(move || {
-            let result = export_usdz(&model, &path).map(|()| format!("USDZ to {}", path.display()));
+            let result = export_usdz(&model, &path).map(|()| (format!("USDZ to {}", path.display()), path));
             let _ = tx.send(result.map_err(|e| e.to_string()));
         });
         if spawned.is_ok() {
-            three.export = Some(rx);
+            three.export = Some(ModelExport { rx, delivery });
         }
     }
 
     /// Export one PNG per map per texture set into `dir`, in the background.
-    pub(crate) fn start_texture_export(&mut self, dir: PathBuf) {
+    pub(crate) fn start_texture_export(&mut self, dir: PathBuf, delivery: crate::deliver::Delivery) {
         let Some(three) = self.three_d.as_mut() else { return };
         let model = three.doc.model.clone();
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new().name("eskiz-3d-export".into()).spawn(move || {
             let result = export_map_pngs(&model, &dir, Some(EXPORT_DPI))
-                .map(|paths| format!("{} texture PNGs to {}", paths.len(), dir.display()))
+                .map(|paths| (format!("{} texture PNGs to {}", paths.len(), dir.display()), dir))
                 .map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
         if spawned.is_ok() {
-            three.export = Some(rx);
+            three.export = Some(ModelExport { rx, delivery });
         }
     }
 
     /// Report a finished export as a toast.
     fn poll_three_d_export(&mut self) {
         let Some(three) = self.three_d.as_mut() else { return };
-        let Some(rx) = three.export.as_ref() else { return };
-        let message = match rx.try_recv() {
-            Ok(Ok(done)) => Some(format!("Exported {done}")),
-            Ok(Err(e)) => Some(format!("Export failed: {e}")),
+        let Some(job) = three.export.as_ref() else { return };
+        let delivery = job.delivery;
+        let message = match job.rx.try_recv() {
+            Ok(Ok((done, path))) => Some(Ok((format!("Exported {done}"), path))),
+            Ok(Err(e)) => Some(Err(format!("Export failed: {e}"))),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some("Export failed.".to_owned()),
+            Err(TryRecvError::Disconnected) => Some(Err("Export failed.".to_owned())),
         };
-        if let Some(text) = message {
+        if let Some(result) = message {
             three.export = None;
-            self.show_toast(text, 3.5);
+            match result {
+                Ok((text, path)) => self.deliver(&path, delivery, text, 3.5),
+                Err(text) => self.show_toast(text, 3.5),
+            }
         }
     }
 

@@ -89,7 +89,7 @@ impl EskizApp {
     /// Prefs, colours and brush choice into eframe's storage.
     pub(crate) fn persist_prefs(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(PREF_KEY, self.prefs.encode());
-        crate::renderer::write_compat_pref(self.prefs.compat_graphics);
+        crate::renderer::write_graphics_pref(self.prefs.graphics);
         self.colour_store.current = self.colour;
         storage.set_string(COLOUR_KEY, self.colour_store.encode());
         storage.set_string(BRUSH_KEY, self.brush_choice_text());

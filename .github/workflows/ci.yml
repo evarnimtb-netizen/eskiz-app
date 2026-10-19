@@ -36,7 +36,7 @@ jobs:
       - name: Rust toolchain
         shell: bash
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Saving several GB of target/ from pull requests is slow and can fill the runner disk.
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -63,8 +63,9 @@ jobs:
         shell: bash
         run: ./target/release/eskiz.exe --selftest
 
-  licenses:
-    name: cargo deny (licenses)
+  deny:
+    # Advisories (RustSec), bans, sources and licenses, as configured in deny.toml.
+    name: cargo deny
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -76,5 +77,5 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-deny@0.19.0
-      - name: Check licenses
-        run: cargo deny check licenses
+      - name: cargo deny check
+        run: cargo deny --locked check

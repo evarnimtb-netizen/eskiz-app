@@ -8,3 +8,5 @@ publish = false
 readme = "README.md"
 
 [dependencies]
+# `Rgb`, `Rgb8` and the colour spaces live in the leaf crate; this crate re-exports them.
+eskiz-types = { path = "../eskiz-types" }

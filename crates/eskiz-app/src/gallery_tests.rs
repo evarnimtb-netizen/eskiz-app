@@ -630,3 +630,34 @@ fn gallery_share_without_a_dialog_falls_back_to_the_default_folder() {
     assert!(h.app.gal.share_target.is_none(), "the export was started");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn gallery_share_on_android_skips_the_folder_and_opens_the_share_sheet() {
+    use crate::file_access::{FileAccess, MockFileAccess, Picked};
+    let (lib, dir) = library_with("share-sheet", 1);
+    let mut h = gallery_app(&lib, false);
+    let mock = std::sync::Arc::new(MockFileAccess::new());
+    mock.set_staged(true);
+    mock.set_share_root(dir.join("share-cache"));
+    // A scripted pick would be a mistake: none may be asked for.
+    mock.push(Picked::Path(dir.join("never")));
+    let files: std::sync::Arc<dyn FileAccess> = mock.clone();
+    h.app.files = files;
+    let id = h.app.gal.entries[0].id.clone();
+    let ctx = h.ctx.clone();
+    h.app.apply_action(&ctx, Action::Share(id));
+    h.settle_storage();
+    for _ in 0..150 {
+        if !mock.shares().is_empty() {
+            break;
+        }
+        h.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(mock.requests().is_empty(), "no folder pick on Android");
+    let (files, mime) = mock.shares().pop().expect("the share sheet was opened");
+    assert_eq!(mime, "image/png");
+    assert_eq!(files.len(), 1);
+    assert!(files[0].starts_with(dir.join("share-cache")) && files[0].is_file(), "{files:?}");
+    let _ = fs::remove_dir_all(&dir);
+}

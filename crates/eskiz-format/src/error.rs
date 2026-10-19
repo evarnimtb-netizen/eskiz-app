@@ -27,6 +27,10 @@ pub enum Error {
     /// A document or archive to be written is inconsistent (wrong pixel count, bad blend mode).
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// The file exceeds one of the safety limits in [`crate::limits`] (too large, too many
+    /// entries, nested too deeply).
+    #[error("file is too large or too complex to open: {0}")]
+    Limit(String),
     /// The PNG encoder failed.
     #[error("encoding error: {0}")]
     Encode(String),

@@ -464,15 +464,20 @@ impl EskizApp {
             ClipAction::Copy => match copy_clip(&self.session, self.active) {
                 Some(clip) => {
                     self.sel.clip = Some(clip);
+                    self.clip_to_system();
                     self.show_toast("Copied", 1.0);
                 }
                 None => self.show_toast("Nothing to copy.", 1.5),
             },
             ClipAction::CopyAll => {
                 self.sel.clip = Some(copy_composite(&self.session));
+                self.clip_to_system();
                 self.show_toast("Copied all", 1.0);
             }
             ClipAction::Cut => self.cut_selection_pixels(),
+            // An image another app copied wins over Eskiz's own clip (the system clipboard no
+            // longer holds Eskiz's copy then). Desktop has no system clipboard: always the own clip.
+            ClipAction::Paste if self.start_foreign_paste() => {}
             ClipAction::Paste => match self.sel.clip.clone() {
                 Some(clip) => {
                     if let Some(id) = self.paste_clip(&clip, "Paste") {
@@ -507,6 +512,7 @@ impl EskizApp {
             Some(edit) => {
                 self.apply_refresh(edit.refresh);
                 self.sel.clip = Some(clip);
+                self.clip_to_system();
             }
             None => self.show_toast("The layer cannot be edited.", 1.5),
         }

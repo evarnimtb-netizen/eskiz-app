@@ -15,8 +15,8 @@ use crate::blend::BlendMode;
 use crate::animation::AnimationSettings;
 use crate::canvas::Layer;
 use crate::pixel::Depth;
-use eskiz_guides::ColourSpace;
-use eskiz_text::TextLayer;
+use eskiz_types::ColourSpace;
+use eskiz_types::text::TextLayer;
 
 /// Properties shared by layers and groups.
 ///

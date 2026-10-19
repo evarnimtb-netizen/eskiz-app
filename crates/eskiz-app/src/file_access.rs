@@ -12,6 +12,10 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
+use crate::animation_ui::AnimFormat;
+use crate::deliver::{Delivery, ExportKind};
+use crate::export::ExportFormat;
+
 /// What kind of dialog to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PickKind {
@@ -51,6 +55,13 @@ pub enum PickPurpose {
     GalleryImport,
     /// The folder a gallery item is exported into.
     GalleryShare,
+    /// Android: where one still export is saved. The answer is a staging path; `commit` copies the
+    /// finished file to the place the user chose.
+    SaveExport(ExportFormat),
+    /// Android: the same for an animation export.
+    SaveAnim(AnimFormat),
+    /// Android: choose (or change) the folder exports are saved into. The answer is its name.
+    ExportTree,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,9 +82,42 @@ pub enum Picked {
     Unavailable(String),
 }
 
+/// What happened to an export after it was written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Delivered {
+    /// The file is where the user asked for it already (desktop).
+    InPlace,
+    /// It was copied to the chosen place; `name` is the name the provider reports.
+    Saved { name: String },
+    Failed(String),
+}
+
+/// Message when the platform has no share sheet.
+pub const NO_SHARE: &str = "Sharing is not available here. Save the file instead.";
+
 pub trait FileAccess: Send + Sync {
     /// Ask for a path. Never blocks the UI thread; the result arrives on the channel.
     fn pick(&self, req: PickRequest) -> Receiver<Picked>;
+    /// After an export wrote `written`: deliver it to where the pick pointed. Desktop: nothing to do.
+    fn commit(&self, _written: &Path) -> Receiver<Delivered> {
+        ready_delivered(Delivered::InPlace)
+    }
+    /// Hand finished files to the system share sheet. Desktop: unavailable.
+    fn share(&self, _files: &[PathBuf], _mime: &str) -> Result<(), String> {
+        Err(NO_SHARE.into())
+    }
+    /// A new path in the share cache for a file called `name` (Android only).
+    fn share_path(&self, _name: &str) -> Option<PathBuf> {
+        None
+    }
+    /// Whether picks give staging paths (SAF) and the Share tab should show the Android layout.
+    fn staged(&self) -> bool {
+        false
+    }
+    /// The name of the folder exports are saved into, while its permission is still held.
+    fn export_folder(&self) -> Option<String> {
+        None
+    }
 }
 
 const PICTURES: FileFilter = FileFilter { name: "Pictures", extensions: &["png", "jpg", "jpeg", "webp"] };
@@ -99,7 +143,12 @@ pub fn filters_for(purpose: PickPurpose) -> Vec<FileFilter> {
         PickPurpose::PaletteImport | PickPurpose::PaletteExport => vec![PALETTES],
         PickPurpose::Model3d => vec![GLB],
         PickPurpose::Usdz => vec![USDZ],
-        PickPurpose::ExportBase | PickPurpose::ExportFolder | PickPurpose::GalleryShare => Vec::new(),
+        PickPurpose::ExportBase
+        | PickPurpose::ExportFolder
+        | PickPurpose::GalleryShare
+        | PickPurpose::ExportTree
+        | PickPurpose::SaveExport(_)
+        | PickPurpose::SaveAnim(_) => Vec::new(),
     }
 }
 
@@ -108,7 +157,13 @@ impl PickRequest {
     /// save dialog and `start_dir` is where the dialog opens.
     pub fn for_purpose(purpose: PickPurpose, suggested: Option<String>, start_dir: Option<PathBuf>) -> Self {
         let kind = match purpose {
-            PickPurpose::ExportFolder | PickPurpose::GalleryShare => PickKind::Folder,
+            PickPurpose::ExportFolder | PickPurpose::GalleryShare | PickPurpose::ExportTree => PickKind::Folder,
+            PickPurpose::SaveExport(f) => PickKind::SaveFile {
+                suggested: suggested.unwrap_or_else(|| format!("eskiz_export.{}", f.extension())),
+            },
+            PickPurpose::SaveAnim(f) => PickKind::SaveFile {
+                suggested: suggested.unwrap_or_else(|| format!("eskiz_export.{}", f.extension())),
+            },
             PickPurpose::PaletteExport => PickKind::SaveFile { suggested: suggested.unwrap_or_else(|| "palette.swatches".into()) },
             PickPurpose::ExportBase => PickKind::SaveFile { suggested: suggested.unwrap_or_else(|| "eskiz_export".into()) },
             PickPurpose::Model3d => PickKind::SaveFile { suggested: suggested.unwrap_or_else(|| "model.glb".into()) },
@@ -134,9 +189,16 @@ pub fn strip_extension(path: &Path) -> PathBuf {
 }
 
 /// A channel that already holds `picked`.
-fn ready(picked: Picked) -> Receiver<Picked> {
+pub(crate) fn ready(picked: Picked) -> Receiver<Picked> {
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = tx.send(picked);
+    rx
+}
+
+/// A channel that already holds `delivered`.
+pub(crate) fn ready_delivered(delivered: Delivered) -> Receiver<Delivered> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(delivered);
     rx
 }
 
@@ -232,22 +294,38 @@ fn block_on<T>(fut: impl std::future::Future<Output = T>) -> T {
 /// The backend the app starts with: `rfd` where compiled in, else [`NoFileAccess`]. Unit tests
 /// always get [`NoFileAccess`] so that no test can open a real dialog.
 pub fn default_file_access() -> std::sync::Arc<dyn FileAccess> {
-    #[cfg(all(feature = "native-dialogs", not(test)))]
+    #[cfg(all(target_os = "android", not(test)))]
+    {
+        std::sync::Arc::new(crate::android_bridge::SafFileAccess::new())
+    }
+    #[cfg(all(feature = "native-dialogs", not(test), not(target_os = "android")))]
     {
         std::sync::Arc::new(RfdFileAccess::new())
     }
-    #[cfg(not(all(feature = "native-dialogs", not(test))))]
+    #[cfg(not(any(
+        all(target_os = "android", not(test)),
+        all(feature = "native-dialogs", not(test), not(target_os = "android"))
+    )))]
     {
         std::sync::Arc::new(NoFileAccess)
     }
 }
 
 /// Scripted picks for tests and the self-test: each `pick` pops the next scripted answer (or
-/// answers `Picked::None` when the script is empty) and records the request.
+/// answers `Picked::None` when the script is empty) and records the request. It also records
+/// `commit` and `share` calls and scripts their answers, so the Android flows run on the host.
 #[derive(Default)]
 pub struct MockFileAccess {
     script: std::sync::Mutex<std::collections::VecDeque<Picked>>,
     requests: std::sync::Mutex<Vec<PickRequest>>,
+    staged: std::sync::atomic::AtomicBool,
+    folder: std::sync::Mutex<Option<String>>,
+    commits: std::sync::Mutex<Vec<PathBuf>>,
+    commit_script: std::sync::Mutex<std::collections::VecDeque<Delivered>>,
+    shares: std::sync::Mutex<Vec<(Vec<PathBuf>, String)>>,
+    share_error: std::sync::Mutex<Option<String>>,
+    share_root: std::sync::Mutex<Option<PathBuf>>,
+    share_count: std::sync::atomic::AtomicU64,
 }
 
 impl MockFileAccess {
@@ -269,12 +347,79 @@ impl MockFileAccess {
     pub fn requests(&self) -> Vec<PickRequest> {
         self.requests.lock().expect("mock requests").clone()
     }
+
+    /// Behave like the Android backend: picks give staging paths, the Share tab shows the Android layout.
+    pub fn set_staged(&self, on: bool) {
+        self.staged.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The export folder name to report (`None`: no folder chosen).
+    pub fn set_folder(&self, name: Option<&str>) {
+        *self.folder.lock().expect("mock folder") = name.map(str::to_owned);
+    }
+
+    /// The next `commit` answers `answer` (the default is `Saved` with the file's name).
+    pub fn push_commit(&self, answer: Delivered) {
+        self.commit_script.lock().expect("mock commits").push_back(answer);
+    }
+
+    /// Every path handed to `commit`.
+    pub fn commits(&self) -> Vec<PathBuf> {
+        self.commits.lock().expect("mock commits").clone()
+    }
+
+    /// Every `share` call: the files and the MIME type.
+    pub fn shares(&self) -> Vec<(Vec<PathBuf>, String)> {
+        self.shares.lock().expect("mock shares").clone()
+    }
+
+    /// Make `share` fail with `error`.
+    pub fn fail_share(&self, error: &str) {
+        *self.share_error.lock().expect("mock share error") = Some(error.to_owned());
+    }
+
+    /// Where `share_path` hands out files (a test folder).
+    pub fn set_share_root(&self, root: PathBuf) {
+        *self.share_root.lock().expect("mock share root") = Some(root);
+    }
 }
 
 impl FileAccess for MockFileAccess {
     fn pick(&self, req: PickRequest) -> Receiver<Picked> {
         self.requests.lock().expect("mock requests").push(req);
         ready(self.script.lock().expect("mock script").pop_front().unwrap_or(Picked::None))
+    }
+
+    fn commit(&self, written: &Path) -> Receiver<Delivered> {
+        self.commits.lock().expect("mock commits").push(written.to_path_buf());
+        let answer = self.commit_script.lock().expect("mock commits").pop_front().unwrap_or_else(|| Delivered::Saved {
+            name: written.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        });
+        ready_delivered(answer)
+    }
+
+    fn share(&self, files: &[PathBuf], mime: &str) -> Result<(), String> {
+        self.shares.lock().expect("mock shares").push((files.to_vec(), mime.to_owned()));
+        match self.share_error.lock().expect("mock share error").clone() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    fn share_path(&self, name: &str) -> Option<PathBuf> {
+        let root = self.share_root.lock().expect("mock share root").clone()?;
+        let n = self.share_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = root.join(n.to_string());
+        let _ = std::fs::create_dir_all(&dir);
+        Some(dir.join(name))
+    }
+
+    fn staged(&self) -> bool {
+        self.staged.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn export_folder(&self) -> Option<String> {
+        self.folder.lock().expect("mock folder").clone()
     }
 }
 
@@ -376,32 +521,46 @@ impl crate::app::EskizApp {
             }
             PickPurpose::PaletteExport => {
                 self.guides.palette_path = shown;
-                self.palette_export();
+                self.palette_export_with(self.pick_delivery());
             }
             PickPurpose::ExportBase => {
                 self.export_path = strip_extension(&path).display().to_string();
                 self.show_toast("Export location set. Choose a format below.", 3.0);
             }
             PickPurpose::ExportFolder => {
+                if self.files.staged() {
+                    // Android: `path` is a staging folder; the export goes into a subfolder of it.
+                    let kind = if self.three_d.is_some() { ExportKind::Textures } else { ExportKind::Still(ExportFormat::Layers) };
+                    let (name, _) = kind.file_name(&self.export_title());
+                    self.run_export(ctx, kind, path.join(name), Delivery::Commit);
+                    return;
+                }
                 self.export_path = shown;
                 if self.three_d.is_some() {
-                    self.start_texture_export(path);
+                    self.start_texture_export(path, Delivery::Local);
                 } else {
                     self.show_toast("Export folder set. Choose a format below.", 3.0);
                 }
             }
             PickPurpose::Model3d => {
-                self.export_path = strip_extension(&path).display().to_string();
+                if !self.files.staged() {
+                    self.export_path = strip_extension(&path).display().to_string();
+                }
                 if self.three_d.is_some() {
-                    self.start_glb_export(path.with_extension("glb"));
+                    self.start_glb_export(path.with_extension("glb"), self.pick_delivery());
                 }
             }
             PickPurpose::Usdz => {
-                self.export_path = strip_extension(&path).display().to_string();
+                if !self.files.staged() {
+                    self.export_path = strip_extension(&path).display().to_string();
+                }
                 if self.three_d.is_some() {
-                    self.start_usdz_export(path.with_extension("usdz"));
+                    self.start_usdz_export(path.with_extension("usdz"), self.pick_delivery());
                 }
             }
+            PickPurpose::SaveExport(format) => self.start_export_to(ctx, format, path, Delivery::Commit),
+            PickPurpose::SaveAnim(format) => self.start_anim_export_to(ctx, format, path, Delivery::Commit),
+            PickPurpose::ExportTree => self.show_toast(format!("Exports are saved to {shown}"), 3.0),
             PickPurpose::GalleryImport => self.import_into_gallery(ctx, vec![path]),
             PickPurpose::GalleryShare => self.gallery_share_to(Some(path)),
         }
@@ -412,7 +571,7 @@ impl crate::app::EskizApp {
 mod tests {
     use super::*;
 
-    const ALL: [PickPurpose; 13] = [
+    const ALL: [PickPurpose; 14] = [
         PickPurpose::OpenDocument,
         PickPurpose::ImportImage,
         PickPurpose::ImportFont,
@@ -426,6 +585,7 @@ mod tests {
         PickPurpose::Usdz,
         PickPurpose::GalleryImport,
         PickPurpose::GalleryShare,
+        PickPurpose::ExportTree,
     ];
 
     fn exts(p: PickPurpose) -> Vec<&'static str> {
@@ -447,7 +607,7 @@ mod tests {
         for e in ["png", "jpg", "webp", "psd", "procreate", "glb", "gltf", "obj", "usdz", "usda", "usdc"] {
             assert!(import.contains(&e), "import filter lacks {e}");
         }
-        for p in [PickPurpose::ExportBase, PickPurpose::ExportFolder, PickPurpose::GalleryShare] {
+        for p in [PickPurpose::ExportBase, PickPurpose::ExportFolder, PickPurpose::GalleryShare, PickPurpose::ExportTree] {
             assert!(filters_for(p).is_empty());
         }
     }
@@ -466,7 +626,7 @@ mod tests {
         for p in ALL {
             let kind = PickRequest::for_purpose(p, None, None).kind;
             let want_save = matches!(p, PickPurpose::PaletteExport | PickPurpose::ExportBase | PickPurpose::Model3d | PickPurpose::Usdz);
-            let want_folder = matches!(p, PickPurpose::ExportFolder | PickPurpose::GalleryShare);
+            let want_folder = matches!(p, PickPurpose::ExportFolder | PickPurpose::GalleryShare | PickPurpose::ExportTree);
             match kind {
                 PickKind::SaveFile { .. } => assert!(want_save, "{p:?}"),
                 PickKind::Folder => assert!(want_folder, "{p:?}"),

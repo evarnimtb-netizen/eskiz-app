@@ -49,7 +49,7 @@ Why 6 before 7: the CPU filters are the ground truth the GPU shaders were tested
 | Pixel origin | Top-left, `y` grows down. Pixel `(x, y)` covers `[x, x+1) x [y, y+1)`, centre `(x+0.5, y+0.5)`. Rows are stored top row first. |
 | Layer pixels | **Premultiplied** RGBA, 4 channels, row-major, no padding. `eskiz-core` `Layer`, `eskiz-text` `Raster`, `eskiz-media` `Frame`, `eskiz-format` `LayerSpec.pixels`, `PsdLayer.pixels`, `export::Raster`, `eskiz-gpu` layer tiles and the compositor output, `eskiz-3d` texture maps. |
 | Bytes to float | `v = byte / 255`. Float to byte is `round(clamp(v, 0, 1) * 255)`. `eskiz-core::compose::to_u8`, `eskiz-filters::Image::to_rgba8_premul` and the GPU stores all follow this, so a CPU-GPU round trip is bit-stable for 8-bit data. |
-| Colour space | sRGB-encoded values throughout; blending is done on the encoded values (as usual for this format). `eskiz-guides::colour_space` converts to Display P3. `eskiz-3d` shades in linear light and converts at the edges. |
+| Colour space | sRGB-encoded values throughout; blending is done on the encoded values (as usual for this format). `eskiz-types::colour_space` (re-exported as `eskiz-guides::colour_space`) converts to Display P3. `eskiz-3d` shades in linear light and converts at the edges. |
 | Layer order | Stacks are **bottom to top** in `eskiz-core::Canvas`, `eskiz-gpu::Scene`, `eskiz-anim::StackSnapshot` and `PsdDocument.root`. |
 | Opacity | 0 to 1. `f64` in core, format and anim; `f32` in gpu, psd and 3d. |
 | Clipping | "Clipped" means clipped to the nearest non-clipped item directly below, in the same parent. Same meaning in format, psd, gpu and anim. |
@@ -63,7 +63,7 @@ Why 6 before 7: the CPU filters are the ground truth the GPU shaders were tested
 | `eskiz-filters::Image` | Premultiplied `f32`, one flat `Vec<f32>` (`width * height * 4`). | `from_rgba8_premul` / `to_rgba8_premul`. |
 | Palettes (`eskiz-format::palettes`) and `DocumentBuilder.background_color` | Straight RGBA `f32`. | Convert at the edge. |
 | `eskiz-text::Color` | Straight RGBA `u8`. | Converted internally; the `Raster` it produces is premultiplied. |
-| `eskiz-guides::Rgb` | Straight sRGB `f64`. `Rgb8` is `u8`. | `eskiz-core` stroke colours are `[f64; 3]` straight sRGB, so they map 1:1. |
+| `eskiz-guides::Rgb` (defined in `eskiz-types`) | Straight sRGB `f64`. `Rgb8` is `u8`. | `eskiz-core` stroke colours are `[f64; 3]` straight sRGB, so they map 1:1. |
 | Angles | `eskiz-core` (tilt, azimuth, roll) and `eskiz-guides` are radians. `eskiz-select` (`rotate_deg`, `snap_angle`) is degrees. `eskiz-3d` camera is radians. | Convert at the call. |
 | Time | `eskiz-core::Sample.t` is seconds (`f64`). `eskiz-media` uses `std::time::Duration`. `eskiz-anim::Playback::advance` takes `dt_seconds: f64`. | |
 | Integer widths | `usize` in core, select, filters, text layout; `u32` in format, media, gpu, text `Raster`. | Plain `as` casts; sizes are bounded by 16k anyway. |
@@ -178,7 +178,7 @@ The painting engine and the app's current document types. Not part of the reques
 
 **Provides.** Attributed text layers: fonts, shaping (cosmic-text), the documented line, leading, alignment, justification and vertical rules, outline and underline, rasterisation (swash), and the saved-attribute key mapping.
 
-**Entry points.** `FontLibrary::new()` (system fonts), `import_file` / `load_dir` for user fonts, `resolve(family)` for the missing-font fallback. `TextLayer::new(text, attrs, box_width)`, `set_attrs(range, |a| ..)`, `layout(&mut fonts)`, `rasterise(&mut fonts)` or `rasterise_at_scale(&mut fonts, s)`. `storage::attrs_to_saved` / `apply_saved` for persistence.
+**Entry points.** `FontLibrary::new()` (system fonts), `import_file` / `load_dir` for user fonts, `resolve(family)` for the missing-font fallback. `TextLayer::new(text, attrs, box_width)`, `set_attrs(range, |a| ..)`, `layout(&mut fonts)`, `rasterise(&mut fonts)` or `rasterise_at_scale(&mut fonts, s)`. The data types are defined in `eskiz-types` (`eskiz_types::text`, so `eskiz-core` can hold them without fonts) and re-exported from `eskiz_text::model`; the three font methods are on the trait `eskiz_text::TextLayerExt`, which callers import. `storage::attrs_to_saved` / `apply_saved` for persistence.
 
 **Conversions.** `Raster { origin: (i32, i32), width, height, pixels }` is premultiplied RGBA8 with the document position of its top-left pixel. To rasterise onto a layer: blit with source-over at `origin`, clipped to the layer. There is no `blit` helper; add one to `convert.rs`.
 
@@ -428,7 +428,7 @@ Not changed on purpose (do not "tidy" these without agreement): the different pi
 ## 8. Open decisions and gaps
 
 Needing a decision:
-1. **Renderer. Decided and done (step 7, see 4.8.1).** eframe runs on `wgpu`, with `glow` kept as the `gl-fallback` feature. Still open: the Android build (paused; the `android` feature has not been re-checked with wgpu), web builds, and whether the shipped Linux build should require a Vulkan or GL driver at install time.
+1. **Renderer. Decided and done (step 7, see 4.8.1).** eframe runs on `wgpu`, with `glow` kept as the `gl-fallback` feature. On Android the window uses wgpu on Vulkan only; `gl-fallback` is a `compile_error!` there. The `android` feature builds with `cargo ndk -t arm64-v8a build -p eskiz-app --lib --no-default-features --features android` (A5). Android work resumed on 2026-10-18: A0 to A5 are done, including A4 (system file picker, share sheet, clipboard, Back). The APK stays experimental and is not part of 0.1. Still open: web builds, and whether the shipped Linux build should require a Vulkan or GL driver at install time.
 2. **Group isolation.** Decide before the Layers panel exposes group opacity and blend controls, because `eskiz-gpu` ignores them today.
 3. **Mask channel and tile origin** in `.procreate` files need one real file to settle (section 4.2).
 4. **Where `.brush` becomes `Brush`.** The converter has no home yet; `eskiz-format` has no dependency on `eskiz-core`, and adding one is cheap now but a cycle risk later. A small adapter module in `eskiz-app` avoids the question.

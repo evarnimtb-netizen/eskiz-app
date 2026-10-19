@@ -7,7 +7,7 @@ use eframe::egui::{self, Align, CornerRadius, Layout, Margin, RichText};
 use eskiz_core::ColourSpace;
 
 use crate::app::EskizApp;
-use crate::chrome::{small_label, title_row};
+use crate::chrome::{banner, small_label, title_row};
 use crate::export::{expand_home, ExportFormat};
 use crate::file_access::PickPurpose;
 use crate::icons;
@@ -386,7 +386,57 @@ impl EskizApp {
         }
         let pal = self.pal;
         let ctx = ui.ctx().clone();
+        let staged = self.files.staged();
         small_label(ui, &pal, "SAVE TO");
+        if staged {
+            // Android: no typed path. A switch picks saving or sharing, and a folder line shows where saves go.
+            self.share_mode_switch(ui);
+        } else {
+            self.share_path_block(ui);
+        }
+        let busy = self.share_busy();
+        self.share_options(ui);
+        let base = expand_home(&self.export_path);
+        let title = self.export_title();
+        let mut chosen = None;
+        // A document with frames offers its animation formats (GIF, APNG) first.
+        let frames_first = self.session.doc.animation.frames_enabled;
+        if frames_first {
+            self.share_animation_rows(ui);
+            ui.add_space(6.0);
+            small_label(ui, &pal, "STILL IMAGE");
+        }
+        for format in ExportFormat::ALL {
+            let (icon, name) = share_row(format);
+            let file = if staged {
+                crate::deliver::ExportKind::Still(format).file_name(&title).0
+            } else if format.is_folder() {
+                base.display().to_string()
+            } else {
+                base.with_extension(format.extension()).display().to_string()
+            };
+            if list_row(ui, &pal, icon, name, Some(&file), !busy, Trailing::None).clicked() {
+                chosen = Some(format);
+            }
+        }
+        if !frames_first {
+            self.share_animation_rows(ui);
+        }
+        if let Some(format) = chosen {
+            self.start_export(&ctx, format);
+        }
+        if let Some(format) = self.share.exporting() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(format!("Writing {}...", format.label())).size(12.5).color(pal.text_dim));
+            });
+        }
+        hint(ui, &pal, "Transparent background keeps alpha in PNG, TIFF, WebP and PDF. JPEG is flattened onto the paper color. .procreate and PSD keep every layer. Export runs in the background.");
+    }
+
+    /// The desktop block at the top of the Share tab: the path field and its two pickers.
+    fn share_path_block(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal;
         let mut choose = None;
         let mut path = std::mem::take(&mut self.export_path);
         egui::Frame::new()
@@ -416,41 +466,49 @@ impl EskizApp {
             let name = expand_home(&typed).file_name().map(|n| n.to_string_lossy().into_owned());
             self.request_pick_near(purpose, &typed, name);
         }
-        let busy = self.share_busy();
-        self.share_options(ui);
-        let base = expand_home(&self.export_path);
-        let mut chosen = None;
-        // A document with frames offers its animation formats (GIF, APNG) first.
-        let frames_first = self.session.doc.animation.frames_enabled;
-        if frames_first {
-            self.share_animation_rows(ui);
-            ui.add_space(6.0);
-            small_label(ui, &pal, "STILL IMAGE");
-        }
-        for format in ExportFormat::ALL {
-            let (icon, name) = share_row(format);
-            let file = if format.is_folder() {
-                base.display().to_string()
-            } else {
-                base.with_extension(format.extension()).display().to_string()
-            };
-            if list_row(ui, &pal, icon, name, Some(&file), !busy, Trailing::None).clicked() {
-                chosen = Some(format);
-            }
-        }
-        if !frames_first {
-            self.share_animation_rows(ui);
-        }
-        if let Some(format) = chosen {
-            self.start_export(&ctx, format);
-        }
-        if let Some(format) = self.share.exporting() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new(format!("Writing {}...", format.label())).size(12.5).color(pal.text_dim));
+    }
+
+    /// The Android block at the top of the Share tab: Save to folder | Share, and the folder line.
+    pub(crate) fn share_mode_switch(&mut self, ui: &mut egui::Ui) {
+        use crate::deliver::ShareMode;
+        let pal = self.pal;
+        let mut change = false;
+        egui::Frame::new()
+            .fill(pal.row)
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::same(8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let w = (ui.available_width() - 6.0) / 2.0;
+                    if crate::panels::adjust_extras::segment(ui, &pal, w, "Save to folder", self.share_mode == ShareMode::SaveToFolder) {
+                        self.share_mode = ShareMode::SaveToFolder;
+                    }
+                    if crate::panels::adjust_extras::segment(ui, &pal, w, "Share", self.share_mode == ShareMode::Share) {
+                        self.share_mode = ShareMode::Share;
+                    }
+                });
+                if self.share_mode == ShareMode::SaveToFolder {
+                    let folder = self.files.export_folder();
+                    ui.horizontal(|ui| {
+                        let line = match &folder {
+                            Some(name) => format!("Folder: {name}"),
+                            None => "Folder: not chosen".to_owned(),
+                        };
+                        ui.label(RichText::new(line).size(12.5).color(pal.text_dim));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let text = if folder.is_some() { "Change..." } else { "Choose..." };
+                            if ui.add(egui::Button::new(text).min_size(egui::vec2(90.0, 28.0))).clicked() {
+                                change = true;
+                            }
+                        });
+                    });
+                }
             });
+        if change {
+            self.request_pick(PickPurpose::ExportTree, None, None);
         }
-        hint(ui, &pal, "Transparent background keeps alpha in PNG, TIFF, WebP and PDF. JPEG is flattened onto the paper color. .procreate and PSD keep every layer. Export runs in the background.");
     }
 
     /// The Share sheet's options: scale, DPI, transparency, JPEG quality and PDF pages.
@@ -505,21 +563,35 @@ impl EskizApp {
         let prefs = &mut self.prefs;
         ui.add_space(6.0);
         small_label(ui, &pal, "GRAPHICS");
-        let compat = prefs.compat_graphics;
-        if list_row(
-            ui,
-            &pal,
-            ia::icon_info,
-            "Compatibility graphics (OpenGL)",
-            Some(if compat { "Compatibility, used on the next start" } else { "Automatic, the fastest renderer" }),
-            true,
-            Trailing::Switch(compat),
-        )
-        .clicked()
-        {
-            prefs.compat_graphics = !compat;
-            crate::renderer::write_compat_pref(prefs.compat_graphics);
+        let choices = crate::renderer::choices();
+        if choices.len() > 1 {
+            for mode in choices {
+                let (label, sub) = renderer_row_text(mode);
+                let selected = prefs.graphics == mode;
+                let trailing = if selected { Trailing::Text("Selected") } else { Trailing::None };
+                if list_row(ui, &pal, ia::icon_info, label, sub, true, trailing).clicked() && !selected {
+                    prefs.graphics = mode;
+                    crate::renderer::write_graphics_pref(mode);
+                }
+            }
         }
+        let in_use = self.renderer_in_use.map(|s| s.label());
+        let safe = self.safe_mode.as_ref().map(|m| m.stage.label());
+        match (safe, self.normal_graphics_next) {
+            (_, true) => banner(ui, &pal, "Normal graphics will be used the next time Eskiz starts."),
+            (Some(stage), false) => {
+                let sub = format!("Using {stage} after a problem last time");
+                if list_row(ui, &pal, ia::icon_info, crate::chrome::TRY_NORMAL_GRAPHICS, Some(&sub), true, Trailing::Chevron).clicked() {
+                    self.try_normal_graphics();
+                }
+            }
+            (None, false) => {
+                if let Some(stage) = in_use {
+                    banner(ui, &pal, &format!("In use: {stage}. A new choice applies on the next start."));
+                }
+            }
+        }
+        let prefs = &mut self.prefs;
         ui.add_space(6.0);
         small_label(ui, &pal, "GESTURES");
         for (icon, label, sub, value) in [
@@ -622,5 +694,16 @@ impl EskizApp {
                     }
                 });
         }
+    }
+}
+
+/// Label and note of a Settings > Graphics > Renderer row.
+fn renderer_row_text(mode: crate::renderer::Mode) -> (&'static str, Option<&'static str>) {
+    use crate::renderer::Mode;
+    match mode {
+        Mode::Auto | Mode::Gpu | Mode::Cpu | Mode::Wgpu => ("Automatic", Some("The fastest renderer that works here")),
+        Mode::Gl => ("OpenGL (compatibility)", Some("Slower; works with most drivers")),
+        Mode::Software => ("Software", Some("Slowest; needs no graphics driver")),
+        other => (other.stage().map_or("Automatic", |s| s.label()), None),
     }
 }

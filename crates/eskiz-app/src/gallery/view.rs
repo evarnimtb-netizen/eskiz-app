@@ -832,7 +832,12 @@ impl EskizApp {
                 self.gal.revealed = None;
                 // Ask for a folder; with no dialog available the item goes to the default folder.
                 self.gal.share_target = Some(id);
-                self.request_pick(crate::file_access::PickPurpose::GalleryShare, None, None);
+                if self.files.staged() {
+                    // Android: no folder to choose; the PNG goes straight to the share sheet.
+                    self.gallery_share_sheet();
+                } else {
+                    self.request_pick(crate::file_access::PickPurpose::GalleryShare, None, None);
+                }
             }
             Action::Duplicate(id) => {
                 self.gal.revealed = None;

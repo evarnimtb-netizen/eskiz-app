@@ -1427,9 +1427,11 @@ dependencies = [
  "gif",
  "glam",
  "image",
+ "jni",
  "jpeg-encoder",
  "libloading",
  "log",
+ "ndk-context",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "octotablet",
@@ -1472,8 +1474,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "eskiz-filters",
- "eskiz-guides",
- "eskiz-text",
+ "eskiz-types",
 ]
 
 [[package]]
@@ -1494,6 +1495,7 @@ dependencies = [
  "pdf-writer",
  "plist",
  "png",
+ "proptest",
  "psd",
  "serde_json",
  "thiserror 2.0.21",
@@ -1515,6 +1517,9 @@ dependencies = [
 [[package]]
 name = "eskiz-guides"
 version = "0.1.0"
+dependencies = [
+ "eskiz-types",
+]
 
 [[package]]
 name = "eskiz-media"
@@ -1537,9 +1542,14 @@ name = "eskiz-text"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
+ "eskiz-types",
  "swash",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "eskiz-types"
+version = "0.1.0"
 
 [[package]]
 name = "euclid"
@@ -2244,9 +2254,9 @@ checksum = "a257582fdcde896fd96463bf2d40eefea0580021c0712a0e2b028b60b47a837a"
 
 [[package]]
 name = "inout"
-version = "0.2.3"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8c0d789294fb457b791f7797a04478704788f30b407e5d0b01deaa846572d9f"
+checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
 dependencies = [
  "block-padding",
  "hybrid-array",
@@ -3491,6 +3501,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "proptest"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
+dependencies = [
+ "bitflags 2.13.2",
+ "chacha20",
+ "core_detect",
+ "num-traits",
+ "rand",
+ "rand_xorshift",
+ "regex-syntax",
+ "unarray",
+]
+
+[[package]]
 name = "psd"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3566,6 +3592,15 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_xorshift"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
+dependencies = [
+ "rand_core",
+]
 
 [[package]]
 name = "range-alloc"
@@ -4519,6 +4554,12 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 
 [[package]]
 name = "unicode-bidi"

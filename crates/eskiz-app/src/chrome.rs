@@ -72,6 +72,11 @@ pub(crate) fn title_font(ctx: &egui::Context, pal: &Palette) -> egui::FontId {
     }
 }
 
+/// The safe graphics mode notice (see [`crate::startup::SafeMode`]).
+pub(crate) const SAFE_BANNER_TITLE: &str = "Eskiz started in safe graphics mode after a problem last time.";
+/// The button that leaves safe graphics mode from the next start.
+pub(crate) const TRY_NORMAL_GRAPHICS: &str = "Try normal graphics";
+
 /// A rounded text row used for notes and banners.
 pub(crate) fn banner(ui: &mut egui::Ui, pal: &Palette, text: &str) {
     egui::Frame::new()
@@ -536,8 +541,57 @@ impl EskizApp {
             });
     }
 
+    /// The safe graphics mode notice: non-blocking, under the top bar, with Try normal graphics
+    /// and Dismiss. Returns the height it takes (the toast goes below it).
+    fn safe_banner_ui(&mut self, ctx: &egui::Context) -> f32 {
+        if !self.safe_banner {
+            return 0.0;
+        }
+        let pal = self.pal;
+        let detail = match &self.safe_mode {
+            Some(m) => format!("{} Now using {}.", m.reason.as_deref().unwrap_or(""), m.stage.label()).trim().to_owned(),
+            None => String::new(),
+        };
+        let mut retry = false;
+        let mut dismiss = false;
+        let shown = egui::Area::new(Id::new("safe-graphics-banner"))
+            .order(Order::Foreground)
+            .fade_in(false)
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, BAR_HEIGHT + 10.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(pal.panel)
+                    .corner_radius(CornerRadius::same(crate::theme::tokens(pal.identity).toast_radius))
+                    .stroke(Stroke::new(1.0, pal.hairline))
+                    .inner_margin(Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        let width = (ctx.content_rect().width() - 48.0).clamp(240.0, 560.0);
+                        ui.set_max_width(width);
+                        ui.vertical(|ui| {
+                            ui.add(egui::Label::new(RichText::new(SAFE_BANNER_TITLE).size(14.0).color(pal.text)).wrap());
+                            if !detail.is_empty() {
+                                ui.add(egui::Label::new(RichText::new(&detail).size(12.0).color(pal.text_dim)).wrap());
+                            }
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                let primary = egui::Button::new(RichText::new(TRY_NORMAL_GRAPHICS).size(13.0).color(pal.on_accent)).fill(pal.accent);
+                                retry = ui.add(primary).clicked();
+                                dismiss = ui.add(egui::Button::new(RichText::new("Dismiss").size(13.0).color(pal.text)).fill(pal.row)).clicked();
+                            });
+                        });
+                    });
+            });
+        if retry {
+            self.try_normal_graphics();
+        } else if dismiss {
+            self.safe_banner = false;
+        }
+        shown.response.rect.height() + 8.0
+    }
+
     /// Transient message at the top centre, fading out over its last 0.3 s.
     pub(crate) fn toast_ui(&mut self, ctx: &egui::Context) {
+        let below = self.safe_banner_ui(ctx);
         let Some(toast) = self.toast.clone() else {
             return;
         };
@@ -552,7 +606,7 @@ impl EskizApp {
         let alpha = ((remaining / 0.3).clamp(0.0, 1.0) as f32).min(fade_in);
         egui::Area::new(Id::new("toast"))
             .order(Order::Foreground)
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, BAR_HEIGHT + 14.0))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, BAR_HEIGHT + 14.0 + below))
             .interactable(false)
             .show(ctx, |ui| {
                 ui.set_opacity(alpha);

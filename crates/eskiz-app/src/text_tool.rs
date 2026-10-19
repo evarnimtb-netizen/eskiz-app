@@ -18,7 +18,7 @@ use eskiz_core::canvas::Layer;
 use eskiz_format::{TextRunSpec, TextSpec, TextValue};
 use eskiz_text::model::DEFAULT_SIZE_PT;
 use eskiz_text::storage::{self as text_storage, SavedValue};
-use eskiz_text::{Affine, Attrs, Color, FontLibrary, Layout, Raster, Run, TextLayer};
+use eskiz_text::{Affine, Attrs, Color, FontLibrary, Layout, Raster, Run, TextLayer, TextLayerExt};
 
 use crate::app::{EskizApp, FrameInput};
 use crate::command::{Change, Command, Placement, Refresh};
@@ -29,6 +29,10 @@ pub const ADD_STEP: &str = "Add Text";
 pub const EDIT_STEP: &str = "Edit Text";
 pub const STYLE_STEP: &str = "Text Style";
 pub const WIDTH_STEP: &str = "Text Box Width";
+/// Screen points between the box edge and the centre of the width knob.
+const KNOB_GAP: f32 = 10.0;
+/// A press this close (screen points) to the knob's centre grabs it.
+const KNOB_GRAB: f32 = 8.0;
 pub const RASTERIZE_STEP: &str = "Rasterize Text";
 
 /// Caret and line geometry as fractions of the em size: the ascent above the baseline and the
@@ -692,14 +696,15 @@ impl EskizApp {
             return;
         };
         let layout = layer.layout(self.text.fonts());
-        let t = layer.transform;
-        let handle = self.width_handle(&layer, &layout);
+        let knob = self.width_knob(&layer, &layout);
         // Pointer positions in layer units, worked out before anything changes the document.
         let press = input.press_origin.filter(|_| input.primary_pressed && !press_on_ui).map(|p| (p, self.canvas_to_layer(p)));
         let pointer = input.pointer.map(|p| self.canvas_to_layer(p));
 
         if let Some((p, (lx, ly))) = press {
-            let near_handle = handle.is_some_and(|h| self.layer_to_screen(&t, h[0], h[1]).distance(p) < 12.0);
+            // Only the visible knob, which sits outside the text, starts a width drag; a press on
+            // the glyphs (however short the word) places the caret.
+            let near_handle = knob.is_some_and(|(k, _)| k.distance(p) < KNOB_GRAB);
             let b = layout.bounds.outset(4.0);
             let inside = lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1;
             if near_handle {
@@ -719,8 +724,13 @@ impl EskizApp {
                 match self.text.drag {
                     Drag::Select => self.text.caret = hit_test(&layout, &layer.text, lx, ly),
                     Drag::Width => {
+                        // The knob is drawn beside the box edge; the edge follows the pointer.
+                        let edge = match (knob, input.pointer) {
+                            (Some((_, off)), Some(ptr)) => self.canvas_to_layer(ptr - off).0,
+                            _ => lx,
+                        };
                         let mut next = layer.clone();
-                        next.box_width = lx.max(1.0);
+                        next.box_width = edge.max(1.0);
                         self.text_update(id, WIDTH_STEP, next);
                     }
                     Drag::None => {}
@@ -754,6 +764,20 @@ impl EskizApp {
         };
         let size = layer.runs.first().map_or(DEFAULT_SIZE_PT, |r| r.attrs.size_pt);
         Some([right, -size * 0.3])
+    }
+
+    /// The visible width knob: its screen position and its offset from the box edge. It sits
+    /// `KNOB_GAP` screen points outside the edge, along the layer's x direction, so it never covers
+    /// the last glyph.
+    pub(crate) fn width_knob(&self, layer: &TextLayer, layout: &Layout) -> Option<(Pos2, egui::Vec2)> {
+        let h = self.width_handle(layer, layout)?;
+        let t = layer.transform;
+        let edge = self.layer_to_screen(&t, h[0], h[1]);
+        let a = self.layer_to_screen(&t, 0.0, 0.0);
+        let d = self.layer_to_screen(&t, 1.0, 0.0) - a;
+        let u = if d.length() > 1e-6 { d.normalized() } else { egui::vec2(1.0, 0.0) };
+        let off = u * KNOB_GAP;
+        Some((edge + off, off))
     }
 
     /// Layer units to screen pixels.
@@ -790,8 +814,7 @@ impl EskizApp {
         for i in 0..4 {
             painter.line_segment([pts[i], pts[(i + 1) % 4]], Stroke::new(1.0, accent));
         }
-        if let Some(h) = self.width_handle(&layer, &layout) {
-            let p = self.layer_to_screen(&t, h[0], h[1]);
+        if let Some((p, _)) = self.width_knob(&layer, &layout) {
             let q = self.handle_quad(&t, p, 4.0);
             fill_quad(&painter, q, 1.0, accent);
         }

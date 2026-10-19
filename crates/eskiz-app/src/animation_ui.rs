@@ -108,7 +108,7 @@ pub(crate) struct CanvasKey {
 }
 
 /// The format of an animation export.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AnimFormat {
     Gif,
     Apng,
@@ -163,6 +163,7 @@ pub(crate) struct ExportJob {
     pub done: Arc<AtomicUsize>,
     pub total: Arc<AtomicUsize>,
     pub cancel: Arc<AtomicBool>,
+    pub delivery: crate::deliver::Delivery,
 }
 
 /// Frames state for the open document.
@@ -392,6 +393,20 @@ impl EskizApp {
             self.show_toast("An animation export is already running.", 2.0);
             return;
         }
+        if self.files.staged() {
+            self.begin_staged(ctx, crate::deliver::ExportKind::Anim(format));
+            return;
+        }
+        let path = expand_home(&self.export_path).with_extension(format.extension());
+        self.start_anim_export_to(ctx, format, path, crate::deliver::Delivery::Local);
+    }
+
+    /// Like [`Self::start_anim_export`], writing to `path` and delivering the file as `delivery` says.
+    pub(crate) fn start_anim_export_to(&mut self, ctx: &egui::Context, format: AnimFormat, path: PathBuf, delivery: crate::deliver::Delivery) {
+        if self.anim.export.is_some() {
+            self.show_toast("An animation export is already running.", 2.0);
+            return;
+        }
         self.ensure_frames();
         let Some(cache) = self.anim.cache.as_ref() else {
             self.show_toast("There are no frames to export.", 2.5);
@@ -401,7 +416,6 @@ impl EskizApp {
             self.show_toast("There are no frames to export.", 2.5);
             return;
         }
-        let path = expand_home(&self.export_path).with_extension(format.extension());
         let frames = cache.frames.clone();
         let settings = self.session.doc.animation.clone();
         let opts = self.anim.export_opts;
@@ -426,6 +440,7 @@ impl EskizApp {
             done,
             total,
             cancel,
+            delivery,
         });
     }
 
@@ -437,9 +452,13 @@ impl EskizApp {
         match job.rx.try_recv() {
             Ok(result) => {
                 let label = job.format.label();
+                let delivery = job.delivery;
                 self.anim.export = None;
                 match result {
-                    Ok(path) => self.show_toast(format!("Exported {label} to {}", path.display()), 3.5),
+                    Ok(path) => {
+                        let text = format!("Exported {label} to {}", path.display());
+                        self.deliver(&path, delivery, text, 3.5);
+                    }
                     Err(e) => self.show_toast(format!("Export failed: {e}"), 4.0),
                 }
             }

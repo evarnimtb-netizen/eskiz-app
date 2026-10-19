@@ -74,31 +74,48 @@ impl EskizApp {
     /// The export path field names the file (GLB) or the folder (texture PNGs).
     pub(crate) fn three_d_share_body(&mut self, ui: &mut egui::Ui) {
         let pal = self.pal;
+        let ctx = ui.ctx().clone();
+        let staged = self.files.staged();
         small_label(ui, &pal, "3D EXPORT");
+        if staged {
+            self.share_mode_switch(ui);
+        }
         let base = expand_home(&self.export_path);
         let width = ui.available_width();
         if ui.add_sized([width, 40.0], egui::Button::new("GLB")).clicked() {
-            self.start_glb_export(base.with_extension("glb"));
+            if staged {
+                self.begin_staged(&ctx, crate::deliver::ExportKind::Glb);
+            } else {
+                self.start_glb_export(base.with_extension("glb"), crate::deliver::Delivery::Local);
+            }
         }
-        if ui.add_sized([width, 28.0], egui::Button::new("Choose GLB file...")).clicked() {
+        if !staged && ui.add_sized([width, 28.0], egui::Button::new("Choose GLB file...")).clicked() {
             let typed = self.export_path.clone();
             self.request_pick_near(crate::file_access::PickPurpose::Model3d, &typed, Some("model.glb".into()));
         }
         ui.label(RichText::new("The model with its maps, as one .glb file.").weak());
         ui.add_space(6.0);
         if ui.add_sized([width, 40.0], egui::Button::new("USDZ")).clicked() {
-            self.start_usdz_export(base.with_extension("usdz"));
+            if staged {
+                self.begin_staged(&ctx, crate::deliver::ExportKind::Usdz);
+            } else {
+                self.start_usdz_export(base.with_extension("usdz"), crate::deliver::Delivery::Local);
+            }
         }
-        if ui.add_sized([width, 28.0], egui::Button::new("Choose USDZ file...")).clicked() {
+        if !staged && ui.add_sized([width, 28.0], egui::Button::new("Choose USDZ file...")).clicked() {
             let typed = self.export_path.clone();
             self.request_pick_near(crate::file_access::PickPurpose::Usdz, &typed, Some("model.usdz".into()));
         }
         ui.label(RichText::new("For Apple Quick Look and AR: .usdz with the maps inside it.").weak());
         ui.add_space(6.0);
         if ui.add_sized([width, 40.0], egui::Button::new("Texture PNGs")).clicked() {
-            self.start_texture_export(base);
+            if staged {
+                self.begin_staged(&ctx, crate::deliver::ExportKind::Textures);
+            } else {
+                self.start_texture_export(base, crate::deliver::Delivery::Local);
+            }
         }
-        if ui.add_sized([width, 28.0], egui::Button::new("Choose texture folder...")).clicked() {
+        if !staged && ui.add_sized([width, 28.0], egui::Button::new("Choose texture folder...")).clicked() {
             let typed = self.export_path.clone();
             self.request_pick_near(crate::file_access::PickPurpose::ExportFolder, &typed, None);
         }

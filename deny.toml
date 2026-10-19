@@ -1,4 +1,5 @@
-# cargo-deny: `cargo deny check licenses`.
+# cargo-deny: `cargo deny --locked check` runs all four checks below (advisories, bans, licenses, sources).
+# CI runs it with cargo-deny 0.19.0.
 [graph]
 targets = [
     "x86_64-unknown-linux-gnu",
@@ -7,6 +8,45 @@ targets = [
     "aarch64-linux-android",
 ]
 all-features = true
+
+# RustSec advisory database. Vulnerabilities, unmaintained and unsound crates are errors (the defaults).
+# Every ignore names the advisory, why it does not apply or cannot be fixed yet, and when to revisit it.
+[advisories]
+yanked = "deny"
+ignore = [
+    # zip 8.6.0 comes only from openusd 0.8 (USD import, eskiz-3d `usd` feature). All three advisories are
+    # about extracting to disk (`ZipArchive::extract`, `ZipStreamReader::extract`). openusd only opens
+    # archives with `ZipArchive::new` and reads entries with `by_name` into memory, and never calls
+    # extract (checked in openusd 0.8.0's src/). Eskiz's own zip is 9.0.3, which is fixed. Revisit when
+    # openusd moves to zip >= 9.0 (Dependabot) or Eskiz upgrades openusd.
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 via openusd: SUID bits on extract(); openusd never extracts" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8 via openusd: symlink targets on extract(); openusd never extracts" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8 via openusd: permissions through symlinks on extract(); openusd never extracts" },
+    # Unmaintained, not vulnerable, and no maintained version exists for the current dependents.
+    # Revisit with each egui/cosmic-text upgrade.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser via cosmic-text -> fontdb (eskiz-text); waits on cosmic-text moving to skrifa" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant 5, merged into zbus 6; via accesskit_unix (eframe, Linux a11y); waits on accesskit/atspi moving to zbus 6" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names 4, merged into zbus 6; same path as RUSTSEC-2026-0370" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5, merged into zbus 6; same path as RUSTSEC-2026-0370" },
+]
+
+[bans]
+# A GUI stack this size (wgpu, winit, egui, image codecs) pulls in several versions of some crates
+# (windows-sys, bitflags, syn ...). They cost build time, not correctness, so they are reported, not fatal.
+multiple-versions = "warn"
+# Path dependencies without a version are allowed for unpublished (`publish = false`) workspace crates.
+# eskiz-format is the one workspace crate without `publish = false`, and it depends on eskiz-guides by path
+# only. That is reported, not fatal, until its manifest says `publish = false` or gives the path dependency
+# a version (a crates/ change, left to the crate's owner).
+wildcards = "warn"
+allow-wildcard-paths = true
+
+[sources]
+# Everything comes from crates.io. A git or other-registry dependency must be added here on purpose.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
 
 [licenses]
 confidence-threshold = 0.9

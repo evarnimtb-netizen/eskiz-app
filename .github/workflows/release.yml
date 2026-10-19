@@ -71,7 +71,7 @@ jobs:
         run: |
           rustup toolchain install
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: false
       - name: Universal .app (ad-hoc signed) and DMG
@@ -94,7 +94,7 @@ jobs:
           persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: false
       - name: x86_64 (MSVC) release build, self-test, zip
@@ -121,7 +121,7 @@ jobs:
           persist-credentials: false
       - name: Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: false
       - name: Linux system libraries
@@ -175,7 +175,7 @@ jobs:
         run: |
           rustup toolchain install
           rustup target add aarch64-linux-android
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: false
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -195,7 +195,7 @@ jobs:
         run: |
           version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
           mkdir -p dist/release
-          apk=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          apk=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
           cp "$apk" "dist/release/Eskiz-${version}-android-arm64-experimental.apk"
       - name: Notices are in the APK
         run: tools/check_notices.sh

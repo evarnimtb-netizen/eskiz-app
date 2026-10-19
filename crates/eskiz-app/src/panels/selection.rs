@@ -53,7 +53,7 @@ impl EskizApp {
         let has_selection = self.session.selection().is_active();
         let mut feather = self.sel.feather_px;
         let saved: Vec<(u64, String)> = self.sel.saved.list().iter().map(|s| (s.id, s.name.clone())).collect();
-        let has_clip = self.sel.clip.is_some();
+        let has_clip = self.can_paste();
         let mut actions: Vec<Action> = Vec::new();
 
         egui::Area::new(Id::new("sel-toolbar"))

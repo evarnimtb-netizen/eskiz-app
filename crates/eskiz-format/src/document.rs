@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Seek, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,7 +13,8 @@ use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::codecs::{apple_lz4_decompress, lzo1x_decompress};
+use crate::codecs::{apple_lz4_declared_size, apple_lz4_decompress, lzo1x_decompress};
+use crate::limits;
 use crate::pack::{self, LayerOut, LayerTiles};
 use crate::keyedarchive::{self, unarchive, ArchivedObject, NsObject, NsValue, Object};
 use crate::{Error, Result};
@@ -59,11 +60,31 @@ pub fn blend_mode_name(mode: i64) -> Option<&'static str> {
 }
 
 const DEFAULT_TILE_SIZE: i64 = 256;
-const MAX_TILE_SIZE: i64 = 16384;
+const MAX_TILE_SIZE: i64 = limits::MAX_TILE_SIDE as i64;
 
-/// Largest payload accepted for one tile: a full tile of 16 bytes per pixel.
+/// Largest payload accepted for one tile: a full tile of 16 bytes per pixel (the widest layout
+/// recognised, so that an RGBA32F document is reported as unsupported rather than corrupt).
 fn max_tile_payload(tile: usize) -> usize {
     tile * tile * 16
+}
+
+/// Decompresses one tile payload. The size the frame headers declare is checked against the
+/// largest payload a tile can hold before anything is allocated, and the decoders count their
+/// output and stop at that cap.
+fn decompress_tile(raw: &[u8], codec: Codec, tile: usize) -> Result<Vec<u8>> {
+    let max = max_tile_payload(tile);
+    match codec {
+        Codec::Lz4 => {
+            let declared = apple_lz4_declared_size(raw);
+            if declared > max {
+                return Err(Error::Corrupt(format!(
+                    "a {tile}-pixel tile declares {declared} bytes; at most {max} fit"
+                )));
+            }
+            apple_lz4_decompress(raw, max)
+        }
+        Codec::Lzo => lzo1x_decompress(raw, max),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,8 +353,10 @@ impl Document<File> {
 
 impl<R: Read + Seek> Document<R> {
     /// Opens a `.procreate` package from any seekable reader holding the ZIP container.
-    pub fn from_reader(reader: R) -> Result<Self> {
+    pub fn from_reader(mut reader: R) -> Result<Self> {
+        let file_len = reader.seek(SeekFrom::End(0))?;
         let mut zip = ZipArchive::new(reader)?;
+        limits::check_zip(&zip, file_len)?;
         let names: Vec<String> = zip
             .file_names()
             .map(|n| n.map(|s| s.into_owned()))
@@ -369,6 +392,7 @@ impl<R: Read + Seek> Document<R> {
             Some((w, h)) => (w as u32, h as u32),
             None => (0, 0),
         };
+        limits::check_canvas(width, height, "the canvas")?;
         let canvas = (width, height);
 
         let items: &[Object] = match a.get("unwrappedLayers") {
@@ -376,6 +400,13 @@ impl<R: Read + Seek> Document<R> {
             _ => a.array("layers").unwrap_or(&[]),
         };
         let tree: Vec<Item> = items.iter().filter_map(|o| make_item(o, canvas)).collect();
+        let item_count = count_items(&tree);
+        if item_count > limits::MAX_LAYERS {
+            return Err(limits::exceeded(format!(
+                "the document has {item_count} layers and groups; the most Eskiz opens is {}",
+                limits::MAX_LAYERS
+            )));
+        }
         let mut layers = Vec::new();
         collect_layers(&tree, &mut layers);
 
@@ -391,6 +422,13 @@ impl<R: Read + Seek> Document<R> {
             .archived("composite")
             .filter(|c| c.get("UUID").is_some_and(Object::truthy))
             .map(|c| Layer::from_archived(c, canvas));
+
+        for layer in layers.iter().chain(composite.iter()) {
+            limits::check_canvas(layer.width, layer.height, &format!("layer {}", layer.uuid))?;
+            if let Some(mask) = &layer.mask {
+                limits::check_canvas(mask.width, mask.height, &format!("mask {}", mask.uuid))?;
+            }
+        }
 
         let tiles = build_tile_index(&names, &prefix);
         Ok(Self {
@@ -485,13 +523,8 @@ impl<R: Read + Seek> Document<R> {
             bits,
             float,
         };
-        let max = max_tile_payload(job.t);
         let decode = |p: &PlacedTile, raw: Result<Vec<u8>>| -> Result<Option<DecodedTile>> {
-            let raw = raw?;
-            let payload = match p.tile.codec {
-                Codec::Lz4 => apple_lz4_decompress(&raw, max)?,
-                Codec::Lzo => lzo1x_decompress(&raw, max)?,
-            };
+            let payload = decompress_tile(&raw?, p.tile.codec, job.t)?;
             Ok(job.convert(p, payload)?.map(|pixels| DecodedTile { col: p.col, row: p.row, pixels }))
         };
         let read = |zip: &mut ZipArchive<R>, p: &PlacedTile| -> Result<Vec<u8>> {
@@ -738,11 +771,7 @@ impl<R: Read + Seek> Document<R> {
     fn decode_tile(&mut self, tile: &TileRef) -> Result<Vec<u8>> {
         let raw = read_member(&mut self.zip, &tile.member)?
             .ok_or_else(|| Error::Corrupt(format!("tile {}", tile.member)))?;
-        let max = max_tile_payload(self.tile_size as usize);
-        match tile.codec {
-            Codec::Lz4 => apple_lz4_decompress(&raw, max),
-            Codec::Lzo => lzo1x_decompress(&raw, max),
-        }
+        decompress_tile(&raw, tile.codec, self.tile_size as usize)
     }
 
     /// The document's [`TileDepth`], decided on first use and cached.
@@ -1084,15 +1113,7 @@ pub(crate) fn down16(v: u16) -> u8 {
 }
 
 fn read_member<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Result<Option<Vec<u8>>> {
-    match zip.by_name(name) {
-        Ok(mut file) => {
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
-            Ok(Some(buf))
-        }
-        Err(ZipError::FileNotFound) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    limits::read_entry(zip, name, limits::MAX_ENTRY_BYTES)
 }
 
 /// The stored hold of a layer or group, in extra frames. Negative or missing values are 0.
@@ -1120,6 +1141,17 @@ fn make_item(obj: &Object, canvas: (u32, u32)) -> Option<Item> {
     } else {
         Some(Item::Layer(Layer::from_archived(a, canvas)))
     }
+}
+
+/// Layers and groups in the tree, at every level.
+fn count_items(items: &[Item]) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            Item::Layer(_) => 1,
+            Item::Group(group) => 1 + count_items(&group.children),
+        })
+        .sum()
 }
 
 fn collect_layers(items: &[Item], out: &mut Vec<Layer>) {

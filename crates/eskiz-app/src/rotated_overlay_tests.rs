@@ -367,12 +367,9 @@ fn edit_shape_handles_follow_a_rotated_view() {
 // ---------------------------------------------------------------------------------- Text
 
 #[test]
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "macOS fonts make \"Hello\" so narrow that the click lands in the width handle's 12 px grab zone (known issue, fix planned)"
-)]
 fn text_box_caret_and_width_handle_follow_a_rotated_view() {
     use crate::text_tool::caret_geometry;
+    use eskiz_text::TextLayerExt;
     if eskiz_text::FontLibrary::new().families().is_empty() {
         eprintln!("skipped: no system fonts");
         return;
@@ -396,12 +393,44 @@ fn text_box_caret_and_width_handle_follow_a_rotated_view() {
         assert_eq!(h.app.text.caret, 3, "{deg}");
         // The width handle: dragged to 150 layer units from the box origin.
         let hd = h.app.width_handle(&layer, &layout).unwrap();
-        let from = h.app.layer_to_screen(&t, hd[0], hd[1]);
+        let (from, off) = h.app.width_knob(&layer, &layout).unwrap();
         let (tx, ty) = t.apply(150.0, hd[1]);
-        let to = at(&h, f64::from(tx), f64::from(ty));
+        let to = at(&h, f64::from(tx), f64::from(ty)) + off;
         drag(&mut h, from, to);
         let w = h.app.session.doc.texts.get(&id).unwrap().box_width;
         assert!((w - 150.0).abs() < 2.0, "{deg}: box width {w}");
+    }
+}
+
+#[test]
+fn a_click_at_the_end_of_a_short_word_places_the_caret_instead_of_dragging_the_width() {
+    use eskiz_text::TextLayerExt;
+    if eskiz_text::FontLibrary::new().families().is_empty() {
+        eprintln!("skipped: no system fonts");
+        return;
+    }
+    // Zoomed out, the word is only a few screen points wide: the knob must still not take the click.
+    for (deg, zoom) in [(0.0, 1.0), (0.0, 0.25), (90.0, 0.25)] {
+        let mut h = rotated(deg);
+        h.app.view.zoom *= zoom;
+        h.app.add_text_action();
+        h.advance(0.1);
+        let id = h.app.text.editing.expect("editing a new text layer");
+        h.app.text_replace(0..0, "Hi");
+        h.advance(0.1);
+        let layer = h.app.session.doc.texts.get(&id).unwrap().clone();
+        let layout = layer.layout(h.app.text.fonts());
+        let t = layer.transform;
+        let width = layer.box_width;
+        // A click just inside the right end of the last glyph.
+        let b = layout.bounds;
+        let (cx, cy) = t.apply(b.x1 - 0.5, (b.y0 + b.y1) / 2.0);
+        let p = at(&h, f64::from(cx), f64::from(cy));
+        h.click(p);
+        h.advance(0.1);
+        assert_eq!(h.app.text.caret, 2, "{deg} at zoom {zoom}: the caret goes after the last letter");
+        let now = h.app.session.doc.texts.get(&id).unwrap().box_width;
+        assert!((now - width).abs() < 0.01, "{deg} at zoom {zoom}: the box width did not change");
     }
 }
 

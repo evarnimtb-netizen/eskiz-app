@@ -28,7 +28,7 @@ pub const DEFAULT_DPI: u16 = 132;
 pub const JPEG_QUALITY: u8 = 90;
 
 /// What the Share sheet can write.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExportFormat {
     /// Eskiz's layered package (`.procreate`).
     Procreate,

@@ -1,17 +1,22 @@
 //! Which renderer the window uses, and what happens when it cannot start.
 //!
-//! * **Default:** eframe's wgpu renderer (Metal on macOS, DX12 or Vulkan on Windows, Vulkan or
-//!   OpenGL on Linux), and the GPU compositor of `eskiz-gpu` for the canvas.
-//! * **`ESKIZ_RENDERER`** picks the path by hand:
-//!   `gpu` or unset: wgpu window, GPU compositor (falls back to the CPU compositor for a
-//!   document it cannot show exactly, or if the device cannot run it);
-//!   `cpu`: wgpu window, the CPU compositor and an egui texture, exactly the old display path;
-//!   `gl`: eframe's glow (OpenGL) window and the CPU compositor. Needs the `gl-fallback` cargo
-//!   feature, which is on by default.
-//! * **Fallback:** if the wgpu window cannot be created (no adapter, no surface) and the `gl-fallback`
-//!   feature is on, Eskiz retries once with glow. This is only done before the application was created, so
-//!   it can never throw away a document. Without the feature, or if glow fails too, `run_native`
-//!   returns an error that says what to try.
+//! * **Ladder.** Each OS has a list of renderers, fastest first ([`crate::startup::order`]):
+//!   Windows DX12, Vulkan, OpenGL, software (WARP); macOS Metal, OpenGL; Linux Vulkan, wgpu's
+//!   OpenGL, OpenGL (glow), software. OpenGL (glow) and software composite the canvas on the CPU;
+//!   the wgpu rungs use the GPU compositor of `eskiz-gpu` (which itself falls back to the CPU for a
+//!   document it cannot show exactly).
+//! * **Safe mode.** A start that crashed or froze (see [`crate::startup`], [`crate::stall`]) makes
+//!   later starts begin one rung lower, until the user picks Try normal graphics.
+//! * **Requests.** `--renderer`, then `ESKIZ_BACKEND`, then `ESKIZ_RENDERER` (older values,
+//!   including `cpu`: wgpu window, CPU compositor), then `WGPU_BACKEND` (wgpu picks the backend
+//!   and adapter itself), then Settings > Graphics > Renderer. A request wins over the markers,
+//!   the skip list and the driver blocklist.
+//! * **Fallback.** Each attempt runs under `catch_unwind`. One that fails before the window has
+//!   drawn its first frames is followed by the next rung, so it can never throw away a document.
+//!   If every rung fails, `run_native` returns an error that says what to try.
+//! * **Adapter choice and logs.** On the wgpu rungs Eskiz picks the adapter itself (eframe's
+//!   `native_adapter_selector`): every adapter is logged with vendor, driver and backend, the
+//!   blocklist ([`crate::gpu_blocklist`]) is applied, and the software rung takes a CPU adapter.
 
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,60 +25,79 @@ use std::sync::Arc;
 use eframe::egui_wgpu::WgpuSetup;
 use eframe::{wgpu, CreationContext, NativeOptions};
 
+use crate::gpu_blocklist::{self, Adapter};
 use crate::startup::{self, Ladder, Stage};
 
-/// What `ESKIZ_RENDERER` asked for.
+/// What the user asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Not set: the GPU compositor, with every fallback.
+    /// Nothing: the ladder, with every fallback.
     Auto,
-    /// `gpu`: the same as `Auto`, spelled out.
+    /// `ESKIZ_RENDERER=gpu`: the same as `Auto`, spelled out.
     Gpu,
-    /// `cpu`: wgpu window, CPU compositor.
+    /// `ESKIZ_RENDERER=cpu`: the ladder, with the CPU compositor.
     Cpu,
-    /// `gl`: glow window, CPU compositor.
+    /// OpenGL (glow) window, CPU compositor.
     Gl,
-    /// `dx12`: wgpu restricted to DirectX 12 (falls back to glow if it cannot start).
+    /// wgpu on DirectX 12.
     Dx12,
-    /// `vulkan`: wgpu restricted to Vulkan (falls back to glow if it cannot start).
+    /// wgpu on Vulkan.
     Vulkan,
+    /// wgpu on Metal.
+    Metal,
+    /// wgpu on its OpenGL backend.
+    WgpuGl,
+    /// wgpu on a software adapter, CPU compositor.
+    Software,
+    /// `WGPU_BACKEND` is set: wgpu picks the backend and adapter.
+    Wgpu,
 }
 
 impl Mode {
-    /// Parse the value of `ESKIZ_RENDERER` (case-insensitive; unknown values mean `Auto`).
+    /// Parse the value of `ESKIZ_RENDERER`: the older `cpu` and `gpu`, or anything [`Mode::parse_flag`]
+    /// takes (case-insensitive; unknown values mean `Auto`).
     pub fn parse(value: Option<&str>) -> Self {
         match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
             Some("cpu") => Self::Cpu,
-            Some("gl" | "glow" | "opengl") => Self::Gl,
             Some("gpu" | "wgpu") => Self::Gpu,
-            Some("dx12" | "d3d12") => Self::Dx12,
-            Some("vulkan" | "vk") => Self::Vulkan,
-            _ => Self::Auto,
+            Some(v) => Self::parse_flag(v).unwrap_or(Self::Auto),
+            None => Self::Auto,
         }
     }
 
-    /// Parse the value of `--renderer`: `gl`, `dx12`, `vulkan` or `auto`; anything else is an error.
+    /// Parse `--renderer`, `ESKIZ_BACKEND` and the saved Settings choice. Anything else is an error.
     pub fn parse_flag(value: &str) -> Result<Self, String> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "gl" | "glow" | "opengl" => Ok(Self::Gl),
+            "auto" | "automatic" => Ok(Self::Auto),
+            "gl" | "glow" | "opengl" | "compat" => Ok(Self::Gl),
             "dx12" | "d3d12" => Ok(Self::Dx12),
             "vulkan" | "vk" => Ok(Self::Vulkan),
-            other => Err(format!("--renderer takes gl, dx12, vulkan or auto, not '{other}'")),
+            "metal" | "mtl" => Ok(Self::Metal),
+            "wgpu-gl" | "gles" => Ok(Self::WgpuGl),
+            "software" | "warp" | "llvmpipe" | "lavapipe" => Ok(Self::Software),
+            other => Err(format!(
+                "--renderer and ESKIZ_BACKEND take auto, dx12, vulkan, metal, wgpu-gl, gl or software, not '{other}'"
+            )),
         }
     }
 
-    /// Which request wins, and where it came from: `--renderer`, then `ESKIZ_RENDERER`, then the
-    /// Settings > Graphics choice (Compatibility means OpenGL), else automatic.
-    pub fn resolve(cli: Option<Self>, env: Option<&str>, compat_pref: bool) -> (Self, &'static str) {
-        if let Some(m) = cli {
+    /// Which request wins, and where it came from.
+    pub fn resolve(r: &Requests<'_>) -> (Self, &'static str) {
+        let set = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+        if let Some(m) = r.cli {
             return (m, "--renderer");
         }
-        if let Some(v) = env.filter(|v| !v.trim().is_empty()) {
-            return (Self::parse(Some(v)), "ESKIZ_RENDERER");
+        if let Some(m) = set(r.backend_env).and_then(|v| Self::parse_flag(&v).ok()) {
+            return (m, "ESKIZ_BACKEND");
         }
-        if compat_pref {
-            return (Self::Gl, "Settings > Graphics > Compatibility");
+        if let Some(v) = set(r.renderer_env) {
+            return (Self::parse(Some(&v)), "ESKIZ_RENDERER");
+        }
+        if set(r.wgpu_env).is_some() {
+            return (Self::Wgpu, "WGPU_BACKEND");
+        }
+        if r.pref != Self::Auto {
+            return (r.pref, "Settings > Graphics");
         }
         (Self::Auto, "default")
     }
@@ -86,6 +110,37 @@ impl Mode {
             Self::Gl => "gl",
             Self::Dx12 => "dx12",
             Self::Vulkan => "vulkan",
+            Self::Metal => "metal",
+            Self::WgpuGl => "wgpu-gl",
+            Self::Software => "software",
+            Self::Wgpu => "wgpu",
+        }
+    }
+
+    /// The rung a request names; `None` for the ladder.
+    pub fn stage(self) -> Option<Stage> {
+        match self {
+            Self::Auto | Self::Gpu | Self::Cpu => None,
+            Self::Gl => Some(Stage::Glow),
+            Self::Dx12 => Some(Stage::WgpuDx12),
+            Self::Vulkan => Some(Stage::WgpuVulkan),
+            Self::Metal => Some(Stage::WgpuMetal),
+            Self::WgpuGl => Some(Stage::WgpuGl),
+            Self::Software => Some(Stage::WgpuSoftware),
+            Self::Wgpu => Some(Stage::Wgpu),
+        }
+    }
+
+    /// The Settings choice that picks `stage`.
+    pub fn for_stage(stage: Stage) -> Self {
+        match stage {
+            Stage::Wgpu => Self::Auto,
+            Stage::WgpuDx12 => Self::Dx12,
+            Stage::WgpuVulkan => Self::Vulkan,
+            Stage::WgpuMetal => Self::Metal,
+            Stage::WgpuGl => Self::WgpuGl,
+            Stage::Glow => Self::Gl,
+            Stage::WgpuSoftware => Self::Software,
         }
     }
 
@@ -96,16 +151,37 @@ impl Mode {
 
     /// Like [`Mode::from_env`], with the source of the choice.
     pub fn requested() -> (Self, &'static str) {
-        Self::resolve(
-            CLI_REQUEST.get().copied(),
-            crate::compat::env_var("ESKIZ_RENDERER").as_deref(),
-            read_compat_pref(),
-        )
+        let backend = crate::compat::env_var("ESKIZ_BACKEND");
+        let renderer = crate::compat::env_var("ESKIZ_RENDERER");
+        let wgpu_env = std::env::var("WGPU_BACKEND").ok();
+        Self::resolve(&Requests {
+            cli: CLI_REQUEST.get().copied(),
+            backend_env: backend.as_deref(),
+            renderer_env: renderer.as_deref(),
+            wgpu_env: wgpu_env.as_deref(),
+            pref: read_graphics_pref(),
+        })
     }
 
     /// Should the canvas be composited on the GPU?
     pub fn gpu_compositing(self) -> bool {
-        matches!(self, Self::Auto | Self::Gpu | Self::Dx12 | Self::Vulkan)
+        !matches!(self, Self::Cpu | Self::Gl | Self::Software)
+    }
+}
+
+/// Everything that can ask for a renderer, highest precedence first.
+#[derive(Clone, Copy, Debug)]
+pub struct Requests<'a> {
+    pub cli: Option<Mode>,
+    pub backend_env: Option<&'a str>,
+    pub renderer_env: Option<&'a str>,
+    pub wgpu_env: Option<&'a str>,
+    pub pref: Mode,
+}
+
+impl Default for Requests<'_> {
+    fn default() -> Self {
+        Self { cli: None, backend_env: None, renderer_env: None, wgpu_env: None, pref: Mode::Auto }
     }
 }
 
@@ -122,27 +198,46 @@ pub fn set_cli_request(mode: Mode) {
 const GRAPHICS_FILE: &str = "graphics.pref";
 
 fn graphics_path() -> Option<std::path::PathBuf> {
+    // Tests click through Settings > Graphics: they must not change the real saved choice.
+    if cfg!(test) {
+        return None;
+    }
     crate::storage::app_data_root().map(|d| d.join(GRAPHICS_FILE))
 }
 
-/// Does `text` (the contents of the graphics file) choose Compatibility?
-pub fn parse_compat_pref(text: &str) -> bool {
-    text.trim() == "compat"
+/// The Settings choice in `text` (the contents of the graphics file). Older builds wrote
+/// `compat` for OpenGL; anything unreadable is Automatic.
+pub fn parse_graphics_pref(text: &str) -> Mode {
+    match Mode::parse_flag(text) {
+        Ok(Mode::Cpu | Mode::Gpu | Mode::Wgpu) | Err(_) => Mode::Auto,
+        Ok(m) => m,
+    }
 }
 
-/// Settings > Graphics: is Compatibility (OpenGL) saved?
-pub fn read_compat_pref() -> bool {
-    graphics_path().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| parse_compat_pref(&t))
+/// Settings > Graphics > Renderer, as saved.
+pub fn read_graphics_pref() -> Mode {
+    graphics_path().and_then(|p| std::fs::read_to_string(p).ok()).map_or(Mode::Auto, |t| parse_graphics_pref(&t))
 }
 
-/// Save the Settings > Graphics choice for the next start.
-pub fn write_compat_pref(compat: bool) {
+/// Save the Settings > Graphics choice for the next start (only when it changed).
+pub fn write_graphics_pref(mode: Mode) {
     if let Some(p) = graphics_path() {
+        let text = format!("{}\n", mode.name());
+        if std::fs::read_to_string(&p).is_ok_and(|t| t == text) {
+            return;
+        }
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, if compat { "compat\n" } else { "auto\n" });
+        let _ = std::fs::write(p, text);
     }
+}
+
+/// The renderers Settings > Graphics offers on this OS: Automatic, then each rung of the ladder.
+pub fn choices() -> Vec<Mode> {
+    std::iter::once(Mode::Auto)
+        .chain(startup::this_order().into_iter().map(Mode::for_stage).filter(|m| *m != Mode::Auto))
+        .collect()
 }
 
 /// What an app creator returns.
@@ -173,7 +268,8 @@ fn requirements(android: bool) -> &'static str {
         "Eskiz needs a GPU with Vulkan 1.1 (Android 10 or newer on most phones from 2018)."
     } else {
         "It needs Metal (macOS), DX12 or Vulkan (Windows), or Vulkan or OpenGL (Linux). Update the \
-         graphics driver; on a build with the `gl-fallback` feature, `ESKIZ_RENDERER=gl` selects OpenGL."
+         graphics driver; `--renderer gl` (or `ESKIZ_BACKEND=gl`) selects OpenGL and `--renderer software` a \
+         software renderer."
     }
 }
 
@@ -182,6 +278,15 @@ fn explain(e: &eframe::Error) -> String {
         "{e}\nEskiz could not start its graphics renderer. {}",
         requirements(cfg!(target_os = "android"))
     )
+}
+
+/// Set when the saved Settings choice crashed the last start and was reset to Automatic.
+static SAVED_CHOICE_RESET: AtomicBool = AtomicBool::new(false);
+
+/// Whether this start reset the saved renderer choice (the app then shows Automatic too, so
+/// it does not save the old choice again).
+pub fn saved_choice_was_reset() -> bool {
+    SAVED_CHOICE_RESET.load(Ordering::SeqCst)
 }
 
 /// Set once the app creator has run, that is once the window and its app exist. A panic before
@@ -193,37 +298,41 @@ pub fn window_created() -> bool {
     WINDOW_CREATED.load(Ordering::SeqCst)
 }
 
-/// Which renderer attempts to make, in order, for this start.
+/// Which renderers to try, in order, for this start, and whether that is safe mode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan {
+    pub stages: Vec<Stage>,
+    /// The ladder starts below its top rung because of earlier problems.
+    pub safe: bool,
+}
+
+/// The attempts for this start. `crashed` is the rung a previous start never finished, `skipped`
+/// the rungs earlier crashes and stalls ruled out, `order` the ladder ([`startup::order`]).
 ///
-/// * `--renderer gl` / `ESKIZ_RENDERER=gl` / Settings > Graphics > Compatibility: glow only.
-/// * `--renderer dx12|vulkan`: that backend, then glow.
-/// * Otherwise the first renderer in `wgpu auto -> wgpu-dx12 -> wgpu-vulkan -> glow` that no
-///   earlier crash (`crashed`) or stall (`skipped`) ruled out, and glow after it when the
-///   `gl-fallback` feature is on. See [`crate::startup::Ladder`] and [`crate::stall`].
+/// * A request (`mode.stage()`): that renderer, then the CPU-compositor rungs of the ladder
+///   (OpenGL, software) in case it cannot start. Markers and skips do not change it.
+/// * Otherwise the rung [`Ladder::next`] picks and the rungs below it that are not skipped
+///   (the last rung always stays). `safe` when that is not the top rung.
 ///
-/// `None` when every renderer already crashed the process: the caller tells the user.
-pub fn plan(mode: Mode, crashed: Option<Stage>, skipped: &[Stage], windows: bool, gl_fallback: bool) -> Option<Vec<Stage>> {
-    if gl_fallback {
-        match mode {
-            Mode::Gl => return Some(vec![Stage::Glow]),
-            Mode::Dx12 => return Some(vec![Stage::WgpuDx12, Stage::Glow]),
-            Mode::Vulkan => return Some(vec![Stage::WgpuVulkan, Stage::Glow]),
-            _ => {}
-        }
+/// `None` when the last rung crashed the process: the caller tells the user.
+pub fn plan(mode: Mode, crashed: Option<Stage>, skipped: &[Stage], order: &[Stage]) -> Option<Plan> {
+    if let Some(stage) = mode.stage() {
+        let mut stages = vec![stage];
+        stages.extend(order.iter().copied().filter(|s| s.cpu_compositor() && *s != stage));
+        return Some(Plan { stages, safe: false });
     }
-    if !gl_fallback {
-        // Without OpenGL there is nothing to step down to: wgpu with every backend, whatever happened.
-        return Some(vec![Stage::Wgpu]);
-    }
-    let first = match Ladder::next(crashed, skipped, windows) {
+    let first = match Ladder::next(crashed, skipped, order) {
         Ladder::Try(stage) => stage,
         Ladder::GiveUp => return None,
     };
-    let mut stages = vec![first];
-    if first != Stage::Glow && gl_fallback {
-        stages.push(Stage::Glow);
-    }
-    Some(stages)
+    let at = order.iter().position(|s| *s == first).unwrap_or(0);
+    let last = order.last().copied();
+    let stages: Vec<Stage> = order[at..]
+        .iter()
+        .copied()
+        .filter(|s| *s == first || Some(*s) == last || !(skipped.contains(s) || crashed == Some(*s)))
+        .collect();
+    Some(Plan { safe: order.first() != Some(&first), stages })
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -246,23 +355,43 @@ pub fn run_native(
     options: impl Fn() -> NativeOptions,
     creator: impl Fn(&CreationContext<'_>, Mode) -> AppResult,
 ) -> Result<(), String> {
-    let (mode, source) = Mode::requested();
+    let (mut mode, source) = Mode::requested();
     startup::log(&format!("renderer requested: {} (from {source})", mode.name()));
+    if let Some(bad) = crate::compat::env_var("ESKIZ_BACKEND").filter(|v| !v.trim().is_empty()) {
+        if let Err(e) = Mode::parse_flag(&bad) {
+            startup::log(&format!("ESKIZ_BACKEND ignored: {e}"));
+        }
+    }
     if CLI_REQUEST.get() == Some(&Mode::Auto) {
         startup::clear_skips();
     }
+    let crashed = startup::previous_crash();
+    // A saved choice that crashed the last start goes back to Automatic: the user may not be
+    // able to reach Settings to change it. (A command-line or environment request is kept.)
+    if source == "Settings > Graphics" && crashed.is_some() && crashed == mode.stage() {
+        startup::log(&format!("the saved renderer '{}' crashed the last start; Settings > Graphics is back to Automatic", mode.name()));
+        mode = Mode::Auto;
+        write_graphics_pref(Mode::Auto);
+        SAVED_CHOICE_RESET.store(true, Ordering::SeqCst);
+    }
     let skips = startup::skips();
+    let order = startup::this_order();
     #[cfg(not(feature = "gl-fallback"))]
     if mode == Mode::Gl {
         eprintln!("eskiz: this build has no OpenGL renderer (cargo feature `gl-fallback`); using wgpu");
+        mode = Mode::Auto;
     }
-    let crashed = startup::previous_crash();
-    let Some(stages) = plan(mode, crashed, &skips.stages, cfg!(windows), cfg!(feature = "gl-fallback")) else {
-        // Every renderer killed the process on an earlier start. Say so once and start over next time.
+    let Some(plan) = plan(mode, crashed, &skips.stages, &order) else {
+        // The last rung killed the process too. Say so once and start over next time.
+        startup::clear_skips();
         let reason = "Eskiz stopped during start-up with every graphics renderer it can use. Update the graphics \
                       driver, or run eskiz.exe --diagnose from a terminal and send the output with the logs.";
         return Err(reason.to_owned());
     };
+    let names: Vec<&str> = plan.stages.iter().map(|s| s.name()).collect();
+    startup::log(&format!("renderer plan: {}", names.join(" -> ")));
+    // The blocklist is for the automatic ladder; a renderer the user picked is used as asked.
+    let use_blocklist = mode.stage().is_none();
     let attempt = |stage: Stage| -> Result<(), String> {
         startup::begin_attempt(stage);
         let mut o = options();
@@ -270,9 +399,13 @@ pub fn run_native(
         if stage != Stage::Glow {
             tune_wgpu(&mut o);
         }
-        if let Some(backends) = backends_for(stage) {
-            if let WgpuSetup::CreateNew(create) = &mut o.wgpu_options.wgpu_setup {
+        if let WgpuSetup::CreateNew(create) = &mut o.wgpu_options.wgpu_setup {
+            if let Some(backends) = backends_for(stage) {
                 create.instance_descriptor.backends = backends;
+                let low_power = wgpu::PowerPreference::from_env() == Some(wgpu::PowerPreference::LowPower);
+                create.native_adapter_selector = Some(Arc::new(move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| {
+                    select_adapter(adapters, surface, stage, use_blocklist, low_power)
+                }));
             }
         }
         if skips.no_vsync {
@@ -289,6 +422,8 @@ pub fn run_native(
         } else {
             startup::log(&format!("present mode requested: {:?}", o.wgpu_options.surface.present_mode));
         }
+        // The software rung composites on the CPU, like OpenGL.
+        let app_mode = if stage.cpu_compositor() && mode.gpu_compositing() { Mode::Cpu } else { mode };
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             eframe::run_native(
                 title,
@@ -296,7 +431,10 @@ pub fn run_native(
                 Box::new(|cc| {
                     WINDOW_CREATED.store(true, Ordering::SeqCst);
                     log_renderer(cc, stage);
-                    creator(cc, mode)
+                    if plan.safe {
+                        startup::enter_safe_mode(stage);
+                    }
+                    creator(cc, app_mode)
                 }),
             )
         }));
@@ -308,7 +446,7 @@ pub fn run_native(
         }
     };
     let mut first_error: Option<String> = None;
-    for stage in stages {
+    for &stage in &plan.stages {
         match attempt(stage) {
             Ok(()) => return Ok(()),
             // The window ran and drew: this is a runtime failure, not a start-up one.
@@ -323,13 +461,95 @@ pub fn run_native(
     Err(first_error.unwrap_or_else(|| "no renderer could be started".to_owned()))
 }
 
-/// The wgpu backends a stage is limited to; `None` leaves wgpu's own choice.
+/// The wgpu backends a stage is limited to; `None` leaves wgpu's own choice (and adapter
+/// selection) alone, as `WGPU_BACKEND` and Android expect.
 fn backends_for(stage: Stage) -> Option<wgpu::Backends> {
     match stage {
         Stage::WgpuDx12 => Some(wgpu::Backends::DX12),
         Stage::WgpuVulkan => Some(wgpu::Backends::VULKAN),
+        Stage::WgpuMetal => Some(wgpu::Backends::METAL),
+        Stage::WgpuGl => Some(wgpu::Backends::GL),
+        Stage::WgpuSoftware => Some(wgpu::Backends::DX12 | wgpu::Backends::VULKAN | wgpu::Backends::GL),
         Stage::Wgpu | Stage::Glow => None,
     }
+}
+
+/// An adapter wgpu found, as the selector sees it.
+#[derive(Clone, Debug)]
+pub struct Candidate {
+    pub adapter: Adapter,
+    /// Can it present to the window's surface?
+    pub surface_ok: bool,
+}
+
+/// Lower is better: the order adapters are preferred in on a hardware rung.
+fn type_rank(t: wgpu::DeviceType, low_power: bool) -> u8 {
+    match (t, low_power) {
+        (wgpu::DeviceType::DiscreteGpu, false) | (wgpu::DeviceType::IntegratedGpu, true) => 0,
+        (wgpu::DeviceType::IntegratedGpu, false) | (wgpu::DeviceType::DiscreteGpu, true) => 1,
+        (wgpu::DeviceType::VirtualGpu, _) => 2,
+        (wgpu::DeviceType::Other, _) => 3,
+        (wgpu::DeviceType::Cpu, _) => 4,
+    }
+}
+
+/// Pick the adapter for `stage` from `cands`, or say why none fits. The software rung takes only
+/// CPU adapters; the others prefer a discrete GPU (an integrated one with `low_power`, as
+/// `WGPU_POWER_PREF=low` asks), and take a CPU adapter only when nothing else can present.
+/// Adapters the `rules` block are left out when `use_blocklist`. Each verdict is passed to `note`.
+pub fn choose_adapter(
+    cands: &[Candidate],
+    stage: Stage,
+    rules: &[gpu_blocklist::Rule],
+    os: &str,
+    use_blocklist: bool,
+    low_power: bool,
+    mut note: impl FnMut(usize, &str),
+) -> Result<usize, String> {
+    let mut best: Option<(u8, usize)> = None;
+    for (i, c) in cands.iter().enumerate() {
+        let verdict = if !c.surface_ok {
+            "cannot present to the window".to_owned()
+        } else if stage == Stage::WgpuSoftware && c.adapter.device_type != wgpu::DeviceType::Cpu {
+            "not a software adapter".to_owned()
+        } else if let Some(rule) = gpu_blocklist::blocked(rules, &c.adapter, os).filter(|_| use_blocklist) {
+            format!("blocked: {}", rule.reason)
+        } else {
+            let rank = type_rank(c.adapter.device_type, low_power);
+            if best.is_none_or(|(r, _)| rank < r) {
+                best = Some((rank, i));
+            }
+            "usable".to_owned()
+        };
+        note(i, &verdict);
+    }
+    best.map(|(_, i)| i).ok_or_else(|| {
+        if cands.is_empty() {
+            format!("no {} adapter was found", stage.name())
+        } else {
+            format!("none of the {} {} adapters can be used (see startup.log)", cands.len(), stage.name())
+        }
+    })
+}
+
+/// eframe's adapter hook: log every adapter, then [`choose_adapter`].
+fn select_adapter(
+    adapters: &[wgpu::Adapter],
+    surface: Option<&wgpu::Surface<'_>>,
+    stage: Stage,
+    use_blocklist: bool,
+    low_power: bool,
+) -> Result<wgpu::Adapter, String> {
+    let cands: Vec<Candidate> = adapters
+        .iter()
+        .map(|a| Candidate { adapter: Adapter::from_info(&a.get_info()), surface_ok: surface.is_none_or(|s| a.is_surface_supported(s)) })
+        .collect();
+    startup::log(&format!("{} adapters for {}:", cands.len(), stage.name()));
+    let chosen = choose_adapter(&cands, stage, gpu_blocklist::RULES, std::env::consts::OS, use_blocklist, low_power, |i, verdict| {
+        startup::log(&format!("  adapter {i}: {} -> {verdict}", cands[i].adapter.describe()));
+    })?;
+    startup::log(&format!("  chosen: adapter {chosen}"));
+    Ok(adapters[chosen].clone())
 }
 
 #[cfg(feature = "gl-fallback")]
@@ -341,34 +561,53 @@ fn renderer_for(stage: Stage) -> eframe::Renderer {
     }
 }
 
-/// Without the `gl-fallback` feature there is only wgpu (`plan` never returns glow then).
+/// Without the `gl-fallback` feature there is only wgpu (the ladder has no glow rung then).
 #[cfg(not(feature = "gl-fallback"))]
 fn renderer_for(_stage: Stage) -> eframe::Renderer {
     eframe::Renderer::Wgpu
 }
 
-/// Log the adapter and backend the window ended up with.
+/// Log the adapter, vendor, driver and backend the window ended up with.
 fn log_renderer(cc: &CreationContext<'_>, stage: Stage) {
-    match cc.wgpu_render_state.as_ref() {
-        Some(state) => {
-            let info = state.adapter.get_info();
-            startup::log(&format!(
-                "renderer: wgpu ({}) adapter='{}' backend={:?} type={:?} driver='{}' {}",
-                stage.name(),
-                info.name,
-                info.backend,
-                info.device_type,
-                info.driver,
-                info.driver_info
-            ));
+    if let Some(state) = cc.wgpu_render_state.as_ref() {
+        if stage == Stage::Wgpu {
+            // wgpu chose by itself: list what it could choose from.
+            for (i, a) in state.available_adapters.iter().enumerate() {
+                startup::log(&format!("  adapter {i}: {}", Adapter::from_info(&a.get_info()).describe()));
+            }
         }
-        None => startup::log(&format!("renderer: {} (OpenGL window, CPU compositor)", stage.name())),
+        let info = state.adapter.get_info();
+        startup::log(&format!("renderer: wgpu ({}) adapter={}", stage.name(), Adapter::from_info(&info).describe()));
+        return;
     }
+    #[cfg(feature = "gl-fallback")]
+    if let Some(gl) = cc.gl.as_ref() {
+        startup::log(&format!("renderer: {} (OpenGL window, CPU compositor) {}", stage.name(), gl_strings(gl)));
+        return;
+    }
+    startup::log(&format!("renderer: {} (OpenGL window, CPU compositor)", stage.name()));
+}
+
+/// `GL_VENDOR`, `GL_RENDERER` and `GL_VERSION`, for the log.
+#[cfg(feature = "gl-fallback")]
+#[allow(unsafe_code)]
+fn gl_strings(gl: &eframe::glow::Context) -> String {
+    use eframe::glow::HasContext as _;
+    // SAFETY: called on the thread that owns the current GL context (eframe's app creator), with
+    // valid enum names; glGetString has no other preconditions.
+    let get = |name| unsafe { gl.get_parameter_string(name) };
+    format!(
+        "vendor='{}' renderer='{}' version='{}'",
+        get(eframe::glow::VENDOR),
+        get(eframe::glow::RENDERER),
+        get(eframe::glow::VERSION)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::startup::{order, Platform};
 
     #[test]
     fn startup_error_names_the_platforms_graphics_needs() {
@@ -377,47 +616,117 @@ mod tests {
         assert!(requirements(false).contains("Metal") && requirements(false).contains("OpenGL"));
     }
 
-    #[test]
-    fn plan_follows_the_crash_ladder() {
-        use Stage::*;
-        assert_eq!(plan(Mode::Auto, None, &[], true, true), Some(vec![Wgpu, Glow]));
-        assert_eq!(plan(Mode::Auto, None, &[], true, false), Some(vec![Wgpu]));
-        assert_eq!(plan(Mode::Auto, Some(Wgpu), &[], true, true), Some(vec![WgpuDx12, Glow]));
-        assert_eq!(plan(Mode::Auto, Some(Wgpu), &[], false, true), Some(vec![Glow]));
-        assert_eq!(plan(Mode::Auto, Some(WgpuDx12), &[], true, true), Some(vec![WgpuVulkan, Glow]));
-        assert_eq!(plan(Mode::Auto, Some(WgpuVulkan), &[], true, true), Some(vec![Glow]));
-        assert_eq!(plan(Mode::Auto, Some(Glow), &[], true, true), None);
-        assert_eq!(plan(Mode::Gl, None, &[], true, true), Some(vec![Glow]), "ESKIZ_RENDERER=gl wins");
-        // No glow compiled in: wgpu is the only choice, whatever crashed.
-        assert_eq!(plan(Mode::Auto, Some(WgpuDx12), &[], true, false), Some(vec![Wgpu]));
+    fn stages(mode: Mode, crashed: Option<Stage>, skipped: &[Stage], platform: Platform) -> Option<Vec<Stage>> {
+        plan(mode, crashed, skipped, &order(platform, true)).map(|p| p.stages)
     }
 
     #[test]
-    fn plan_skips_stalled_renderers_in_order() {
+    fn plan_walks_each_rung_of_the_windows_ladder() {
         use Stage::*;
-        // wgpu auto -> wgpu-dx12 -> wgpu-vulkan -> glow, one stall at a time.
-        assert_eq!(plan(Mode::Auto, None, &[Wgpu], true, true), Some(vec![WgpuDx12, Glow]));
-        assert_eq!(plan(Mode::Auto, None, &[Wgpu, WgpuDx12], true, true), Some(vec![WgpuVulkan, Glow]));
-        assert_eq!(plan(Mode::Auto, None, &[Wgpu, WgpuDx12, WgpuVulkan], true, true), Some(vec![Glow]));
-        // A stalled glow is not given up: nothing else is left.
-        assert_eq!(plan(Mode::Auto, None, &[Glow], false, true), Some(vec![Wgpu, Glow]));
-        // An explicit request ignores the skip list.
-        assert_eq!(plan(Mode::Dx12, None, &[WgpuDx12], true, true), Some(vec![WgpuDx12, Glow]));
-        assert_eq!(plan(Mode::Vulkan, None, &[], true, true), Some(vec![WgpuVulkan, Glow]));
+        let win = Platform::Windows;
+        assert_eq!(stages(Mode::Auto, None, &[], win), Some(vec![WgpuDx12, WgpuVulkan, Glow, WgpuSoftware]));
+        assert_eq!(stages(Mode::Auto, Some(WgpuDx12), &[], win), Some(vec![WgpuVulkan, Glow, WgpuSoftware]));
+        assert_eq!(stages(Mode::Auto, Some(WgpuVulkan), &[WgpuDx12], win), Some(vec![Glow, WgpuSoftware]));
+        assert_eq!(stages(Mode::Auto, Some(Glow), &[WgpuDx12, WgpuVulkan], win), Some(vec![WgpuSoftware]));
+        assert_eq!(stages(Mode::Auto, Some(WgpuSoftware), &[WgpuDx12, WgpuVulkan, Glow], win), None, "the last rung crashed");
+        // Skipped rungs below the start are not retried in the same run either.
+        assert_eq!(stages(Mode::Auto, None, &[WgpuVulkan], win), Some(vec![WgpuDx12, Glow, WgpuSoftware]));
+        // Everything ruled out by freezes: the last rung is still tried.
+        assert_eq!(stages(Mode::Auto, None, &[WgpuDx12, WgpuVulkan, Glow, WgpuSoftware], win), Some(vec![WgpuSoftware]));
+        // Older marker values (the old automatic rung) are not on the ladder: start at the top.
+        assert_eq!(stages(Mode::Auto, Some(Wgpu), &[Wgpu], win), Some(vec![WgpuDx12, WgpuVulkan, Glow, WgpuSoftware]));
     }
 
     #[test]
-    fn flag_parsing_and_precedence() {
+    fn plan_on_macos_linux_and_android() {
+        use Stage::*;
+        assert_eq!(stages(Mode::Auto, None, &[], Platform::Mac), Some(vec![WgpuMetal, Glow]));
+        assert_eq!(stages(Mode::Auto, Some(WgpuMetal), &[], Platform::Mac), Some(vec![Glow]));
+        assert_eq!(stages(Mode::Auto, Some(Glow), &[WgpuMetal], Platform::Mac), None);
+        assert_eq!(stages(Mode::Auto, None, &[], Platform::Linux), Some(vec![WgpuVulkan, WgpuGl, Glow, WgpuSoftware]));
+        assert_eq!(stages(Mode::Auto, Some(WgpuVulkan), &[], Platform::Linux), Some(vec![WgpuGl, Glow, WgpuSoftware]));
+        // Android has one rung: a crash cannot step anywhere, and never gives up.
+        assert_eq!(stages(Mode::Auto, Some(Wgpu), &[], Platform::Android), Some(vec![Wgpu]));
+        // No OpenGL compiled in: the ladder has no glow rung.
+        assert_eq!(plan(Mode::Auto, Some(WgpuVulkan), &[WgpuDx12], &order(Platform::Windows, false)).unwrap().stages, vec![WgpuSoftware]);
+        assert_eq!(order(Platform::Mac, false), vec![WgpuMetal]);
+    }
+
+    #[test]
+    fn plan_reports_safe_mode_only_below_the_top_rung() {
+        let win = order(Platform::Windows, true);
+        assert!(!plan(Mode::Auto, None, &[], &win).unwrap().safe);
+        assert!(plan(Mode::Auto, Some(Stage::WgpuDx12), &[], &win).unwrap().safe);
+        assert!(plan(Mode::Auto, None, &[Stage::WgpuDx12], &win).unwrap().safe);
+        assert!(!plan(Mode::Gl, Some(Stage::WgpuDx12), &[Stage::WgpuDx12], &win).unwrap().safe, "a request is not safe mode");
+    }
+
+    #[test]
+    fn a_user_request_wins_over_markers_and_skips() {
+        use Stage::*;
+        let win = Platform::Windows;
+        assert_eq!(stages(Mode::Dx12, Some(WgpuDx12), &[WgpuDx12], win), Some(vec![WgpuDx12, Glow, WgpuSoftware]));
+        assert_eq!(stages(Mode::Vulkan, None, &[], win), Some(vec![WgpuVulkan, Glow, WgpuSoftware]));
+        assert_eq!(stages(Mode::Gl, Some(Glow), &[], win), Some(vec![Glow, WgpuSoftware]));
+        assert_eq!(stages(Mode::Software, Some(WgpuSoftware), &[], win), Some(vec![WgpuSoftware, Glow]));
+        assert_eq!(stages(Mode::Metal, None, &[], Platform::Mac), Some(vec![WgpuMetal, Glow]));
+        // WGPU_BACKEND: wgpu's own choice, then the safe rungs.
+        assert_eq!(stages(Mode::Wgpu, None, &[], Platform::Linux), Some(vec![Wgpu, Glow, WgpuSoftware]));
+        // ESKIZ_RENDERER=cpu keeps the ladder (with the CPU compositor).
+        assert_eq!(stages(Mode::Cpu, Some(WgpuDx12), &[], win), Some(vec![WgpuVulkan, Glow, WgpuSoftware]));
+    }
+
+    #[test]
+    fn flag_parsing() {
         assert_eq!(Mode::parse_flag("gl"), Ok(Mode::Gl));
         assert_eq!(Mode::parse_flag("DX12"), Ok(Mode::Dx12));
         assert_eq!(Mode::parse_flag("vulkan"), Ok(Mode::Vulkan));
+        assert_eq!(Mode::parse_flag("metal"), Ok(Mode::Metal));
+        assert_eq!(Mode::parse_flag("wgpu-gl"), Ok(Mode::WgpuGl));
+        assert_eq!(Mode::parse_flag(" Software "), Ok(Mode::Software));
+        assert_eq!(Mode::parse_flag("warp"), Ok(Mode::Software));
         assert_eq!(Mode::parse_flag("auto"), Ok(Mode::Auto));
-        assert!(Mode::parse_flag("metal").is_err());
-        assert_eq!(Mode::resolve(Some(Mode::Dx12), Some("gl"), true), (Mode::Dx12, "--renderer"));
-        assert_eq!(Mode::resolve(None, Some("cpu"), true), (Mode::Cpu, "ESKIZ_RENDERER"));
-        assert_eq!(Mode::resolve(None, None, true).0, Mode::Gl);
-        assert_eq!(Mode::resolve(None, Some(""), false), (Mode::Auto, "default"));
-        assert!(parse_compat_pref("compat\n") && !parse_compat_pref("auto\n"));
+        assert!(Mode::parse_flag("directx9").is_err());
+        assert!(Mode::parse_flag("cpu").is_err(), "cpu is a compositor, not a backend");
+        for m in choices() {
+            assert_eq!(Mode::parse_flag(m.name()), Ok(m), "every Settings choice round-trips");
+        }
+    }
+
+    #[test]
+    fn precedence_cli_then_eskiz_backend_then_eskiz_renderer_then_wgpu_backend_then_settings() {
+        let all = Requests {
+            cli: Some(Mode::Dx12),
+            backend_env: Some("vulkan"),
+            renderer_env: Some("gl"),
+            wgpu_env: Some("metal"),
+            pref: Mode::Software,
+        };
+        assert_eq!(Mode::resolve(&all), (Mode::Dx12, "--renderer"));
+        assert_eq!(Mode::resolve(&Requests { cli: None, ..all }), (Mode::Vulkan, "ESKIZ_BACKEND"));
+        let r = Requests { cli: None, backend_env: None, ..all };
+        assert_eq!(Mode::resolve(&r), (Mode::Gl, "ESKIZ_RENDERER"));
+        let r = Requests { renderer_env: None, ..r };
+        assert_eq!(Mode::resolve(&r), (Mode::Wgpu, "WGPU_BACKEND"));
+        let r = Requests { wgpu_env: Some(" "), ..r };
+        assert_eq!(Mode::resolve(&r), (Mode::Software, "Settings > Graphics"));
+        assert_eq!(Mode::resolve(&Requests::default()), (Mode::Auto, "default"));
+        // A bad ESKIZ_BACKEND is ignored (and logged), not fatal.
+        let r = Requests { backend_env: Some("bogus"), ..Requests::default() };
+        assert_eq!(Mode::resolve(&r), (Mode::Auto, "default"));
+        // ESKIZ_RENDERER keeps its old values.
+        assert_eq!(Mode::resolve(&Requests { renderer_env: Some("cpu"), ..Requests::default() }).0, Mode::Cpu);
+        assert_eq!(Mode::resolve(&Requests { renderer_env: Some("whatever"), ..Requests::default() }).0, Mode::Auto);
+    }
+
+    #[test]
+    fn graphics_pref_reads_old_and_new_values() {
+        assert_eq!(parse_graphics_pref("compat\n"), Mode::Gl, "older builds wrote compat");
+        assert_eq!(parse_graphics_pref("auto\n"), Mode::Auto);
+        assert_eq!(parse_graphics_pref("dx12\n"), Mode::Dx12);
+        assert_eq!(parse_graphics_pref("software"), Mode::Software);
+        assert_eq!(parse_graphics_pref("junk"), Mode::Auto);
+        assert_eq!(parse_graphics_pref(""), Mode::Auto);
     }
 
     #[test]
@@ -428,8 +737,70 @@ mod tests {
         assert_eq!(Mode::parse(Some("gl")), Mode::Gl);
         assert_eq!(Mode::parse(Some("glow")), Mode::Gl);
         assert_eq!(Mode::parse(Some("gpu")), Mode::Gpu);
+        assert_eq!(Mode::parse(Some("software")), Mode::Software);
         assert_eq!(Mode::parse(Some("whatever")), Mode::Auto);
-        assert!(Mode::Auto.gpu_compositing() && Mode::Gpu.gpu_compositing());
-        assert!(!Mode::Cpu.gpu_compositing() && !Mode::Gl.gpu_compositing());
+        assert!(Mode::Auto.gpu_compositing() && Mode::Gpu.gpu_compositing() && Mode::Wgpu.gpu_compositing());
+        assert!(!Mode::Cpu.gpu_compositing() && !Mode::Gl.gpu_compositing() && !Mode::Software.gpu_compositing());
+    }
+
+    fn cand(name: &str, t: wgpu::DeviceType, vendor: u32, surface_ok: bool) -> Candidate {
+        Candidate {
+            adapter: Adapter {
+                name: name.into(),
+                vendor,
+                device: 1,
+                device_type: t,
+                backend: wgpu::Backend::Dx12,
+                driver: "31.0.101.2130".into(),
+                driver_info: String::new(),
+            },
+            surface_ok,
+        }
+    }
+
+    fn pick(cands: &[Candidate], stage: Stage, rules: &[gpu_blocklist::Rule], blocklist: bool, low: bool) -> Result<usize, String> {
+        choose_adapter(cands, stage, rules, "windows", blocklist, low, |_, _| {})
+    }
+
+    #[test]
+    fn selector_prefers_hardware_and_the_software_rung_takes_a_cpu_adapter() {
+        use wgpu::DeviceType::*;
+        let laptop = [
+            cand("Intel(R) UHD Graphics", IntegratedGpu, gpu_blocklist::INTEL, true),
+            cand("NVIDIA GeForce", DiscreteGpu, gpu_blocklist::NVIDIA, true),
+            cand("Microsoft Basic Render Driver", Cpu, 0x1414, true),
+        ];
+        assert_eq!(pick(&laptop, Stage::WgpuDx12, &[], true, false), Ok(1), "discrete first");
+        assert_eq!(pick(&laptop, Stage::WgpuDx12, &[], true, true), Ok(0), "WGPU_POWER_PREF=low: integrated first");
+        assert_eq!(pick(&laptop, Stage::WgpuSoftware, &[], true, false), Ok(2), "the software rung takes WARP");
+        assert!(pick(&laptop[..2], Stage::WgpuSoftware, &[], true, false).is_err(), "no software adapter: the rung fails cleanly");
+        // A VM with only WARP still gets a window on a hardware rung.
+        assert_eq!(pick(&laptop[2..], Stage::WgpuDx12, &[], true, false), Ok(0));
+        // An adapter that cannot present is never chosen.
+        let headless = [cand("NVIDIA GeForce", DiscreteGpu, gpu_blocklist::NVIDIA, false), laptop[0].clone()];
+        assert_eq!(pick(&headless, Stage::WgpuDx12, &[], true, false), Ok(1));
+        assert!(pick(&[], Stage::WgpuVulkan, &[], true, false).unwrap_err().contains("no wgpu-vulkan adapter"));
+    }
+
+    #[test]
+    fn selector_applies_the_blocklist_unless_the_user_chose_the_renderer() {
+        use wgpu::DeviceType::*;
+        let rule = gpu_blocklist::Rule {
+            vendor: gpu_blocklist::INTEL,
+            os: Some("windows"),
+            backend: Some(wgpu::Backend::Dx12),
+            name_contains: None,
+            driver_from: None,
+            driver_below: Some("31.0.101.4000"),
+            reason: "test freeze",
+        };
+        let intel_only = [cand("Intel(R) UHD Graphics", IntegratedGpu, gpu_blocklist::INTEL, true)];
+        let mut notes = Vec::new();
+        let r = choose_adapter(&intel_only, Stage::WgpuDx12, &[rule], "windows", true, false, |i, v| notes.push((i, v.to_owned())));
+        assert!(r.is_err(), "the rung fails, so the next rung is tried");
+        assert_eq!(notes, [(0, "blocked: test freeze".to_owned())]);
+        assert_eq!(pick(&intel_only, Stage::WgpuDx12, &[rule], false, false), Ok(0), "a user request ignores the list");
+        let two = [intel_only[0].clone(), cand("NVIDIA GeForce", DiscreteGpu, gpu_blocklist::NVIDIA, true)];
+        assert_eq!(pick(&two, Stage::WgpuDx12, &[rule], true, true), Ok(1), "the other adapter is used");
     }
 }

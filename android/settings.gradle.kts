@@ -18,3 +18,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "eskiz-android"
 include(":app")
+include(":sharetest")

@@ -127,8 +127,8 @@ pub struct Prefs {
     pub touch_painting: bool,
     /// Turn off popover and gallery zoom animations. The OS setting is also honoured.
     pub reduce_motion: bool,
-    /// Settings > Graphics: Compatibility (OpenGL) instead of Automatic. Applied on the next start.
-    pub compat_graphics: bool,
+    /// Settings > Graphics > Renderer: Automatic or one rung of the ladder. Applied on the next start.
+    pub graphics: crate::renderer::Mode,
 }
 
 impl Default for Prefs {
@@ -155,7 +155,7 @@ impl Default for Prefs {
             fullscreen_taps: true,
             touch_painting: true,
             reduce_motion: false,
-            compat_graphics: false,
+            graphics: crate::renderer::Mode::Auto,
         }
     }
 }
@@ -195,7 +195,7 @@ impl Prefs {
             u8::from(self.touch_painting),
             u8::from(self.reduce_motion),
             self.identity.key(),
-            u8::from(self.compat_graphics)
+            self.graphics.name()
         )
     }
 
@@ -250,7 +250,14 @@ impl Prefs {
                 "fs4" => p.fullscreen_taps = flag,
                 "touch_paint" => p.touch_painting = flag,
                 "rmotion" => p.reduce_motion = flag,
-                "gfx" => p.compat_graphics = flag,
+                // Older builds wrote 1 for Compatibility (OpenGL) and 0 for Automatic.
+                "gfx" => {
+                    p.graphics = match v {
+                        "1" => crate::renderer::Mode::Gl,
+                        "0" => crate::renderer::Mode::Auto,
+                        other => crate::renderer::parse_graphics_pref(other),
+                    }
+                }
                 "pcurve" => {
                     if let Some(c) = PressureCurve::decode(v) {
                         p.pressure_curve = c;
@@ -446,6 +453,14 @@ pub struct EskizApp {
     /// The text of the canvas top bar's "Gallery" button.
     pub(crate) gallery_title: Rect,
     pub(crate) toast: Option<Toast>,
+    /// This start runs in safe graphics mode (from [`crate::startup::safe_mode`] at start-up).
+    pub(crate) safe_mode: Option<crate::startup::SafeMode>,
+    /// Show the safe-mode notice (the first start after a step-down, until dismissed).
+    pub(crate) safe_banner: bool,
+    /// Try normal graphics was picked: the next start uses the top of the ladder.
+    pub(crate) normal_graphics_next: bool,
+    /// The renderer this window runs on (Settings > Graphics shows it).
+    pub(crate) renderer_in_use: Option<crate::startup::Stage>,
     watchdog_started: bool,
     pub(crate) now: f64,
     pub(crate) fullscreen: bool,
@@ -460,6 +475,17 @@ pub struct EskizApp {
     pub(crate) files: std::sync::Arc<dyn crate::file_access::FileAccess>,
     /// Picks asked for and not yet answered; `poll_picks` routes them each frame.
     pub(crate) pending_picks: Vec<crate::file_access::PendingPick>,
+    /// The system clipboard for images (Android), and the copies and pastes in flight.
+    pub(crate) sysclip: std::sync::Arc<dyn crate::system_clipboard::SystemClipboard>,
+    pub(crate) clips: crate::system_clipboard::ClipJobs,
+    /// What the Java side queued (notices, test hooks, Back), and the Back registration last sent.
+    pub(crate) inbox: std::sync::Arc<crate::saf::Inbox>,
+    pub(crate) back_bridge: std::sync::Arc<dyn crate::back::BackBridge>,
+    pub(crate) back_sent: Option<bool>,
+    /// Android Share tab: save to the export folder, or open the share sheet.
+    pub(crate) share_mode: crate::deliver::ShareMode,
+    /// Exports copied to their final place by the file backend, not answered yet (see [`crate::deliver`]).
+    pub(crate) commits: Vec<(crate::deliver::PendingCommit, String, f64)>,
     pub(crate) export_path: String,
     pub(crate) fps: f32,
     recognizer: Recognizer,
@@ -636,6 +662,10 @@ impl EskizApp {
             gallery_button: Rect::NOTHING,
             gallery_title: Rect::NOTHING,
             toast: None,
+            safe_mode: None,
+            safe_banner: false,
+            normal_graphics_next: false,
+            renderer_in_use: None,
             watchdog_started: false,
             now: 0.0,
             fullscreen: false,
@@ -645,6 +675,13 @@ impl EskizApp {
             open_path: String::new(),
             files: crate::file_access::default_file_access(),
             pending_picks: Vec::new(),
+            inbox: crate::saf::inbox().clone(),
+            back_bridge: crate::back::default_back_bridge(),
+            back_sent: None,
+            sysclip: crate::system_clipboard::default_system_clipboard(),
+            clips: crate::system_clipboard::ClipJobs::default(),
+            share_mode: crate::deliver::ShareMode::default(),
+            commits: Vec::new(),
             // The Share sheet's path is a base name: each format adds its own extension.
             export_path: default_export_path().with_extension("").display().to_string(),
             fps: 0.0,
@@ -710,6 +747,18 @@ impl EskizApp {
         (self.session.doc.width as f32, self.session.doc.height as f32)
     }
 
+    /// Try normal graphics (the safe-mode notice and Settings > Graphics): forget the renderers
+    /// earlier crashes and freezes ruled out, so the next start begins at the top of the ladder.
+    pub(crate) fn try_normal_graphics(&mut self) {
+        // Tests share the process-wide start-up state with the ladder tests; leave it alone there.
+        if !cfg!(test) {
+            crate::startup::retry_normal_graphics();
+        }
+        self.safe_banner = false;
+        self.normal_graphics_next = true;
+        self.show_toast("Normal graphics will be used the next time Eskiz starts.", 4.0);
+    }
+
     /// Show a transient message for `secs` seconds (the newest replaces the older one).
     pub(crate) fn show_toast(&mut self, text: impl Into<String>, secs: f64) {
         self.toast = Some(Toast {
@@ -765,6 +814,7 @@ impl EskizApp {
                 self.sync_full(ctx);
                 let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled").to_owned();
                 self.set_external_document(title);
+                crate::saf::log_line(&format!("saf: open ok {}", path.display()));
                 self.show_toast(format!("Opened {}", path.display()), 2.5);
             }
             Err(e) => self.show_toast(format!("Could not open: {e}"), 3.0),
@@ -2090,6 +2140,9 @@ impl EskizApp {
         self.journal_tick(&ctx);
         self.handle_drops(&ctx);
         self.poll_picks(&ctx);
+        self.poll_commits();
+        self.poll_clip_jobs(&ctx);
+        self.poll_bridge(&ctx);
         self.model_frame(&ctx);
         if self.gallery_active() {
             // A document that is still dirty here (its save failed) is retried.
@@ -2148,6 +2201,12 @@ impl eframe::App for EskizApp {
         // The previous frame, present included, is complete: this is the watchdog's heartbeat.
         let visible = !ui.ctx().input(|i| i.viewport().minimized.unwrap_or(false));
         crate::stall::beat(visible);
+        if ui.ctx().input(|i| i.viewport().close_requested()) && !cfg!(test) {
+            // Nothing cancels a close: start the clock, and take the window off the screen so
+            // that no more frames are presented to a surface that is going away.
+            crate::exit::begin();
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
         self.start_watchdog(ui.ctx());
         crate::startup::frame_drawn();
         if let Some(notice) = crate::startup::take_notice() {
@@ -2225,9 +2284,13 @@ pub(crate) fn pen_reading_text(r: &PenReading) -> String {
 
 impl EskizApp {
     fn shut_down(&mut self) {
+        crate::exit::begin();
+        crate::exit::step("on_exit");
         // The tablet connection borrows the window's display; close it first.
         self.pen.source = None;
+        // The document first. Thumbnails and caches are not written on the way out.
         self.finish_storage();
+        crate::exit::step("app state released; the graphics teardown follows");
     }
 
     /// Attach the result of `tablet_backend::connect`. On failure the reason is shown in
@@ -2401,6 +2464,12 @@ pub fn run_shared(file: Option<PathBuf>, tweak: impl Fn(&mut eframe::NativeOptio
                 app.set_brush_choice(&text);
             }
             app.set_pen_source(crate::tablet_backend::connect(cc));
+            if crate::renderer::saved_choice_was_reset() {
+                app.prefs.graphics = crate::renderer::Mode::Auto;
+            }
+            app.safe_mode = crate::startup::safe_mode();
+            app.renderer_in_use = crate::startup::current_stage();
+            app.safe_banner = crate::startup::take_safe_banner().is_some();
             if mode.gpu_compositing() {
                 if let Some(state) = cc.wgpu_render_state.as_ref() {
                     app.attach_gpu(&cc.egui_ctx, state);
@@ -2489,10 +2558,13 @@ mod tests {
             swipe_copy: false,
             fullscreen_taps: false,
             touch_painting: false,
-            compat_graphics: true,
+            graphics: crate::renderer::Mode::Vulkan,
         };
         assert_eq!(Prefs::decode(&p.encode()), p);
-        assert!(!Prefs::decode("light=1").compat_graphics, "old strings keep Automatic");
+        assert_eq!(Prefs::decode("light=1").graphics, crate::renderer::Mode::Auto, "old strings keep Automatic");
+        assert_eq!(Prefs::decode("gfx=1").graphics, crate::renderer::Mode::Gl, "the old Compatibility switch");
+        assert_eq!(Prefs::decode("gfx=0").graphics, crate::renderer::Mode::Auto);
+        assert_eq!(Prefs::decode("gfx=software").graphics, crate::renderer::Mode::Software);
     }
 
     #[test]

@@ -27,7 +27,7 @@ Every commit must carry a `Signed-off-by:` line, which certifies the [Developer 
 - Write contributions from public documentation and your own work. Do not submit code copied from another application, or code derived by decompiling or otherwise reverse engineering software.
 - Do not use another app's name, logo, brushes, textures or other assets in code, artwork or documentation.
 - `.procreate` is supported as a file format for compatibility. The name refers only to that format.
-- Dependencies must have licenses allowed by `deny.toml` (`cargo deny check licenses`).
+- Dependencies must have licenses allowed by `deny.toml` (`cargo deny check licenses`). `cargo deny check` also checks advisories, banned crates and sources.
 
 ## Pull requests
 

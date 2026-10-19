@@ -122,6 +122,16 @@ impl Library {
         self.root.join(format!("{id}.{MODEL_EXT}"))
     }
 
+    /// Where a 3D document's new folder is written before it is swapped in.
+    pub(crate) fn model_tmp(&self, id: &str) -> PathBuf {
+        self.root.join(format!(".{id}.{MODEL_EXT}.tmp"))
+    }
+
+    /// Where a 3D document's previous folder waits while a save swaps in the new one.
+    pub(crate) fn model_bak(&self, id: &str) -> PathBuf {
+        self.root.join(format!(".{id}.{MODEL_EXT}.bak"))
+    }
+
     /// Whether `id` is a 3D document (a folder) rather than a `.procreate` package.
     pub fn is_model_doc(&self, id: &str) -> bool {
         self.model_dir(id).is_dir()
@@ -149,8 +159,13 @@ impl Library {
             return Vec::new();
         };
         let mut out = Vec::new();
+        let mut backups = Vec::new();
         for item in dir.flatten() {
             let path = item.path();
+            if let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix('.')?.strip_suffix(".bak")?.strip_suffix(&format!(".{MODEL_EXT}"))) {
+                backups.push(id.to_owned());
+                continue;
+            }
             let ext = path.extension().and_then(|e| e.to_str());
             if ext != Some(EXT) && ext != Some(MODEL_EXT) {
                 continue;
@@ -164,6 +179,13 @@ impl Library {
             let modified = item.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
             if let Some(entry) = self.entry(&id, modified) {
                 out.push(entry);
+            }
+        }
+        // A 3D save that was cut off can leave the document only under its backup name.
+        for id in backups {
+            crate::view3d::recover_model_dir(self, &id);
+            if !out.iter().any(|e| e.id == id) {
+                out.extend(self.get(&id));
             }
         }
         out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.id.cmp(&b.id)));
@@ -320,7 +342,11 @@ impl Library {
 
     /// Remove a document and its cache files. Deleting a missing document is fine.
     pub fn delete(&self, id: &str) -> Result<(), String> {
-        let _ = check_id(id).map(|()| fs::remove_dir_all(self.model_dir(id)));
+        if check_id(id).is_ok() {
+            for dir in [self.model_dir(id), self.model_bak(id), self.model_tmp(id)] {
+                let _ = fs::remove_dir_all(dir);
+            }
+        }
         check_id(id)?;
         for path in [self.package(id), self.thumb_file(id), self.meta_file(id)] {
             match fs::remove_file(&path) {
@@ -792,8 +818,17 @@ pub(crate) fn friendly(e: &std::io::Error) -> String {
     }
 }
 
+/// Flush a folder's entries (new or renamed files in it) to disk. Only Unix-like systems can open
+/// a folder for this; elsewhere, and where the file system refuses, it does nothing.
+pub(crate) fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    let _ = fs::File::open(dir).and_then(|f| f.sync_all());
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
 /// Create a file for writing. Test builds can make the next create fail.
-fn write_file(path: &Path) -> std::io::Result<fs::File> {
+pub(crate) fn write_file(path: &Path) -> std::io::Result<fs::File> {
     #[cfg(test)]
     if let Some(kind) = FAIL_NEXT_WRITE.with(|c| c.take()) {
         return Err(std::io::Error::new(kind, "injected write failure"));
@@ -815,7 +850,7 @@ fn verify_package(path: &Path, width: usize, height: usize) -> Result<(), String
 }
 
 #[cfg(test)]
-fn check_fault() -> Result<(), String> {
+pub(crate) fn check_fault() -> Result<(), String> {
     if FAIL_NEXT_CHECK.with(|c| c.replace(false)) {
         return Err("injected check failure".to_owned());
     }
@@ -823,15 +858,15 @@ fn check_fault() -> Result<(), String> {
 }
 
 #[cfg(not(test))]
-fn check_fault() -> Result<(), String> {
+pub(crate) fn check_fault() -> Result<(), String> {
     Ok(())
 }
 
 #[cfg(test)]
 thread_local! {
-    /// Test hook: the next package file create fails with this kind.
+    /// Test hook: the next package (or 3D document) file create fails with this kind.
     pub(crate) static FAIL_NEXT_WRITE: std::cell::Cell<Option<std::io::ErrorKind>> = const { std::cell::Cell::new(None) };
-    /// Test hook: the check of the next replaced package fails.
+    /// Test hook: the check of the next replaced package (or 3D document folder) fails.
     pub(crate) static FAIL_NEXT_CHECK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -935,6 +970,7 @@ impl Worker {
                     let done = match job {
                         Job::Save(r) => {
                             let result = library.save(&r.id, &r.title, &r.doc);
+                            crate::exit::save_done();
                             Done::Saved { result, id: r.id, edits: r.edits, sig: r.sig, doc: r.doc }
                         }
                         Job::Load(id) => Done::Loaded { result: library.load(&id).map(Box::new), id },
@@ -975,7 +1011,36 @@ impl Worker {
 
     pub fn send(&self, job: Job) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(job);
+            let is_save = matches!(job, Job::Save(_));
+            if is_save {
+                crate::exit::save_queued();
+            }
+            if tx.send(job).is_err() && is_save {
+                crate::exit::save_done();
+            }
+        }
+    }
+
+    /// Finish every queued job, waiting at most `budget`. Jobs that are still running after that
+    /// are left to the thread (it stops with the process); returns whether everything finished.
+    pub fn finish_within(&mut self, budget: std::time::Duration) -> bool {
+        let Some(tx) = self.tx.take() else {
+            return true;
+        };
+        let (reply, answer) = channel::<()>();
+        if tx.send(Job::Barrier(reply)).is_err() {
+            return true;
+        }
+        drop(tx);
+        if answer.recv_timeout(budget).is_ok() {
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+            true
+        } else {
+            // Detach: dropping the handle does not wait.
+            self.handle = None;
+            false
         }
     }
 

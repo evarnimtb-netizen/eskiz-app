@@ -19,7 +19,7 @@ pub mod raster;
 pub mod wet;
 
 pub use blend::BlendMode;
-pub use eskiz_guides::{ColourSpace, PixelConverter};
+pub use eskiz_types::{ColourSpace, PixelConverter};
 pub use brushes::{
     Accumulation, Brush, CurveSet, Grain, GrainMode, Preset, Shape, Taper, TaperPair, Wet,
 };

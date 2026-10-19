@@ -9,13 +9,13 @@
 //! JSON schema beyond `name`, `color` and `title`, and the ACO version 2 name block, whose public descriptions disagree on
 //! the length field (see [`read_aco`]).
 
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
 use std::path::Path;
 
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{CompressionMethod, ZipWriter};
 
-use crate::{Error, Result};
+use crate::{limits, Error, Result};
 
 /// One colour in a palette.
 #[derive(Debug, Clone, PartialEq)]
@@ -163,9 +163,10 @@ pub fn save_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// turn, then saturation and brightness in [0, 1]. The palette title is the top-level `title`,
 /// or else the first swatch's `title`. Other models are skipped with a warning.
 pub fn read_swatches(bytes: &[u8]) -> Result<PaletteRead> {
-    let mut zip = ZipArchive::new(Cursor::new(bytes))?;
-    let mut text = String::new();
-    zip.by_name(SWATCHES_MEMBER)?.read_to_string(&mut text)?;
+    let mut zip = limits::open_zip(bytes)?;
+    let data = limits::read_entry(&mut zip, SWATCHES_MEMBER, limits::MAX_METADATA_BYTES)?
+        .ok_or(zip::result::ZipError::FileNotFound)?;
+    let text = String::from_utf8(data).map_err(|e| Error::Format(format!("{SWATCHES_MEMBER}: {e}")))?;
     let doc: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| Error::Format(format!("{SWATCHES_MEMBER}: {e}")))?;
     let items = doc
@@ -517,6 +518,8 @@ fn push_ase_block(out: &mut Vec<u8>, kind: u16, payload: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use zip::ZipArchive;
 
     fn sample_palette() -> Palette {
         Palette {

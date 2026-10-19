@@ -600,3 +600,21 @@ fn eskiz_popovers_have_no_accent_tints_or_coloured_slider_pills() {
         assert!(orange < 1500, "{panel:?}: {orange} orange pixels, the accent is spent sparingly");
     }
 }
+
+#[test]
+fn ctrl_z_undoes_the_last_stroke_on_windows_and_linux() {
+    // On those systems the window reports both `ctrl` and `command` for the Ctrl key.
+    for (name, physical) in [("ctrlz-a", None), ("ctrlz-b", Some(egui::Key::Z))] {
+        let mut h = canvas_app(name, quiet());
+        let p = open_stroke(&mut h);
+        release(&mut h, p);
+        let steps = h.app.session.undo_steps();
+        assert!(steps >= 1);
+        let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+        h.event(Event::Key { key: egui::Key::Z, physical_key: physical, pressed: true, repeat: false, modifiers: ctrl });
+        h.step();
+        h.event(Event::Key { key: egui::Key::Z, physical_key: physical, pressed: false, repeat: false, modifiers: ctrl });
+        h.advance(0.3);
+        assert_eq!(h.app.session.undo_steps(), steps - 1, "Ctrl+Z took the stroke back");
+    }
+}

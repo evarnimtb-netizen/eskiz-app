@@ -19,6 +19,8 @@ mod a11y_tests;
 pub mod adjust;
 pub mod animation_ui;
 pub mod app;
+pub mod back;
+pub mod bridge;
 pub mod bit_depth;
 pub mod brush_import;
 pub mod brush_library;
@@ -29,6 +31,7 @@ pub mod colour;
 pub mod colour_management;
 pub mod pour_fill;
 pub mod curves_widget;
+pub mod deliver;
 pub mod diagnose;
 #[cfg(test)]
 mod pour_fill_tests;
@@ -52,6 +55,7 @@ mod file_access_tests;
 pub mod gallery;
 pub mod floodfill;
 pub mod gesture;
+pub mod gpu_blocklist;
 pub mod gpu_canvas;
 pub mod gpu_display;
 pub mod guide_ui;
@@ -65,6 +69,8 @@ pub mod icons_selection;
 pub mod icons_tools;
 pub mod import;
 pub mod liquify_tool;
+#[cfg(target_os = "android")]
+pub mod android_bridge;
 pub mod android_input;
 pub mod android_queue;
 pub mod android_source;
@@ -81,6 +87,14 @@ pub mod hold_shape;
 pub mod reference;
 pub mod renderer;
 pub mod selftest;
+pub mod saf;
+pub mod system_clipboard;
+#[cfg(test)]
+mod saf_tests;
+#[cfg(test)]
+mod android_a4_tests;
+#[cfg(test)]
+mod back_tests;
 pub mod saved_store;
 pub mod selection_tool;
 pub mod session;
@@ -107,6 +121,8 @@ mod rc3_tests;
 #[cfg(test)]
 mod rc5_tests;
 #[cfg(test)]
+mod safe_mode_tests;
+#[cfg(test)]
 mod rotated_overlay_tests;
 #[cfg(test)]
 mod rc3_look_tests;
@@ -124,12 +140,15 @@ pub mod user_guide;
 #[cfg(test)]
 mod studio_tests;
 #[cfg(test)]
+mod android_fixtures;
+#[cfg(test)]
 mod visual_tour_tests;
 pub mod snapshot;
 #[cfg(test)]
 mod qa_capture;
 pub mod tablet;
 pub mod tablet_backend;
+pub mod exit;
 pub mod stall;
 pub mod startup;
 #[cfg(any(target_os = "macos", test))]
@@ -163,9 +182,10 @@ Eskiz - painting app
 
 USAGE:
     eskiz [FILE.procreate]              open the window (optionally with a document)
-    eskiz --renderer gl|dx12|vulkan|auto [FILE]
-                                        pick the graphics renderer (same as ESKIZ_RENDERER);
-                                        gl is the compatible OpenGL mode, auto forgets stalls
+    eskiz --renderer auto|dx12|vulkan|metal|wgpu-gl|gl|software [FILE]
+                                        pick the graphics renderer (same as ESKIZ_BACKEND);
+                                        gl is the compatible OpenGL mode, software needs no
+                                        GPU driver, auto leaves safe graphics mode
     eskiz --open FILE --export OUT.png  export a document to PNG without a window
     eskiz --version                     print the version
     eskiz --selftest                    paint, undo and redo headlessly; writes selftest.png
@@ -190,7 +210,7 @@ pub fn split_renderer_flag(args: &[String]) -> Result<(Option<renderer::Mode>, V
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if arg == "--renderer" {
-            let value = it.next().ok_or("--renderer needs gl, dx12, vulkan or auto")?;
+            let value = it.next().ok_or("--renderer needs auto, dx12, vulkan, metal, wgpu-gl, gl or software")?;
             mode = Some(renderer::Mode::parse_flag(value)?);
         } else if let Some(value) = arg.strip_prefix("--renderer=") {
             mode = Some(renderer::Mode::parse_flag(value)?);
@@ -433,7 +453,9 @@ mod tests {
         assert_eq!(split_renderer_flag(&a(&["--renderer", "auto"])).unwrap().0, Some(renderer::Mode::Auto));
         assert_eq!(split_renderer_flag(&a(&["x"])).unwrap().0, None);
         assert!(split_renderer_flag(&a(&["--renderer"])).is_err());
-        assert!(split_renderer_flag(&a(&["--renderer", "metal"])).is_err());
+        assert_eq!(split_renderer_flag(&a(&["--renderer", "metal"])).unwrap().0, Some(renderer::Mode::Metal));
+        assert_eq!(split_renderer_flag(&a(&["--renderer=software"])).unwrap().0, Some(renderer::Mode::Software));
+        assert!(split_renderer_flag(&a(&["--renderer", "directx9"])).is_err());
         // The flag does not disturb the rest of the command line.
         assert_eq!(parse_args(&a(&["--renderer", "gl"])), Ok(Command::Gui { file: None }));
         assert_eq!(parse_args(&a(&["--renderer", "gl", "--version"])), Ok(Command::Version));

@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use eskiz_text::storage::{apply_saved, attrs_to_saved, SavedValue, KEY_FONT_SIZE, REFERENCE_KEYS};
 use eskiz_text::{
-    Affine, Alignment, Attrs, Color, FontError, FontFace, FontLibrary, TextLayer, WritingDirection,
+    Affine, Alignment, Attrs, Color, FontError, FontFace, FontLibrary, TextLayer, TextLayerExt,
+    WritingDirection,
 };
 
 fn fonts_or_skip() -> Option<FontLibrary> {

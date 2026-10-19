@@ -155,6 +155,11 @@ impl EskizApp {
             self.request_pick_near(purpose, &typed, name);
         }
         match action {
+            // Android has no typed path: the buttons open the system picker.
+            Some(PaletteAction::Import) if self.files.staged() => self.request_pick(PickPurpose::PaletteImport, None, None),
+            Some(PaletteAction::Export) if self.files.staged() => {
+                self.request_pick(PickPurpose::PaletteExport, Some("palette.swatches".into()), None);
+            }
             Some(PaletteAction::Import) => self.palette_import(),
             Some(PaletteAction::Export) => self.palette_export(),
             Some(PaletteAction::FromCanvas) => self.palette_from_canvas(),
@@ -201,6 +206,11 @@ impl EskizApp {
 
     /// Writes the palette in the format the file name asks for.
     pub(crate) fn palette_export(&mut self) {
+        self.palette_export_with(crate::deliver::Delivery::Local);
+    }
+
+    /// Like [`Self::palette_export`], delivering the file as `delivery` says.
+    pub(crate) fn palette_export_with(&mut self, delivery: crate::deliver::Delivery) {
         let path = self.guides.palette_path.trim().to_owned();
         let ext = ext_of(&path);
         let palette = FilePalette {
@@ -233,7 +243,10 @@ impl EskizApp {
             palettes::save_atomic(Path::new(&path), &bytes).map_err(|e| e.to_string())
         });
         match result {
-            Ok(()) => self.show_toast(format!("Exported {} colors", palette.swatches.len()), 2.5),
+            Ok(()) => {
+                let text = format!("Exported {} colors", palette.swatches.len());
+                self.deliver(Path::new(&path), delivery, text, 2.5);
+            }
             Err(e) => self.show_toast(format!("Could not write {path}: {e}"), 3.0),
         }
     }

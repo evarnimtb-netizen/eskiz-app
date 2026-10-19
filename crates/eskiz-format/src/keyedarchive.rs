@@ -7,17 +7,18 @@
 //!
 //! Differences from the Python version: the result is a tree, not a shared graph. A reference
 //! to an object that is still being decoded (a cycle such as `layer.document -> document`)
-//! resolves to [`Object::Null`]. Other repeated references are expanded again. Nesting depth
-//! and the total number of expanded nodes are limited.
+//! resolves to [`Object::Null`]. Other repeated references are expanded again. The property list
+//! is checked with [`limits::check_plist`] before it is parsed, and the decoded tree's nesting
+//! depth (references and inline collections together), node count and string and data bytes
+//! are limited ([`limits::MAX_ARCHIVE_DEPTH`], [`limits::MAX_ARCHIVE_NODES`],
+//! [`limits::MAX_ARCHIVE_BYTES`]).
 
 use std::collections::BTreeMap;
 
 use plist::{Dictionary, Value};
 
+use crate::limits::{self, MAX_ARCHIVE_BYTES, MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_NODES};
 use crate::{Error, Result};
-
-const MAX_DEPTH: usize = 256;
-const MAX_NODES: usize = 1 << 22;
 
 const LIST_CLASSES: &[&str] = &[
     "NSArray",
@@ -174,7 +175,34 @@ pub struct KeyedUnarchiver {
 struct Ctx {
     /// Object indices currently being decoded, for cycle detection.
     stack: Vec<usize>,
+    /// Current nesting: referenced objects and inline arrays and dictionaries.
+    depth: usize,
     nodes: usize,
+    /// String and data bytes produced so far.
+    bytes: u64,
+}
+
+impl Ctx {
+    /// Counts one decoded value holding `bytes` bytes of strings or data.
+    fn spend(&mut self, bytes: usize) -> Result<()> {
+        self.nodes += 1;
+        if self.nodes > MAX_ARCHIVE_NODES {
+            return Err(limits::exceeded(format!("the archive expands to more than {MAX_ARCHIVE_NODES} objects")));
+        }
+        self.bytes += bytes as u64;
+        if self.bytes > MAX_ARCHIVE_BYTES {
+            return Err(limits::exceeded(format!("the archive expands to more than {MAX_ARCHIVE_BYTES} bytes")));
+        }
+        Ok(())
+    }
+
+    fn enter(&mut self) -> Result<()> {
+        if self.depth >= MAX_ARCHIVE_DEPTH {
+            return Err(limits::exceeded(format!("the archive nests more than {MAX_ARCHIVE_DEPTH} levels deep")));
+        }
+        self.depth += 1;
+        Ok(())
+    }
 }
 
 fn uid_index(value: &Value) -> Option<usize> {
@@ -187,7 +215,7 @@ fn uid_index(value: &Value) -> Option<usize> {
 impl KeyedUnarchiver {
     /// Parses a binary property list and checks that it is an NSKeyedArchiver archive.
     pub fn new(data: &[u8]) -> Result<Self> {
-        let Value::Dictionary(mut root) = plist::from_bytes::<Value>(data)? else {
+        let Value::Dictionary(mut root) = limits::parse_plist(data)? else {
             return Err(Error::Format("archive root is not a dictionary".into()));
         };
         if root.get("$archiver").and_then(Value::as_string) != Some("NSKeyedArchiver") {
@@ -219,11 +247,22 @@ impl KeyedUnarchiver {
     }
 
     fn decode(&self, value: &Value, ctx: &mut Ctx) -> Result<Object> {
+        if let Value::Uid(_) = value {
+            let idx = uid_index(value).ok_or_else(|| Error::Format("UID out of range".into()))?;
+            return self.decode_index(idx, ctx);
+        }
+        ctx.spend(match value {
+            Value::String(s) => s.len(),
+            Value::Data(d) => d.len(),
+            _ => 0,
+        })?;
+        if let Value::Array(_) | Value::Dictionary(_) = value {
+            ctx.enter()?;
+            let result = self.decode_collection(value, ctx);
+            ctx.depth -= 1;
+            return result;
+        }
         Ok(match value {
-            Value::Uid(_) => {
-                let idx = uid_index(value).ok_or_else(|| Error::Format("UID out of range".into()))?;
-                return self.decode_index(idx, ctx);
-            }
             Value::Boolean(b) => Object::Bool(*b),
             Value::Integer(_) => match value.as_signed_integer() {
                 Some(n) => Object::Int(n),
@@ -233,6 +272,12 @@ impl KeyedUnarchiver {
             Value::String(s) => Object::String(s.clone()),
             Value::Data(d) => Object::Data(d.clone()),
             Value::Date(d) => Object::Date(*d),
+            _ => Object::Null,
+        })
+    }
+
+    fn decode_collection(&self, value: &Value, ctx: &mut Ctx) -> Result<Object> {
+        Ok(match value {
             Value::Array(items) => Object::Array(
                 items
                     .iter()
@@ -241,7 +286,10 @@ impl KeyedUnarchiver {
             ),
             Value::Dictionary(d) => Object::Dict(
                 d.iter()
-                    .map(|(k, v)| Ok((Object::String(k.clone()), self.decode(v, ctx)?)))
+                    .map(|(k, v)| {
+                        ctx.spend(k.len())?;
+                        Ok((Object::String(k.clone()), self.decode(v, ctx)?))
+                    })
                     .collect::<Result<Vec<_>>>()?,
             ),
             _ => Object::Null,
@@ -259,19 +307,16 @@ impl KeyedUnarchiver {
         if ctx.stack.contains(&idx) {
             return Ok(Object::Null); // back-reference to an object being decoded
         }
-        if ctx.stack.len() >= MAX_DEPTH {
-            return Err(Error::Format("archive is nested too deeply".into()));
-        }
-        ctx.nodes += 1;
-        if ctx.nodes > MAX_NODES {
-            return Err(Error::Format("archive expands to too many objects".into()));
-        }
+        ctx.enter()?;
         ctx.stack.push(idx);
         let result = match raw {
-            Value::Dictionary(dict) if dict.contains_key("$class") => self.decode_class(dict, ctx),
+            Value::Dictionary(dict) if dict.contains_key("$class") => {
+                ctx.spend(0).and_then(|()| self.decode_class(dict, ctx))
+            }
             other => self.decode(other, ctx),
         };
         ctx.stack.pop();
+        ctx.depth -= 1;
         result
     }
 
@@ -314,6 +359,7 @@ impl KeyedUnarchiver {
                 .collect(),
             None => vec![name.clone()],
         };
+        ctx.spend(hierarchy.iter().map(String::len).sum::<usize>() + name.len())?;
         let name = name.as_str();
 
         if LIST_CLASSES.contains(&name) {
@@ -360,6 +406,7 @@ impl KeyedUnarchiver {
             if key == "$class" {
                 continue;
             }
+            ctx.spend(key.len())?;
             fields.insert(key.clone(), self.decode(value, ctx)?);
         }
         Ok(Object::Archived(ArchivedObject {

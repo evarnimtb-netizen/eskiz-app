@@ -15,13 +15,14 @@ pub mod export;
 pub mod icc;
 mod error;
 pub mod keyedarchive;
+pub mod limits;
 mod pack;
 pub mod palettes;
 pub mod psd;
 #[cfg(test)]
 mod reference;
 
-pub use codecs::{apple_lz4_compress, apple_lz4_decompress, lz4_block_compress, lzo1x_decompress};
+pub use codecs::{apple_lz4_compress, apple_lz4_declared_size, apple_lz4_decompress, lz4_block_compress, lzo1x_decompress};
 pub use document::{
     blend_mode_name, AnimationSpec, DecodedTile, Document, DocumentBuilder, Group, GroupSpec, Item, Layer,
     LayerSpec, Node, TextRunSpec, TextSpec, TextValue, TileEncoding, TilePixels, BLEND_MODES,

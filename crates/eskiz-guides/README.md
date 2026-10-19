@@ -57,6 +57,9 @@ let strokes: Vec<Vec<Sample>> = assist.assist(&samples);   // one Vec per output
 - `extract_palette(rgba_pixels, max_colours)`: k-means, capped at 30 colors.
 - `ColourConverter::new(from, to)` with `apply` (clamped) and `apply_unclamped`, plus
   `convert`. Spaces are `ColorSpace::{Srgb, DisplayP3}`.
+- `Rgb`, `Rgb8` and `colour_space` are defined in the leaf crate `eskiz-types` (so
+  `eskiz-core` can use them without depending on this crate) and re-exported here
+  unchanged. Their conversion tests are in `eskiz-types/tests/colour_space.rs`.
 
 ## Design choices
 

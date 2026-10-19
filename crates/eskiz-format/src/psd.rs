@@ -25,6 +25,7 @@ use std::path::Path;
 use eskiz_guides::ColourSpace;
 
 use crate::error::{Error, Result};
+use crate::limits;
 
 /// Largest canvas side, and largest layer side, that PSD version 1 allows.
 const MAX_SIDE: u32 = 30_000;
@@ -253,6 +254,7 @@ fn parse(bytes: &[u8], allow16: bool) -> Result<(PsdDocument, Layers16)> {
             "invalid canvas size {width}x{height}"
         )));
     }
+    limits::check_canvas(width, height, "the PSD canvas")?;
     if depth != 8 && !(allow16 && depth == 16) {
         return Err(Error::Unsupported(format!(
             "unsupported channel depth {depth} (only 8-bit is supported)"
@@ -1499,6 +1501,22 @@ fn parse_layer_info(li: &[u8], w: usize, h: usize, mut wide: Option<&mut Layers1
     for _ in 0..count {
         records.push(read_record(&mut r)?);
     }
+    // every layer is decoded to a full canvas: check the total before decoding any
+    let layers = records.iter().filter(|rec| matches!(rec.kind, Kind::Layer)).count();
+    if layers > limits::MAX_LAYERS {
+        return Err(limits::exceeded(format!(
+            "the PSD has {layers} layers; the most Eskiz opens is {}",
+            limits::MAX_LAYERS
+        )));
+    }
+    let bytes_per_pixel: u64 = if wide.is_some() { 8 } else { 4 };
+    let decoded = (layers as u64).saturating_mul((w * h) as u64).saturating_mul(bytes_per_pixel);
+    if decoded > limits::MAX_DECODED_BYTES {
+        return Err(limits::exceeded(format!(
+            "the PSD's {layers} layers decode to {decoded} bytes; the most Eskiz holds is {}",
+            limits::MAX_DECODED_BYTES
+        )));
+    }
 
     // Channel data follows all records, in record order and then channel-table order.
     let mut starts = Vec::with_capacity(count);
@@ -1677,6 +1695,7 @@ fn decode_layer(rec: &RawRecord, li: &[u8], start: usize, w: usize, h: usize) ->
     if rw > MAX_SIDE as usize || rh > MAX_SIDE as usize {
         return Err(Error::Format("layer rectangle is too large".into()));
     }
+    limits::check_canvas(rw as u32, rh as u32, "a PSD layer")?;
 
     let mut planes: [Option<Vec<u8>>; 4] = [None, None, None, None];
     let mut offset = start;
@@ -1740,6 +1759,7 @@ fn decode_layer16(rec: &RawRecord, li: &[u8], start: usize, w: usize, h: usize) 
     if rw > MAX_SIDE as usize || rh > MAX_SIDE as usize {
         return Err(Error::Format("layer rectangle is too large".into()));
     }
+    limits::check_canvas(rw as u32, rh as u32, "a PSD layer")?;
     let mut planes: [Option<Vec<u16>>; 4] = [None, None, None, None];
     let mut offset = start;
     for &(id, len) in &rec.channels {

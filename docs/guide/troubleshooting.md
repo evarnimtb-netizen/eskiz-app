@@ -10,23 +10,35 @@ Eskiz also needs OpenGL and Vulkan drivers to draw the window: `libgl1 libvulkan
 
 ## The window opens, but nothing draws, or the graphics fail
 
-Eskiz draws with the graphics card through wgpu (Metal, DirectX 12 or Vulkan). If that fails or panics while the window opens, Eskiz retries once with OpenGL, and it logs the adapter and backend it chose (see the Windows section above for where the log is). You can choose the path yourself with the **ESKIZ_RENDERER** environment variable:
+Eskiz draws with the graphics card through wgpu. Each system has a list of renderers, fastest first:
 
-- `gpu`, or not set: the default, with the GPU compositor.
-- `cpu`: the same window, with the compositor on the processor. Use this if the picture looks wrong.
-- `gl`: an OpenGL window, with the compositor on the processor.
+| System | Renderers, in order |
+|---|---|
+| Windows | DirectX 12, Vulkan, OpenGL (compatibility), Software |
+| macOS | Metal, OpenGL (compatibility) |
+| Linux | Vulkan, OpenGL (wgpu), OpenGL (compatibility), Software |
 
-Values are not case-sensitive. An unknown value means the default.
+If a renderer fails while the window opens, Eskiz tries the next one straight away. If a start crashes or freezes, the next start begins one step lower and shows "Eskiz started in safe graphics mode after a problem last time", with **Try normal graphics** to go back to the top on the following start. Eskiz stays in safe mode until you choose that. Every start logs each graphics adapter it found (name, vendor, driver version, backend) and the one it chose, in `startup.log` (Windows: `%LOCALAPPDATA%\Eskiz\logs`; macOS and Linux: the `logs` folder inside Eskiz's data folder).
+
+OpenGL (compatibility) and Software composite the picture on the processor: slower on large canvases, but they work almost everywhere. Software needs no graphics driver at all.
+
+To choose a renderer yourself:
+
+- Actions > **Settings** > **Graphics**: Automatic or one of the renderers above. It applies the next time Eskiz starts.
+- `eskiz --renderer auto|dx12|vulkan|metal|wgpu-gl|gl|software`. `auto` also leaves safe graphics mode.
+- The `ESKIZ_BACKEND` environment variable takes the same values. The older `ESKIZ_RENDERER` still works (`gpu`, `cpu` for the processor compositor, `gl`), and so does wgpu's own `WGPU_BACKEND`.
+
+The command line wins, then `ESKIZ_BACKEND`, `ESKIZ_RENDERER`, `WGPU_BACKEND`, and the Settings choice last. A renderer you choose is used even if it failed before; a Settings choice that crashed the last start is set aside once, so Eskiz can still open.
 
 ## The window freezes ("Not Responding")
 
-Some graphics drivers stop answering. Eskiz limits every wait on the graphics card to under two seconds; if one runs out, it switches to the processor for the rest of the session and shows "Graphics driver is slow; switched to compatible mode". A watchdog also notices a window that does not finish a frame for 3 seconds: it writes a `STALL:` line to `startup.log` (with the phase it was in) and leaves a `stalled.marker` file. Close the frozen window (Task Manager > End task) and start Eskiz again: it skips the renderer that froze and tells you so. The order is automatic, DirectX 12, Vulkan, then OpenGL.
+Some graphics drivers stop answering. Eskiz limits every wait on the graphics card to under two seconds; if one runs out, it switches to the processor for the rest of the session and shows "Graphics driver is slow; switched to compatible mode". A watchdog also notices a window that does not finish a frame for 3 seconds: it writes a `STALL:` line to `startup.log` (with the phase it was in) and leaves a `stalled.marker` file. Close the frozen window (Task Manager > End task) and start Eskiz again: it starts on the next renderer down (see the table above) and tells you so.
 
 You can pick the renderer yourself:
 
-- Start `eskiz.exe --renderer gl` (also `dx12`, `vulkan` or `auto`; `auto` forgets earlier freezes). On Windows, the zip has **Eskiz (compatibility mode).bat**, which does this for you.
-- Or open Actions, then **Settings**, then **Graphics**, and turn on **Compatibility graphics (OpenGL)**. It applies the next time Eskiz starts.
-- `ESKIZ_RENDERER=gl` does the same as `--renderer gl`; the command line wins.
+- Start `eskiz.exe --renderer gl` (or any value listed above; `auto` forgets earlier freezes). On Windows, the zip has **Eskiz (compatibility mode).bat**, which does this for you.
+- Or open Actions, then **Settings**, then **Graphics**, and pick **OpenGL (compatibility)**. It applies the next time Eskiz starts.
+- `ESKIZ_BACKEND=gl` does the same as `--renderer gl`; the command line wins.
 
 Compatibility mode is slower on large canvases, but works on nearly every PC. Please send `startup.log` when you report a freeze.
 
@@ -37,7 +49,7 @@ Work through these in order.
 1. **Extract the zip first.** Right-click the `.zip`, choose **Extract All**, and run `eskiz.exe` from the new folder. Running it from inside the zip window does not work.
 2. **SmartScreen.** The download is not code-signed, so Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
 3. **Read the log.** Open `%LOCALAPPDATA%\Eskiz\logs` (paste it into the Explorer address bar). `startup.log` lists each start-up step, the graphics adapter and backend that were chosen, and "first frames drawn" when the window came up. `startup.prev.log` is the run before. If Eskiz crashed, `panic-<number>.txt` holds the message, the place in the code and a backtrace. When the start fails, Eskiz also shows a message box with the reason and this folder.
-4. **Graphics.** If the previous start never drew its first frames (a graphics driver can end the process without any message), Eskiz notices the next time and tries a safer renderer: first DirectX 12 only, then Vulkan only, then OpenGL. Check `startup.log` for lines starting `renderer attempt`. You can also force it: set `ESKIZ_RENDERER=gl` (OpenGL) or `ESKIZ_RENDERER=cpu`. Updating the graphics driver usually fixes it for good.
+4. **Graphics.** If the previous start never drew its first frames (a graphics driver can end the process without any message), Eskiz notices the next time and starts in safe graphics mode, one renderer lower: DirectX 12, then Vulkan, then OpenGL, then Software. Check `startup.log` for lines starting `renderer attempt` and `adapter`. You can also force it: `eskiz.exe --renderer gl` or `--renderer software`. Updating the graphics driver usually fixes it for good.
 5. **Terminal output.** Start `eskiz.exe --version`, `--selftest` or `--diagnose` from PowerShell or Command Prompt; the result prints in that window. Please send the `--diagnose` output and the files from the logs folder when you report a problem.
 
 Eskiz is built with the C runtime inside, so the Visual C++ Redistributable is not needed.

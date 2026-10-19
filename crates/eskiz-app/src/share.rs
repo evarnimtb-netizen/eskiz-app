@@ -8,6 +8,7 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use eframe::egui;
 
 use crate::app::EskizApp;
+use crate::deliver::Delivery;
 use crate::export::{export_with, expand_home, ExportFormat, ExportSettings};
 use crate::import::{decode_image, fit_premul, fit_to_canvas, is_layered_file, read_layers};
 
@@ -15,6 +16,7 @@ use crate::import::{decode_image, fit_premul, fit_to_canvas, is_layered_file, re
 struct ExportJob {
     rx: Receiver<Result<PathBuf, String>>,
     format: ExportFormat,
+    delivery: Delivery,
 }
 
 /// Layers to add above the active one, bottom to top: each name with canvas-sized premultiplied
@@ -54,21 +56,44 @@ impl EskizApp {
     }
 
     /// Export the document to `export_path` in `format` with the Share sheet's settings, off the
-    /// UI thread. A toast reports the file written, or the error.
+    /// UI thread. A toast reports the file written, or the error. On Android the export goes to a
+    /// staging path and is saved or shared (see [`crate::deliver`]).
     pub(crate) fn start_export(&mut self, ctx: &egui::Context, format: ExportFormat) {
         if self.share.export.is_some() {
             self.show_toast("An export is already running.", 2.0);
+            return;
+        }
+        if self.files.staged() {
+            self.start_export_staged(ctx, format);
             return;
         }
         if self.export_path.trim().is_empty() {
             self.show_toast("Type a file path to export to.", 2.0);
             return;
         }
+        let path = expand_home(&self.export_path);
+        self.start_export_to(ctx, format, path, Delivery::Local);
+    }
+
+    /// Android: write the export to the share cache, or ask where to save it first.
+    fn start_export_staged(&mut self, ctx: &egui::Context, format: ExportFormat) {
         if let Err(e) = self.share.settings.validate() {
             self.show_toast(e, 3.0);
             return;
         }
-        let path = expand_home(&self.export_path);
+        self.begin_staged(ctx, crate::deliver::ExportKind::Still(format));
+    }
+
+    /// Write `format` to `path` in the background, then deliver it as `delivery` says.
+    pub(crate) fn start_export_to(&mut self, ctx: &egui::Context, format: ExportFormat, path: PathBuf, delivery: Delivery) {
+        if self.share.export.is_some() {
+            self.show_toast("An export is already running.", 2.0);
+            return;
+        }
+        if let Err(e) = self.share.settings.validate() {
+            self.show_toast(e, 3.0);
+            return;
+        }
         // A snapshot, so painting can carry on while the file is written.
         let doc = self.session.doc.clone();
         let settings = self.share.settings.clone();
@@ -82,8 +107,13 @@ impl EskizApp {
             self.show_toast("Could not start the export.", 2.5);
             return;
         }
-        self.share.export = Some(ExportJob { rx, format });
+        self.share.export = Some(ExportJob { rx, format, delivery });
         self.show_toast(format!("Exporting {}...", format.label()), 30.0);
+    }
+
+    /// The title the open drawing is saved under, for file names.
+    pub(crate) fn export_title(&self) -> String {
+        self.gal.current.as_ref().map_or_else(|| "Eskiz".to_owned(), |c| c.title.clone())
     }
 
     /// Import a picture (PNG, JPEG or WebP) as a new layer above the active one, or a PSD or
@@ -128,9 +158,13 @@ impl EskizApp {
             match job.rx.try_recv() {
                 Ok(result) => {
                     let label = job.format.label();
+                    let delivery = job.delivery;
                     self.share.export = None;
                     match result {
-                        Ok(path) => self.show_toast(format!("Exported {label} to {}", path.display()), 3.5),
+                        Ok(path) => {
+                            let text = format!("Exported {label} to {}", path.display());
+                            self.deliver(&path, delivery, text, 3.5);
+                        }
                         Err(e) => self.show_toast(format!("Export failed: {e}"), 4.0),
                     }
                 }

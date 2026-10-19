@@ -157,6 +157,8 @@ pub(crate) struct Gallery {
     import_path: String,
     /// The gallery item waiting for a folder pick to export into.
     pub(crate) share_target: Option<String>,
+    /// Android: the PNG being exported goes to the share sheet when it is written.
+    pub(crate) share_via_sheet: bool,
     confirm: Option<Vec<String>>,
     pub header: HeaderRects,
     pub card_rects: Vec<(String, Rect)>,
@@ -237,6 +239,7 @@ impl Default for Gallery {
             custom_h: "1200".to_owned(),
             import_path: String::new(),
             share_target: None,
+            share_via_sheet: false,
             confirm: None,
             header: HeaderRects::default(),
             card_rects: Vec::new(),
@@ -255,6 +258,48 @@ impl Default for Gallery {
             restoring: None,
             restored: None,
             recovery_buttons: (Rect::NOTHING, Rect::NOTHING),
+        }
+    }
+}
+
+impl Gallery {
+    /// What Back closes on the gallery screen, in the order Escape uses (dialog, menu, swipe
+    /// action, select mode) and then an open stack.
+    pub(crate) fn back_step(&self) -> Option<crate::back::GalleryBack> {
+        use crate::back::GalleryBack as G;
+        if self.confirm.is_some() {
+            Some(G::Confirm)
+        } else if self.menu.is_some() {
+            Some(G::Menu)
+        } else if self.revealed.is_some() {
+            Some(G::Revealed)
+        } else if self.select {
+            Some(G::Select)
+        } else if self.open_stack.is_some() {
+            Some(G::Stack)
+        } else {
+            None
+        }
+    }
+
+    /// Turn select mode on (tests of Back).
+    #[cfg(test)]
+    pub(crate) fn enter_select_for_test(&mut self) {
+        self.select = true;
+    }
+
+    /// Close one thing [`Self::back_step`] named.
+    pub(crate) fn back_close(&mut self, step: crate::back::GalleryBack) {
+        use crate::back::GalleryBack as G;
+        match step {
+            G::Confirm => self.confirm = None,
+            G::Menu => self.menu = None,
+            G::Revealed => self.revealed = None,
+            G::Select => {
+                self.select = false;
+                self.selected.clear();
+            }
+            G::Stack => self.open_stack = None,
         }
     }
 }
@@ -334,11 +379,10 @@ impl Gallery {
             .is_some_and(|c| c.saved_edits != Some(edits) || c.saved_sig != meta_signature(doc))
     }
 
-    /// Wait for queued jobs and stop the worker (app exit).
-    pub fn shutdown(&mut self) {
-        if let Some(w) = self.worker.as_mut() {
-            w.finish();
-        }
+    /// Wait for queued jobs and stop the worker (app exit), but give up after `budget` (the close must stay short). The
+    /// storage thread keeps writing; the exit deadline waits for a save that is running.
+    pub fn shutdown_within(&mut self, budget: Duration) -> bool {
+        self.worker.as_mut().is_none_or(|w| w.finish_within(budget))
     }
 }
 
@@ -688,8 +732,11 @@ impl EskizApp {
 
     /// App exit: queue the final save, wait for the worker to finish everything.
     pub(crate) fn finish_storage(&mut self) {
+        crate::exit::step("saving the document");
         self.save_on_exit();
-        self.gal.shutdown();
+        crate::exit::step("waiting for the storage worker");
+        let ok = self.gal.shutdown_within(crate::exit::GRACE);
+        crate::exit::step(if ok { "storage worker finished" } else { "storage worker still busy; the deadline waits for the save" });
     }
 
     /// Apply finished background jobs.
@@ -773,8 +820,17 @@ impl EskizApp {
                     self.show_toast(format!("Imported {}", entry.title), 2.5);
                 }
                 Done::Imported(Err(e)) => self.show_toast(format!("Could not import: {e}"), 4.0),
-                Done::Exported(Ok(path)) => self.show_toast(format!("Exported {}", path.display()), 3.0),
-                Done::Exported(Err(e)) => self.show_toast(format!("Export failed: {e}"), 4.0),
+                Done::Exported(Ok(path)) => {
+                    if std::mem::take(&mut self.gal.share_via_sheet) {
+                        self.share_files(&path);
+                    } else {
+                        self.deliver(&path, crate::deliver::Delivery::Local, format!("Exported {}", path.display()), 3.0);
+                    }
+                }
+                Done::Exported(Err(e)) => {
+                    self.gal.share_via_sheet = false;
+                    self.show_toast(format!("Export failed: {e}"), 4.0);
+                }
             }
         }
     }
@@ -802,6 +858,17 @@ impl EskizApp {
         self.show_toast("Exporting PNG...", 1.5);
     }
 
+    /// Android: export the item waiting in `gal.share_target` as a PNG into the share cache and open the share sheet.
+    pub(crate) fn gallery_share_sheet(&mut self) {
+        let Some(path) = self.files.share_path("share.png") else {
+            self.gallery_share_to(None);
+            return;
+        };
+        let dir = path.parent().map_or_else(|| PathBuf::from("."), PathBuf::from);
+        self.gal.share_via_sheet = true;
+        self.gallery_share_to(Some(dir));
+    }
+
     fn open_entry(&mut self, id: &str, from: Rect) {
         if self.gal.library.as_ref().is_some_and(|l| l.is_model_doc(id)) {
             self.start_model_open(id.to_owned());
@@ -822,7 +889,7 @@ impl EskizApp {
         self.gal.send(Job::Load(e.id));
     }
 
-    fn new_canvas(&mut self, frame: u64, w: usize, h: usize, from: Rect) {
+    pub(crate) fn new_canvas(&mut self, frame: u64, w: usize, h: usize, from: Rect) {
         if debug_input() {
             eprintln!("[input f{frame}] new_canvas {w}x{h} from={from:?}");
         }

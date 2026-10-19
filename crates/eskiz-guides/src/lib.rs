@@ -12,7 +12,6 @@
 
 pub mod assist;
 pub mod colour;
-pub mod colour_space;
 pub mod disc;
 pub mod geom;
 pub mod grid;
@@ -21,6 +20,9 @@ pub mod harmony;
 pub mod palette;
 pub mod perspective;
 pub mod symmetry;
+
+/// sRGB and Display P3 conversion, defined in `eskiz-types` and re-exported here.
+pub use eskiz_types::colour_space;
 
 pub use assist::{DrawingAssist, SnapGuide, StrokeAssist, DEFAULT_LOCK_DISTANCE};
 pub use colour::{

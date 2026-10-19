@@ -70,6 +70,14 @@ public static class SmokeWin {
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
+
+    /// A key press or release with its hardware scan code. The window toolkit identifies a key by
+    /// its scan code; an event without one (scan 0) reaches the app as an unknown key.
+    public static void Key(byte vk, bool up) {
+        byte scan = (byte)MapVirtualKey(vk, 0);
+        keybd_event(vk, scan, up ? 2u : 0u, UIntPtr.Zero);
+    }
 
     /// Pixels (BGRA, 4 bytes each) whose largest colour channel differs by more than threshold.
     /// -1 when the two images are not the same size.
@@ -259,8 +267,8 @@ function Focus-Window([IntPtr]$hwnd) {
     if ([SmokeWin]::GetForegroundWindow() -eq $hwnd) { return }
     # Windows only lets a process take the foreground right after input; a tap of Alt counts. Only
     # while another window has the focus: Alt released in our window would open its system menu.
-    [SmokeWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
-    [SmokeWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+    [SmokeWin]::Key(0x12, $false)
+    [SmokeWin]::Key(0x12, $true)
     [void][SmokeWin]::SetForegroundWindow($hwnd)
     Start-Sleep -Milliseconds 500
 }
@@ -283,10 +291,14 @@ function Invoke-Stroke([IntPtr]$hwnd) {
 }
 
 function Invoke-Undo {
-    [SmokeWin]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # Ctrl down
-    [SmokeWin]::keybd_event(0x5A, 0, 0, [UIntPtr]::Zero) # Z down
-    [SmokeWin]::keybd_event(0x5A, 0, 2, [UIntPtr]::Zero)
-    [SmokeWin]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    # Ctrl+Z with real scan codes and short holds, like a keyboard (see SmokeWin.Key).
+    [SmokeWin]::Key(0x11, $false) # Ctrl down
+    Start-Sleep -Milliseconds 80
+    [SmokeWin]::Key(0x5A, $false) # Z down
+    Start-Sleep -Milliseconds 80
+    [SmokeWin]::Key(0x5A, $true)
+    Start-Sleep -Milliseconds 80
+    [SmokeWin]::Key(0x11, $true)
 }
 
 # ------------------------------------------------------------------------------------- run
@@ -415,16 +427,19 @@ try {
         if (-not $app.HasExited) {
             Write-Host "== close"
             [void]$app.CloseMainWindow()
+            # The app ends the close by itself after about 2 s (it has no unsaved-changes prompt:
+            # work is saved on the way out), so 15 s is generous.
+            $closeTimer = [System.Diagnostics.Stopwatch]::StartNew()
             if (-not $app.WaitForExit(15000)) {
-                # Something (a dialog?) kept it open: record what is on screen, then stop it.
+                # Something kept it open: record what is on screen, then stop it.
                 [void](Save-Screen '06-close-blocked')
                 $app.Kill()
                 $app.WaitForExit()
-                Warn 'close' 'the window did not close within 15 s of WM_CLOSE; killed (see 06-close-blocked-screen.png)'
+                Fail 'close' 'the window did not close within 15 s of WM_CLOSE; killed (see 06-close-blocked-screen.png and the exit: lines in startup.log)'
             }
             else {
                 $app.WaitForExit()
-                if ($app.ExitCode -eq 0) { Add-Row 'close' 'PASS' 'exit 0' } else { Fail 'close' "exit $($app.ExitCode). $(Tail (Join-Path $OutDir 'window.err.log'))" }
+                if ($app.ExitCode -eq 0) { Add-Row 'close' 'PASS' "exit 0 after $([math]::Round($closeTimer.Elapsed.TotalSeconds, 1)) s" } else { Fail 'close' "exit $($app.ExitCode). $(Tail (Join-Path $OutDir 'window.err.log'))" }
             }
         }
     }

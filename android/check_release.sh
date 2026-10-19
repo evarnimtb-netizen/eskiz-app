@@ -34,7 +34,7 @@ bad()  { echo "  FAIL: $*"; fail=1; }
 
 cd "$here"
 if [[ $build == 1 ]]; then
-  ./gradlew --no-daemon assembleRelease bundleRelease fetchBundletool
+  ./gradlew --no-daemon :app:assembleRelease :app:bundleRelease :app:fetchBundletool
 fi
 apk="$here/app/build/outputs/apk/release/app-release.apk"
 aab="$here/app/build/outputs/bundle/release/app-release.aab"

@@ -346,6 +346,8 @@ impl EskizApp {
         let ctx = ui.ctx().clone();
         let busy = self.anim.export.is_some();
         let base = expand_home(&self.export_path);
+        let staged = self.files.staged();
+        let title = self.export_title();
         ui.add_space(6.0);
         ui.label(RichText::new("ANIMATION").size(11.0).color(pal.text_dim));
         for (format, icon, name) in [
@@ -356,6 +358,8 @@ impl EskizApp {
             let unavailable = format == AnimFormat::Mp4 && !eskiz_media::encoder_available();
             let file = if unavailable {
                 eskiz_media::MP4_UNAVAILABLE.to_owned()
+            } else if staged {
+                crate::saf::export_file_name(&title, format.extension())
             } else {
                 base.with_extension(format.extension()).display().to_string()
             };

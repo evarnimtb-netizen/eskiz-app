@@ -169,7 +169,7 @@ pub fn backgrounded() -> bool {
 }
 
 #[cfg(target_os = "android")]
-fn wake() {
+pub(crate) fn wake() {
     if let Some(w) = WAKER.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         w();
     }

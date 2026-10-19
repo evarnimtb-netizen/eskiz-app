@@ -16,12 +16,13 @@
 //! Photoshop descriptor format. The ABR v6 sample and preset-section layouts are not verified
 //! against real files.
 
-use std::collections::BTreeMap;
-use std::io::{Cursor, Read, Seek};
+use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Seek};
 
 use zip::ZipArchive;
 
 use crate::keyedarchive::{self, ArchivedObject, NsObject, NsValue, Object};
+use crate::limits::{self, MAX_BRUSHES, MAX_BRUSH_TIP_SIDE, MAX_DECODED_BYTES, MAX_DESCRIPTOR_DEPTH};
 use crate::palettes::zip_members;
 use crate::{Error, Result};
 
@@ -275,15 +276,7 @@ fn taper_from(brush: &ImportedBrush, names: [&str; 5], pressure: Option<&str>) -
 // ------------------------------------------------------------------ zip helpers
 
 fn read_member<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Result<Option<Vec<u8>>> {
-    match zip.by_name(name) {
-        Ok(mut file) => {
-            let mut data = Vec::new();
-            file.read_to_end(&mut data)?;
-            Ok(Some(data))
-        }
-        Err(zip::result::ZipError::FileNotFound) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    limits::read_entry(zip, name, limits::MAX_ENTRY_BYTES)
 }
 
 fn zip_owned(members: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
@@ -519,7 +512,7 @@ fn read_brush_at<R: Read + Seek>(
 /// `Grain.png`. A missing `Brush.archive` is an error. A brush without a `name` setting takes
 /// `name_hint`.
 pub fn read_brush(name_hint: &str, bytes: &[u8]) -> Result<ImportedBrush> {
-    let mut zip = ZipArchive::new(Cursor::new(bytes))?;
+    let mut zip = limits::open_zip(bytes)?;
     read_brush_at(&mut zip, "", name_hint)
 }
 
@@ -574,7 +567,7 @@ struct Manifest {
 }
 
 fn parse_manifest(data: &[u8]) -> Option<Manifest> {
-    let value: plist::Value = plist::from_bytes(data).ok()?;
+    let value = limits::parse_plist(data).ok()?;
     let dict = value.as_dictionary()?;
     let name = dict
         .get("name")
@@ -603,7 +596,7 @@ fn parse_manifest(data: &[u8]) -> Option<Manifest> {
 /// optional `brushes` array of folder names giving the order. The key names are a guess
 /// leaves the manifest unverified); a set without a manifest uses `name_hint` and archive order.
 pub fn read_brushset(name_hint: &str, bytes: &[u8]) -> Result<BrushSet> {
-    let mut zip = ZipArchive::new(Cursor::new(bytes))?;
+    let mut zip = limits::open_zip(bytes)?;
     let names: Vec<String> = zip
         .file_names()
         .filter_map(|n| n.ok().map(|s| s.into_owned()))
@@ -616,19 +609,24 @@ pub fn read_brushset(name_hint: &str, bytes: &[u8]) -> Result<BrushSet> {
         .filter(|prefix| prefix.is_empty() || prefix.ends_with('/'))
         .map(str::to_owned)
         .collect();
+    if prefixes.len() > MAX_BRUSHES {
+        return Err(limits::exceeded(format!(
+            "the set has {} brushes; the most Eskiz imports at once is {MAX_BRUSHES}",
+            prefixes.len()
+        )));
+    }
 
     let manifest = match read_member(&mut zip, SET_MANIFEST)? {
         Some(data) => parse_manifest(&data).unwrap_or_default(),
         None => Manifest::default(),
     };
     let label_of = |prefix: &str| prefix.trim_end_matches('/').to_string();
-    prefixes.sort_by_key(|p| {
-        manifest
-            .brushes
-            .iter()
-            .position(|b| *b == label_of(p))
-            .unwrap_or(usize::MAX)
-    });
+    // the first position of each name in the manifest's order
+    let mut order: HashMap<&str, usize> = HashMap::new();
+    for (i, b) in manifest.brushes.iter().enumerate() {
+        order.entry(b.as_str()).or_insert(i);
+    }
+    prefixes.sort_by_cached_key(|p| order.get(label_of(p).as_str()).copied().unwrap_or(usize::MAX));
 
     let mut set = BrushSet::default();
     for prefix in &prefixes {
@@ -763,11 +761,22 @@ pub fn read_abr(bytes: &[u8]) -> Result<AbrImport> {
             b"desc" => presets.extend(parse_presets(data)?),
             _ => {}
         }
+        if samples.len() > MAX_BRUSHES || presets.len() > MAX_BRUSHES {
+            return Err(limits::exceeded(format!(
+                "the file has more than {MAX_BRUSHES} brushes; the most Eskiz imports at once is {MAX_BRUSHES}"
+            )));
+        }
+        let tip_bytes: u64 = samples.iter().map(|s| s.gray.len() as u64).sum();
+        if tip_bytes > MAX_DECODED_BYTES {
+            return Err(limits::exceeded(format!("the brush tips decode to more than {MAX_DECODED_BYTES} bytes")));
+        }
     }
 
     let mut brushes = Vec::new();
+    // each sampled tip is encoded once, however many presets use it
+    let mut pngs: HashMap<usize, std::result::Result<Vec<u8>, String>> = HashMap::new();
     for (index, desc) in presets.iter().enumerate() {
-        if let Some(brush) = preset_brush(desc, index, &samples, &mut warnings) {
+        if let Some(brush) = preset_brush(desc, index, &samples, &mut pngs, &mut warnings) {
             brushes.push(brush);
         }
     }
@@ -812,9 +821,15 @@ fn parse_sample(entry: &[u8]) -> Result<Sample> {
     let right = r.i32()?;
     let depth = r.u16()?;
     let compression = r.u8()?;
-    let (w, h) = (right - left, bottom - top);
-    if w <= 0 || h <= 0 || w > 30_000 || h > 30_000 {
+    // i64: the difference of two i32 bounds can overflow i32
+    let (w, h) = (i64::from(right) - i64::from(left), i64::from(bottom) - i64::from(top));
+    if w <= 0 || h <= 0 {
         return Err(Error::Format(format!("sample {id:?} has invalid bounds")));
+    }
+    if w > i64::from(MAX_BRUSH_TIP_SIDE) || h > i64::from(MAX_BRUSH_TIP_SIDE) {
+        return Err(limits::exceeded(format!(
+            "sample {id:?} is {w}x{h}; the largest tip Eskiz imports is {MAX_BRUSH_TIP_SIDE} pixels"
+        )));
     }
     let (width, height) = (w as usize, h as usize);
     let bytes_per_pixel = match depth {
@@ -829,7 +844,8 @@ fn parse_sample(entry: &[u8]) -> Result<Sample> {
             let counts: Vec<usize> = (0..height)
                 .map(|_| r.u16().map(usize::from))
                 .collect::<Result<_>>()?;
-            let mut out = Vec::with_capacity(row_bytes * height);
+            // reserve no more than the remaining input can expand to (PackBits: 64 bytes per byte)
+            let mut out = Vec::with_capacity((row_bytes * height).min(r.remaining().saturating_mul(64)));
             for count in counts {
                 out.extend(packbits_decode(r.take(count)?, row_bytes)?);
             }
@@ -897,6 +913,7 @@ fn preset_brush(
     desc: &Desc,
     index: usize,
     samples: &[Sample],
+    pngs: &mut HashMap<usize, std::result::Result<Vec<u8>, String>>,
     warnings: &mut Vec<String>,
 ) -> Option<ImportedBrush> {
     let name = match find(desc, abr_key::NAME) {
@@ -905,7 +922,7 @@ fn preset_brush(
     };
     let mut texts = Vec::new();
     collect_text(desc, &mut texts);
-    let sample = samples.iter().find(|s| texts.contains(&s.id));
+    let sample = samples.iter().position(|s| texts.contains(&s.id));
     let diameter = find(desc, abr_key::DIAMETER).and_then(pixels);
     if sample.is_none() && diameter.is_none() {
         warnings.push(format!("preset {name:?} has no usable tip; skipped"));
@@ -934,9 +951,13 @@ fn preset_brush(
     );
     match sample {
         Some(sample) => {
-            let inverted: Vec<u8> = sample.gray.iter().map(|v| 255 - v).collect();
-            match encode_gray_png(sample.width, sample.height, &inverted) {
-                Ok(png) => brush.shape_png = Some(png),
+            let png = pngs.entry(sample).or_insert_with(|| {
+                let sample = &samples[sample];
+                let inverted: Vec<u8> = sample.gray.iter().map(|v| 255 - v).collect();
+                encode_gray_png(sample.width, sample.height, &inverted).map_err(|e| e.to_string())
+            });
+            match png {
+                Ok(png) => brush.shape_png = Some(png.clone()),
                 Err(e) => {
                     warnings.push(format!("preset {name:?}: sampled tip not encoded ({e})"));
                     return None;
@@ -1069,11 +1090,13 @@ struct Desc {
 struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
+    /// Nesting of descriptors and lists being read.
+    depth: usize,
 }
 
 impl<'a> Reader<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self { data, pos: 0, depth: 0 }
     }
 
     fn remaining(&self) -> usize {
@@ -1134,8 +1157,9 @@ impl<'a> Reader<'a> {
     /// A descriptor Unicode string: a 32-bit count of UTF-16 units, then the units.
     fn unicode(&mut self) -> Result<String> {
         let count = self.u32()? as usize;
+        let bytes = count.checked_mul(2).ok_or_else(|| Error::Format("brush data is truncated".into()))?;
         let units: Vec<u16> = self
-            .take(count * 2)?
+            .take(bytes)?
             .as_chunks::<2>()
             .0
             .iter()
@@ -1167,18 +1191,31 @@ impl<'a> Reader<'a> {
         Ok(Desc { items })
     }
 
+    /// Runs `read` one nesting level deeper, failing past [`MAX_DESCRIPTOR_DEPTH`].
+    fn nested<T>(&mut self, read: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_DESCRIPTOR_DEPTH {
+            return Err(limits::exceeded(format!(
+                "brush descriptors nest more than {MAX_DESCRIPTOR_DEPTH} levels deep"
+            )));
+        }
+        self.depth += 1;
+        let result = read(self);
+        self.depth -= 1;
+        result
+    }
+
     fn value(&mut self, kind: &[u8; 4]) -> Result<Value> {
         Ok(match kind {
-            b"Objc" => Value::Desc(self.descriptor()?),
-            b"VlLs" => {
-                let count = self.u32()?;
+            b"Objc" => Value::Desc(self.nested(Self::descriptor)?),
+            b"VlLs" => self.nested(|r| {
+                let count = r.u32()?;
                 let mut items = Vec::new();
                 for _ in 0..count {
-                    let item_kind = self.array::<4>()?;
-                    items.push(self.value(&item_kind)?);
+                    let item_kind = r.array::<4>()?;
+                    items.push(r.value(&item_kind)?);
                 }
-                Value::List(items)
-            }
+                Ok(Value::List(items))
+            })?,
             b"doub" => Value::Double(self.f64()?),
             b"UntF" => {
                 let unit = String::from_utf8_lossy(&self.array::<4>()?).into_owned();
@@ -1212,6 +1249,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn push_u16(out: &mut Vec<u8>, v: u16) {
         out.extend_from_slice(&v.to_be_bytes());
