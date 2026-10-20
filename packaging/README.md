@@ -129,10 +129,10 @@ cargo zigbuild --release -p eskiz-app --target x86_64-unknown-linux-gnu.2.28
 `build-appimage.sh` does three things:
 
 1. Assembles `dist/release/Eskiz.AppDir` with `AppRun`, `eskiz.desktop`, the icon, the
-   hicolor sizes (16 to 512) and the shared MIME definitions. It also copies
-   `libxkbcommon-x11.so.0` and `libxkbcommon.so.0` from the build machine into `usr/lib`.
-   `AppRun` adds that directory to `LD_LIBRARY_PATH`. The build stops if either library is
-   missing (`libxkbcommon-x11-0` on Debian/Ubuntu, `libxkbcommon-x11` on Fedora).
+   hicolor sizes (16 to 512) and the shared MIME definitions. No system libraries are bundled
+   (the build machine's libxkbcommon needs a newer glibc than the 2.28 baseline). It then checks
+   every ELF file in the AppDir with `objdump -T` and stops if one needs a GLIBC symbol newer
+   than 2.28.
 2. Runs `appimagetool` to make `Eskiz-<v>-x86_64.AppImage`. The tool is found through
    `$APPIMAGETOOL` or `PATH`. If it is missing locally the step is skipped. When `CI` is set,
    a missing tool is an error.
@@ -153,7 +153,7 @@ tarball's `DEPENDENCIES.txt` has the full list. The short form:
 | Wayland session (`WAYLAND_DISPLAY`) | `libxkbcommon0 libwayland-client0` | `libxkbcommon libwayland-client` |
 | OpenGL and Vulkan drawing | `libgl1 libvulkan1 libgl1-mesa-dri mesa-vulkan-drivers` | `mesa-libGL vulkan-loader mesa-dri-drivers mesa-vulkan-drivers` |
 
-The AppImage bundles the two xkbcommon libraries, so it needs only the rest of the list.
+The AppImage bundles no libraries, so it needs the whole list.
 
 To get `appimagetool` locally, download
 `https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage`,
@@ -199,7 +199,7 @@ result. Pin a version there if reproducible AppImages matter.
 
 `THIRD_PARTY_NOTICES.md` (made by `tools/gen_notices.sh` with cargo-about), `LICENSE-MIT` and `LICENSE-APACHE` go
 into each artifact: macOS `Eskiz.app/Contents/Resources` (before signing), the Windows zip (next to `eskiz.exe`),
-the AppImage (`usr/share/doc/eskiz/`, plus the host's libxkbcommon copyright files in `libxkbcommon/`), the Linux
+the AppImage (`usr/share/doc/eskiz/`), the Linux
 tarball (`share/doc/eskiz/`) and the Android APK (`assets/licenses/`, from `THIRD_PARTY_NOTICES-android.md`,
 copied by the Gradle `copyLicenses` task). `tools/check_notices.sh` inspects whichever packages exist under
 `dist/release` (and APKs) and fails when a file is missing. Regenerate the notices whenever `Cargo.lock` changes.

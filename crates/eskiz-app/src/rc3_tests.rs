@@ -618,3 +618,28 @@ fn ctrl_z_undoes_the_last_stroke_on_windows_and_linux() {
         assert_eq!(h.app.session.undo_steps(), steps - 1, "Ctrl+Z took the stroke back");
     }
 }
+
+#[test]
+fn key_events_and_the_undo_match_are_traced() {
+    crate::stroke_trace::clear();
+    let mut h = canvas_app("ctrlz-trace", quiet());
+    let p = open_stroke(&mut h);
+    release(&mut h, p);
+    let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+    let events = [
+        Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: true, repeat: false, modifiers: ctrl },
+        Event::Key { key: egui::Key::Z, physical_key: Some(egui::Key::Z), pressed: false, repeat: false, modifiers: ctrl },
+    ];
+    crate::app::trace_key_events(&events, true);
+    for e in events {
+        h.event(e);
+        h.step();
+    }
+    h.advance(0.3);
+    let lines = crate::stroke_trace::recorded();
+    assert!(
+        lines.iter().any(|l| l.starts_with("key Z ") && l.contains(" down ") && l.contains("ctrl=true") && l.contains("command=true")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|l| l == "key undo shortcut matched"), "{lines:?}");
+}

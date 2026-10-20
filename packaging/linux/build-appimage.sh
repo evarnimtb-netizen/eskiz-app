@@ -2,8 +2,9 @@
 # Assembles the Linux release from a built eskiz binary:
 #
 #   1. an AppDir, turned into Eskiz-<version>-x86_64.AppImage when appimagetool is available.
-#      It bundles libxkbcommon-x11.so.0 and libxkbcommon.so.0 from this machine in usr/lib, and
-#      AppRun puts that directory on LD_LIBRARY_PATH;
+#      It bundles no system libraries: the build machine's libraries need a newer glibc than the
+#      2.28 the binary is built for. A check fails the build if any ELF file in the AppDir needs
+#      a GLIBC symbol newer than 2.28 (override with MAX_GLIBC);
 #   2. a portable Eskiz-<version>-linux-x86_64.tar.gz with install.sh and DEPENDENCIES.txt.
 #
 # Usage: build-appimage.sh [path/to/eskiz]
@@ -36,32 +37,28 @@ NAME="Eskiz-$VERSION-linux-x86_64"
 APPDIR="$OUT_DIR/Eskiz.AppDir"
 TARDIR="$OUT_DIR/$NAME"
 ICON_SIZES="16 32 48 64 128 256 512"
-# Libraries winit loads with dlopen that are not on every system. They are bundled in the AppImage.
-# Debian/Ubuntu packages: libxkbcommon-x11-0 and libxkbcommon0 (CI installs the first).
-BUNDLED_LIBS="libxkbcommon-x11.so.0 libxkbcommon.so.0"
+# The oldest glibc the AppImage promises to run on.
+MAX_GLIBC="${MAX_GLIBC:-2.28}"
 
-step() { echo; echo "== $*"; }
-
-# Prints the path of a shared library on this machine: ldconfig's cache first, then the usual
-# library directories. Fails if the library is not found.
-find_host_lib() {
-    local soname="$1" path="" dir ldconfig_bin
-    ldconfig_bin="$(command -v ldconfig || echo /sbin/ldconfig)"
-    if [ -x "$ldconfig_bin" ]; then
-        path="$("$ldconfig_bin" -p | awk -v s="$soname" '$1 == s { print $NF; exit }')"
-    fi
-    if [ -z "$path" ] || [ ! -e "$path" ]; then
-        path=""
-        for dir in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /usr/lib /lib64; do
-            if [ -e "$dir/$soname" ]; then
-                path="$dir/$soname"
-                break
+# Fails if an ELF file under $1 needs a GLIBC_x.y symbol version newer than $MAX_GLIBC.
+check_glibc_baseline() {
+    local root="$1" f v bad=0 seen=0
+    command -v objdump >/dev/null || { echo "objdump not found (install binutils)" >&2; return 1; }
+    while IFS= read -r f; do
+        if ! head -c 4 "$f" 2>/dev/null | grep -q 'ELF'; then continue; fi
+        seen=$((seen + 1))
+        for v in $(objdump -T "$f" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -u); do
+            if [ "$(printf '%s\n%s\n' "$v" "$MAX_GLIBC" | sort -V | tail -n1)" != "$MAX_GLIBC" ]; then
+                echo "error: ${f#"$root"/} needs GLIBC_$v, newer than the GLIBC_$MAX_GLIBC baseline" >&2
+                bad=1
             fi
         done
-    fi
-    [ -n "$path" ] || return 1
-    printf '%s\n' "$path"
+    done < <(find "$root" -type f)
+    [ "$seen" -gt 0 ] || { echo "error: no ELF files found under $root" >&2; return 1; }
+    return "$bad"
 }
+
+step() { echo; echo "== $*"; }
 
 mkdir -p "$OUT_DIR"
 rm -rf "$APPDIR" "$TARDIR" "$OUT_DIR/$NAME.tar.gz"
@@ -85,48 +82,18 @@ layout_usr() {
         "$root/share/doc/eskiz/"
 }
 
-# Copies the licence files of the Debian/Ubuntu packages that own the bundled libxkbcommon libraries
-# into $1/share/doc/eskiz/libxkbcommon/ (from /usr/share/doc/<package>/copyright). Skipped with a
-# note when the build host has no such file (other distributions keep them elsewhere).
-copy_xkbcommon_licence() {
-    local root="$1" pkg found=0
-    for pkg in libxkbcommon0 libxkbcommon-x11-0; do
-        if [ -f "/usr/share/doc/$pkg/copyright" ]; then
-            mkdir -p "$root/share/doc/eskiz/libxkbcommon"
-            cp "/usr/share/doc/$pkg/copyright" "$root/share/doc/eskiz/libxkbcommon/copyright-$pkg"
-            found=1
-        fi
-    done
-    if [ "$found" = 0 ]; then
-        echo "note: no libxkbcommon copyright file under /usr/share/doc on this host; not copied" >&2
-    fi
-}
-
 step "AppDir"
 layout_usr "$APPDIR/usr"
 cp "$HERE/eskiz.desktop" "$APPDIR/eskiz.desktop"
 cp "$PNG_DIR/eskiz-512.png" "$APPDIR/eskiz.png"
 ln -s eskiz.png "$APPDIR/.DirIcon"
 
-step "Bundled runtime libraries"
-mkdir -p "$APPDIR/usr/lib"
-copy_xkbcommon_licence "$APPDIR/usr"
-for soname in $BUNDLED_LIBS; do
-    if ! src="$(find_host_lib "$soname")"; then
-        echo "$soname not found on this machine. Install libxkbcommon-x11-0 (Debian/Ubuntu) or" >&2
-        echo "libxkbcommon-x11 (Fedora), then build again." >&2
-        exit 1
-    fi
-    # -L copies the file behind any symlink under the soname the loader asks for.
-    cp -L "$src" "$APPDIR/usr/lib/$soname"
-    echo "  $soname <- $src"
-done
+step "glibc baseline (GLIBC_$MAX_GLIBC)"
+check_glibc_baseline "$APPDIR"
 
 cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
-LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export LD_LIBRARY_PATH
 exec "$HERE/usr/bin/eskiz" "$@"
 APPRUN
 chmod 755 "$APPDIR/AppRun"
@@ -150,8 +117,7 @@ chmod 755 "$TARDIR/install.sh"
 cat > "$TARDIR/DEPENDENCIES.txt" <<'DEPS'
 Eskiz runtime dependencies (Linux, x86_64)
 
-The tarball does not bundle any libraries. Install these packages first. The AppImage bundles
-libxkbcommon-x11.so.0 and libxkbcommon.so.0, but it still needs the rest.
+Neither the tarball nor the AppImage bundles any libraries. Install these packages first.
 
 Any session (drawing):
   Debian/Ubuntu: libgl1 libvulkan1 libgl1-mesa-dri mesa-vulkan-drivers

@@ -4,6 +4,9 @@ Eskiz 0.1.0 for Windows
    inside the zip window.
 2. Double-click eskiz.exe. If Windows says "Windows protected your PC" (SmartScreen), click
    "More info", then "Run anyway". The download is not code-signed.
+   If nothing appears at all, Smart App Control (Windows 11) may be blocking it. It offers no
+   "Run anyway": turn it off in Windows Security > App & browser control > Smart App Control
+   settings (it cannot be turned back on without resetting Windows).
 3. If nothing appears, or a message box names a problem, look in
    %LOCALAPPDATA%\Eskiz\logs  (paste that into the Explorer address bar).
    startup.log lists what happened; panic-*.txt has the details of a crash. Please send them.

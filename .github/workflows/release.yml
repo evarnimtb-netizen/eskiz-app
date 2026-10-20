@@ -236,7 +236,7 @@ jobs:
           cat >> release-notes.md <<'NOTES'
 
           These builds are not code-signed. See "Install" in the README for how to open them on your system.
-          Windows: extract the whole zip first (Extract All), then run eskiz.exe; if SmartScreen says "Windows protected your PC", choose More info, then Run anyway. If nothing appears, `%LOCALAPPDATA%\Eskiz\logs` explains why.
+          Windows: extract the whole zip first (Extract All), then run eskiz.exe; if SmartScreen says "Windows protected your PC", choose More info, then Run anyway. If nothing appears at all, Windows 11 Smart App Control may be blocking the unsigned app (no override; turn it off in Windows Security > App & browser control). Otherwise, `%LOCALAPPDATA%\Eskiz\logs` explains why.
           The Android APK is experimental. Verify downloads with `SHA256SUMS`.
           NOTES
           cat release-notes.md

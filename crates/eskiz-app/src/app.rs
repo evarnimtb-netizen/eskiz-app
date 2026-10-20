@@ -1516,6 +1516,9 @@ impl EskizApp {
             return;
         }
         if ctx.egui_wants_keyboard_input() {
+            if crate::stroke_trace::enabled() && ctx.input(|i| i.key_pressed(Key::Z)) {
+                crate::stroke_trace::event("key", "Z pressed but a text field has the keyboard, so no shortcut runs");
+            }
             return;
         }
         // The bindings are the constants in `shortcuts`, which the shortcut table also lists.
@@ -1523,6 +1526,7 @@ impl EskizApp {
         if ctx.input_mut(|i| i.consume_shortcut(&sc::REDO)) {
             self.redo_action();
         } else if ctx.input_mut(|i| i.consume_shortcut(&sc::UNDO)) {
+            crate::stroke_trace::event("key", "undo shortcut matched");
             self.undo_action();
         }
         if ctx.input_mut(|i| i.consume_shortcut(&sc::RESET_ROTATION)) {
@@ -2266,6 +2270,7 @@ impl eframe::App for EskizApp {
             raw_input.safe_area_insets = Some(self.safe.insets());
         }
         self.pump_pen(ctx, raw_input);
+        trace_key_events(&raw_input.events, raw_input.focused);
     }
 
     #[cfg(feature = "gl-fallback")]
@@ -2276,6 +2281,30 @@ impl eframe::App for EskizApp {
     #[cfg(not(feature = "gl-fallback"))]
     fn on_exit(&mut self) {
         self.shut_down();
+    }
+}
+
+/// With `ESKIZ_TRACE_STROKES=1`, one line per keyboard event that reaches the app, as egui will
+/// see it: the logical key, the physical key, press or release, repeat and the modifiers. Used to
+/// tell a key that never arrives (focus, injection) from one that arrives but is not mapped.
+pub(crate) fn trace_key_events(events: &[egui::Event], focused: bool) {
+    if !crate::stroke_trace::enabled() {
+        return;
+    }
+    for e in events {
+        if let egui::Event::Key { key, physical_key, pressed, repeat, modifiers } = e {
+            crate::stroke_trace::event(
+                "key",
+                &format!(
+                    "{key:?} physical={physical_key:?} {} repeat={repeat} ctrl={} shift={} alt={} command={} window_focused={focused}",
+                    if *pressed { "down" } else { "up" },
+                    modifiers.ctrl,
+                    modifiers.shift,
+                    modifiers.alt,
+                    modifiers.command,
+                ),
+            );
+        }
     }
 }
 

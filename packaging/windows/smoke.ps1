@@ -47,6 +47,8 @@ $env:ESKIZ_LIBRARY_DIR = Join-Path $data 'library'
 $env:ESKIZ_BRUSH_DIR = Join-Path $data 'brushes'
 $env:ESKIZ_FONT_DIR = Join-Path $data 'fonts'
 $env:RUST_BACKTRACE = '1'
+# The app logs every key event that reaches it to stderr; the report prints those lines.
+$env:ESKIZ_TRACE_STROKES = '1'
 # The start-up log, crash marker and stall marker of the runs go here, not to %LOCALAPPDATA%.
 $script:logDir = Join-Path $OutDir 'logs'
 New-Item -ItemType Directory -Force -Path $script:logDir | Out-Null
@@ -74,6 +76,28 @@ public static class SmokeWin {
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
+    [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
+
+    [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+    // The union is as large as MOUSEINPUT, so the struct is 40 bytes on 64-bit Windows.
+    [StructLayout(LayoutKind.Explicit)] public struct INPUT {
+        [FieldOffset(0)] public uint type;
+        [FieldOffset(8)] public MOUSEINPUT mi;
+        [FieldOffset(8)] public KEYBDINPUT ki;
+    }
+
+    /// A key press or release sent by hardware scan code only (KEYEVENTF_SCANCODE), the way a
+    /// keyboard driver reports it. The system derives the virtual key from the scan code, so the
+    /// left/right modifier state that GetKeyState reports is set too. `extended` is for E0 keys.
+    /// Returns false when SendInput refused (for example another process holds the input desktop).
+    public static bool ScanKey(ushort scan, bool up, bool extended) {
+        INPUT[] i = new INPUT[1];
+        i[0].type = 1; // INPUT_KEYBOARD
+        i[0].ki.wScan = scan;
+        i[0].ki.dwFlags = 0x0008u | (up ? 0x0002u : 0u) | (extended ? 0x0001u : 0u);
+        return SendInput(1, i, Marshal.SizeOf(typeof(INPUT))) == 1;
+    }
 
     /// A key press or release with its hardware scan code. The window toolkit identifies a key by
     /// its scan code; an event without one (scan 0) reaches the app as an unknown key.
@@ -294,14 +318,55 @@ function Invoke-Stroke([IntPtr]$hwnd, [double]$y = 0.50) {
 }
 
 function Invoke-Undo {
-    # Ctrl+Z with real scan codes and short holds, like a keyboard (see SmokeWin.Key).
-    [SmokeWin]::Key(0x11, $false) # Ctrl down
-    Start-Sleep -Milliseconds 80
-    [SmokeWin]::Key(0x5A, $false) # Z down
-    Start-Sleep -Milliseconds 80
-    [SmokeWin]::Key(0x5A, $true)
-    Start-Sleep -Milliseconds 80
-    [SmokeWin]::Key(0x11, $true)
+    # Ctrl+Z as hardware scan codes (left Ctrl 0x1D, Z 0x2C) with short holds, like a keyboard.
+    # keybd_event with generic virtual keys did not set the left-Ctrl state winit reads, so the app
+    # may have seen a plain Z (see the key lines in the report). Falls back to keybd_event if
+    # SendInput is refused.
+    $sent = [SmokeWin]::ScanKey(0x1D, $false, $false)
+    if ($sent) {
+        Start-Sleep -Milliseconds 80
+        [void][SmokeWin]::ScanKey(0x2C, $false, $false)
+        Start-Sleep -Milliseconds 80
+        [void][SmokeWin]::ScanKey(0x2C, $true, $false)
+        Start-Sleep -Milliseconds 80
+        [void][SmokeWin]::ScanKey(0x1D, $true, $false)
+    } else {
+        [SmokeWin]::Key(0x11, $false) # Ctrl down
+        Start-Sleep -Milliseconds 80
+        [SmokeWin]::Key(0x5A, $false) # Z down
+        Start-Sleep -Milliseconds 80
+        [SmokeWin]::Key(0x5A, $true)
+        Start-Sleep -Milliseconds 80
+        [SmokeWin]::Key(0x11, $true)
+    }
+    $sent
+}
+
+# The key lines the app logged (ESKIZ_TRACE_STROKES=1) after $since lines of its stderr log. Reads
+# with shared access because the app still has the file open.
+function Get-KeyLines([string]$label, [int]$since = 0) {
+    $path = Join-Path $OutDir "window-$label.err.log"
+    if (-not (Test-Path $path)) { return @() }
+    try {
+        $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        $reader = New-Object System.IO.StreamReader($fs)
+        $text = $reader.ReadToEnd()
+        $reader.Dispose()
+    } catch { return @() }
+    $lines = @($text -split "`r?`n")
+    if ($lines.Count -le $since) { return @() }
+    @($lines | Select-Object -Skip $since | Where-Object { $_ -match 'eskiz-stroke: .*\] (key|ignored) ' })
+}
+function Get-ErrLineCount([string]$label) {
+    $path = Join-Path $OutDir "window-$label.err.log"
+    if (-not (Test-Path $path)) { return 0 }
+    try {
+        $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        $reader = New-Object System.IO.StreamReader($fs)
+        $n = @(($reader.ReadToEnd()) -split "`r?`n").Count
+        $reader.Dispose()
+        $n
+    } catch { 0 }
 }
 
 # ------------------------------------------------------------------------------------- run
@@ -383,8 +448,20 @@ function Invoke-WindowRun([string]$label, [string[]]$extra, [string]$expect) {
 
         Write-Host "== undo (Ctrl+Z)"
         Focus-Window $hwnd
-        Invoke-Undo
+        $isFront = ([SmokeWin]::GetForegroundWindow() -eq $hwnd)
+        $errMark = Get-ErrLineCount $label
+        $sentByScan = Invoke-Undo
         Start-Sleep -Seconds 2
+        $keyLines = Get-KeyLines $label $errMark
+        $sawZ = @($keyLines | Where-Object { $_ -match '\] key Z .* down ' }).Count
+        $sawZCtrl = @($keyLines | Where-Object { $_ -match '\] key Z .* down .*ctrl=true' }).Count
+        $matched = @($keyLines | Where-Object { $_ -match 'undo shortcut matched' }).Count
+        $keyText = if ($keyLines.Count) { ($keyLines | ForEach-Object { ($_ -replace '^eskiz-stroke: ', '') }) -join ' // ' } else { 'none' }
+        Add-Row "undo keys ($label)" 'info' "window in front: $isFront; sent with scan codes: $sentByScan; Z down reached the app: $sawZ (with Ctrl: $sawZCtrl); shortcut matched: $matched; lines: $keyText"
+        if (-not $isFront) { Warn "undo focus ($label)" 'the app window was not the foreground window when the keys were sent' }
+        elseif ($sawZ -eq 0) { Warn "undo keys ($label)" 'the keys never reached the app (no key line): input injection or focus problem in the script' }
+        elseif ($sawZCtrl -eq 0) { Warn "undo keys ($label)" 'Z reached the app but without Ctrl held: the modifier state did not arrive' }
+        elseif ($matched -eq 0) { Warn "undo keys ($label)" 'Ctrl+Z reached the app but the app did not treat it as undo' }
         $undo = Save-Shot $hwnd "$label-04-undo"
         [void](Test-Hung $app $hwnd "$label after undo")
         $back = Describe-Change $stroke $undo

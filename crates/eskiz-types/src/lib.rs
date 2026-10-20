@@ -2,7 +2,6 @@
 //!
 //! This is a leaf crate with no dependencies, so every other crate, `eskiz-core` included, can
 //! use it. It holds data and the small amount of maths that belongs to the data, nothing else.
-//! See `docs/adr/0001-split-eskiz-app.md`.
 //!
 //! - [`colour`]: [`Rgb`] (gamma-encoded floats) and [`Rgb8`] (8-bit, hex strings).
 //! - [`colour_space`]: [`ColourSpace`] and the sRGB / Display P3 converters.

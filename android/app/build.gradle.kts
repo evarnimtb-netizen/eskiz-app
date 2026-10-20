@@ -3,9 +3,14 @@ plugins {
 }
 
 // Rust profile for the native library: "debug" (cargo dev profile) or "release".
-// Release builds (assembleRelease, bundleRelease) always use the release Rust profile.
-val releaseTask = gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }
-val rustProfile = (findProperty("eskiz.rustProfile") as String?) ?: if (releaseTask) "release" else "debug"
+// Only a build that asks for the debug variant (assembleDebug, installDebug, ...) and nothing
+// else uses the debug profile. assembleRelease, bundleRelease and the variant-less build and
+// assemble tasks, which also package the release variant, use the release Rust profile.
+val taskNames = gradle.startParameter.taskNames
+val debugOnly = taskNames.isNotEmpty() &&
+    taskNames.none { it.contains("release", ignoreCase = true) } &&
+    taskNames.all { it.contains("debug", ignoreCase = true) || it.contains("test", ignoreCase = true) }
+val rustProfile = (findProperty("eskiz.rustProfile") as String?) ?: if (debugOnly) "debug" else "release"
 // -Peskiz.abis=arm64-v8a limits the build to one ABI (comma separated list).
 val abis = ((findProperty("eskiz.abis") as String?) ?: "arm64-v8a,x86_64").split(",").map { it.trim() }
 val workspace = rootProject.projectDir.parentFile // eskiz/
@@ -79,8 +84,13 @@ val cargoNdk = tasks.register<Exec>("cargoNdk") {
     // cargo-ndk finds the NDK through ANDROID_NDK_HOME or ANDROID_HOME/ndk.
     environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
     inputs.files(fileTree(workspace) {
-        include("Cargo.toml", "Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml")
+        include("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "crates/**/Cargo.toml",
+            "crates/**/*.rs", "crates/**/build.rs", "crates/**/*.wgsl", "crates/**/assets/**",
+            "crates/**/*.md", "crates/**/*.png", "crates/**/*.ttf", "crates/**/*.otf",
+            "crates/**/*.json", "crates/**/*.txt", "crates/**/*.glsl", "crates/**/*.bin")
+        exclude("**/target/**")
     })
+    inputs.property("rustProfile", rustProfile)
     outputs.dir(jniLibsDir)
 }
 tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(cargoNdk) }

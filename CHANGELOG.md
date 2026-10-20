@@ -26,7 +26,7 @@ The full list of changes follows.
 - A skippable welcome tour on first launch: a sample canvas and three coach marks (paint, undo, brush size). Replay it from Actions > Help > Welcome tour.
 - Painting with a pressure, tilt and velocity aware brush engine: smoothing and stabilization, taper, jitter, grain and shape textures, wet mixing, smudge, eraser, an eyedropper, Pour Fill and Hold to Shape.
 - A brush library with live previews, a brush bench for editing brush settings, and import of `.brush`, `.brushset` and `.abr` files.
-- Layers with groups, masks, clipping, lock transparency, 27 blend modes, per-layer opacity, hide and lock, a background color, and 8-bit or 16-bit color depth with sRGB and Display P3 documents.
+- Layers with groups, masks, clipping, lock transparency, 26 blend modes, per-layer opacity, hide and lock, a background color, and 8-bit or 16-bit color depth with sRGB and Display P3 documents.
 - Selections (automatic, freehand, rectangle and ellipse), saved selections, and Transform with freeform, uniform, distort and warp modes, snapping and numeric input; copy, cut and paste.
 - Canvas operations: crop and resize, flip, canvas information, and a floating reference window.
 - Adjustments with live preview and masks: Gaussian, motion and perspective blur, sharpen, noise, hue, saturation and brightness, color balance, curves, gradient map, bloom, chromatic aberration, glitch, halftone, clone and more, plus Liquify.
@@ -124,6 +124,11 @@ The full list of changes follows.
 - Pour Fill now applies when you lift a finger or pen.
 - Magic wand drags no longer redo the work when the threshold has not changed.
 - On a slow software graphics adapter, Eskiz waits longer before giving up on the GPU.
+- Linux: the AppImage no longer carries a copy of a system library that needs a newer glibc than it promises, so it starts on older distributions.
+- Linux: if the Wayland libraries are missing but an X11 display is available, Eskiz starts on X11 instead of stopping.
+- Android: saving or exporting over an existing file keeps the old file if the copy does not finish, and a new file that fails to copy is removed.
+- Android: a build with the `build` or `assemble` task now uses the release native library.
+- The Windows download notes explain Smart App Control; the README steps for building and for macOS 15 are corrected.
 
 ### Known issues
 

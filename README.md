@@ -37,16 +37,18 @@
 
 1. Double-click the downloaded `.dmg` file. A window opens.
 2. Drag the **Eskiz** icon onto the **Applications** folder.
-3. Open your **Applications** folder, **right-click** (or Control-click) **Eskiz** and choose **Open**.
-4. macOS asks if you are sure: click **Open**. You only need to do this once.
+3. Open your **Applications** folder and double-click **Eskiz**. macOS says it cannot open it.
+4. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the message about Eskiz. Confirm with your password. You only need to do this once.
 
-If macOS still will not open it: open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to the message about Eskiz.
+On macOS 14 or older, you can instead **right-click** (or Control-click) **Eskiz**, choose **Open**, then click **Open** again.
 
 ### Windows
 
 1. Find the downloaded `.zip` file (usually in **Downloads**), right-click it and choose **Extract All…**, then **Extract**.
 2. Open the new **Eskiz** folder and double-click **eskiz.exe**.
 3. If a blue window says **"Windows protected your PC"**, click **More info**, then **Run anyway**. You only need to do this once.
+
+**If nothing happens at all** (no window, no message): Windows 11 may have **Smart App Control** turned on, which blocks apps that are not code-signed and offers no "Run anyway". Open **Windows Security → App & browser control → Smart App Control settings** and turn it off, then start Eskiz again. Windows does not let you turn Smart App Control back on without resetting Windows, so only do this if you are comfortable with that.
 
 Tip: to start Eskiz more easily, right-click `eskiz.exe` and choose **Pin to Start** or **Send to → Desktop (create shortcut)**.
 
@@ -64,7 +66,7 @@ If Eskiz says a graphics library is missing, it tells you which package to insta
 1. Download the `.apk` file on your phone or tablet and open it.
 2. If asked, allow your browser or file app to install apps, then tap **Install**.
 
-The Android version is experimental: saving to other apps, sharing and the clipboard are not there yet.
+The Android version is experimental. Opening and saving files with the system file picker, sharing and the clipboard work, but expect rough edges.
 
 ## Found a bug?
 
@@ -101,8 +103,8 @@ You need a free GitHub account to send the form. Have a question or an idea inst
 You need the Rust toolchain installer, [rustup](https://rustup.rs). The right Rust version is picked from `rust-toolchain.toml`.
 
 ```
-git clone https://github.com/evarnimtb-netizen/eskiz-app.git
-cd eskiz-app
+git clone https://github.com/evarnimtb-netizen/eskiz-app.git eskiz
+cd eskiz
 cargo run --release -p eskiz-app
 ```
 

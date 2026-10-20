@@ -12,4 +12,4 @@ eskiz-filters = { path = "../eskiz-filters" }
 # that `Document::texts` keeps.
 eskiz-types = { path = "../eskiz-types" }
 # Safe byte views of 16-bit tile storage.
-bytemuck = "1"
+bytemuck = { version = "1", features = ["extern_crate_alloc"] }

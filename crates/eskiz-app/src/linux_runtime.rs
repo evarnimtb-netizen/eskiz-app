@@ -133,20 +133,64 @@ fn loadable(soname: &str) -> bool {
 #[cfg(target_os = "linux")]
 pub fn preflight() -> Result<(), String> {
     let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-    let Some(session) = session_from_env(set("WAYLAND_DISPLAY"), set("DISPLAY")) else {
+    check_sessions(set("WAYLAND_DISPLAY"), set("DISPLAY"), missing_libraries)
+}
+
+/// The decision behind `preflight`, with the library probe passed in. Wayland is tried first.
+/// When its libraries are missing but `DISPLAY` is set and the X11 libraries are there, winit
+/// falls back to X11, so that is fine. The error names the first session tried.
+pub fn check_sessions(
+    wayland_display: bool,
+    x11_display: bool,
+    missing: impl Fn(Session) -> Vec<Library>,
+) -> Result<(), String> {
+    let Some(session) = session_from_env(wayland_display, x11_display) else {
         return Ok(());
     };
-    let missing = missing_libraries(session);
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(missing_message(session, &missing))
+    let gone = missing(session);
+    if gone.is_empty() {
+        return Ok(());
     }
+    if session == Session::Wayland && x11_display && missing(Session::X11).is_empty() {
+        return Ok(());
+    }
+    Err(missing_message(session, &gone))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lib_set(gone: &'static [&'static str]) -> impl Fn(Session) -> Vec<Library> {
+        move |s| {
+            s.libraries()
+                .iter()
+                .copied()
+                .filter(|l| gone.contains(&l.soname))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn missing_wayland_libraries_fall_back_to_x11_when_display_is_set() {
+        let gone = lib_set(&["libwayland-client.so.0"]);
+        assert!(check_sessions(true, true, &gone).is_ok());
+        // No X11 display: nothing to fall back to.
+        assert!(check_sessions(true, false, &gone).is_err());
+    }
+
+    #[test]
+    fn both_sessions_broken_reports_the_wayland_set() {
+        let gone = lib_set(&["libwayland-client.so.0", "libxkbcommon-x11.so.0"]);
+        let msg = check_sessions(true, true, gone).unwrap_err();
+        assert!(msg.contains("Wayland"));
+    }
+
+    #[test]
+    fn working_wayland_and_missing_x11_is_fine() {
+        let gone = lib_set(&["libxkbcommon-x11.so.0"]);
+        assert!(check_sessions(true, true, gone).is_ok());
+    }
 
     #[test]
     fn wayland_display_wins_over_x11() {

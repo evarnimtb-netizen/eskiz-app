@@ -497,7 +497,35 @@ public class EskizActivity extends NativeActivity {
         });
     }
 
-    private void writeTo(Uri uri, File file) throws IOException {
+    /** The size the provider reports for {@code uri}, or -1 when it does not say. */
+    private long docSize(Uri uri) {
+        try (android.database.Cursor c = getContentResolver().query(uri,
+                new String[] {android.provider.OpenableColumns.SIZE}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) {
+                return c.getLong(0);
+            }
+        } catch (RuntimeException e) {
+            // The provider does not answer: the byte count of the copy is all there is to check.
+        }
+        return -1;
+    }
+
+    /** Copies {@code in} to {@code out} and returns the number of bytes written. Closes both. */
+    private static long copyCounting(InputStream in, OutputStream out) throws IOException {
+        long total = 0;
+        try (InputStream i = in; OutputStream o = out) {
+            final byte[] buf = new byte[1 << 20];
+            int n;
+            while ((n = i.read(buf)) > 0) {
+                o.write(buf, 0, n);
+                total += n;
+            }
+            o.flush();
+        }
+        return total;
+    }
+
+    private OutputStream openForWrite(Uri uri) throws IOException {
         final ContentResolver cr = getContentResolver();
         OutputStream out;
         try {
@@ -508,7 +536,66 @@ public class EskizActivity extends NativeActivity {
         if (out == null) {
             throw new IOException("The file could not be opened for writing.");
         }
-        copyStream(new FileInputStream(file), out);
+        return out;
+    }
+
+    /**
+     * Write {@code file} into the document. A document that already has content is copied to the
+     * app cache first. If the write fails or the size afterwards is not the size of {@code file},
+     * the old content is put back and the error is passed on, so a failed save does not leave a
+     * truncated file behind.
+     */
+    private void writeTo(Uri uri, File file) throws IOException {
+        final ContentResolver cr = getContentResolver();
+        final long expected = file.length();
+        File backup = null;
+        final long before = docSize(uri);
+        if (before > 0) {
+            backup = File.createTempFile("keep", ".bak", getCacheDir());
+            try {
+                final InputStream in = cr.openInputStream(uri);
+                if (in == null) {
+                    throw new IOException("no stream");
+                }
+                copyCounting(in, new FileOutputStream(backup));
+            } catch (IOException | RuntimeException e) {
+                // The old content cannot be read, so it cannot be restored: do not risk it.
+                backup.delete();
+                throw new IOException("The existing file could not be read, so it was not replaced.");
+            }
+        }
+        try {
+            final long written = copyCounting(new FileInputStream(file), openForWrite(uri));
+            final long size = docSize(uri);
+            if (written != expected || (size >= 0 && size != expected)) {
+                throw new IOException("The file was not saved completely (" + written + " of "
+                        + expected + " bytes).");
+            }
+        } catch (IOException | RuntimeException e) {
+            if (backup != null) {
+                try {
+                    copyCounting(new FileInputStream(backup), openForWrite(uri));
+                } catch (IOException | RuntimeException restore) {
+                    Log.w(TAG, "saf: could not restore the old content", restore);
+                }
+            }
+            if (e instanceof IOException) {
+                throw (IOException) e;
+            }
+            throw new IOException(String.valueOf(e.getMessage()));
+        } finally {
+            if (backup != null) {
+                backup.delete();
+            }
+        }
+    }
+
+    private void deleteQuietly(Uri doc) {
+        try {
+            DocumentsContract.deleteDocument(getContentResolver(), doc);
+        } catch (RuntimeException | java.io.FileNotFoundException e) {
+            Log.w(TAG, "saf: could not remove the partial file", e);
+        }
     }
 
     /**
@@ -544,7 +631,12 @@ public class EskizActivity extends NativeActivity {
                     if (doc == null) {
                         throw new IOException("The file could not be created.");
                     }
-                    writeTo(doc, f);
+                    try {
+                        writeTo(doc, f);
+                    } catch (IOException | RuntimeException e) {
+                        deleteQuietly(doc); // a new document: no partial file is left in the folder
+                        throw e;
+                    }
                     if (shown == null) {
                         shown = displayName(doc);
                     }
