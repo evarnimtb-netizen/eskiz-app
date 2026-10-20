@@ -253,6 +253,27 @@ pub struct PenState {
     pub(crate) stroke_reading: Option<PenReading>,
     /// Where the pressure curve editor drew last frame.
     pub(crate) editor_rect: Option<Rect>,
+    /// The pen backend connects after the first frames, not in the middle of start-up.
+    #[cfg_attr(not(all(feature = "tablet", windows)), allow(dead_code))]
+    pub(crate) later: PenLater,
+    /// The "pen input was switched off after a freeze" notice is showing.
+    pub(crate) banner: bool,
+}
+
+/// Frames to draw before the pen backend is connected (Windows).
+pub const CONNECT_AFTER_FRAMES: u32 = 8;
+
+/// A pen backend that is waiting to be connected, and what is needed to do it later.
+#[derive(Default)]
+#[cfg_attr(not(all(feature = "tablet", windows)), allow(dead_code))]
+pub struct PenLater {
+    #[cfg(all(feature = "tablet", windows))]
+    pub(crate) handles: Option<crate::tablet_backend::Handles>,
+    /// Frames drawn while waiting.
+    pub(crate) frames: u32,
+    pub(crate) pending: bool,
+    /// The setting as of the last frame, to notice a change.
+    pub(crate) setting_seen: Option<bool>,
 }
 
 impl PenState {

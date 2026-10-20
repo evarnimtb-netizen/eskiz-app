@@ -149,6 +149,7 @@ pub mod snapshot;
 mod qa_capture;
 pub mod tablet;
 pub mod tablet_backend;
+pub mod pen_gate;
 pub mod exit;
 pub mod paint_marks;
 pub mod stall;
@@ -188,6 +189,8 @@ USAGE:
                                         pick the graphics renderer (same as ESKIZ_BACKEND);
                                         gl is the compatible OpenGL mode, software needs no
                                         GPU driver, auto leaves safe graphics mode
+    eskiz --no-tablet [FILE]            do not use the pen tablet (Windows Ink); same as
+                                        ESKIZ_TABLET=off. Mouse and touch still work
     eskiz --open FILE --export OUT.png  export a document to PNG without a window
     eskiz --version                     print the version
     eskiz --selftest                    paint, undo and redo headlessly; writes selftest.png
@@ -226,6 +229,7 @@ pub fn split_renderer_flag(args: &[String]) -> Result<(Option<renderer::Mode>, V
 /// Parse command-line arguments (without the program name).
 pub fn parse_args(args: &[String]) -> Result<Command, String> {
     let (_, args) = split_renderer_flag(args)?;
+    let (_, args) = pen_gate::split_flag(&args);
     let args = &args[..];
     let mut open = None;
     let mut export = None;
@@ -286,6 +290,7 @@ pub fn run() {
     if let Ok((Some(mode), _)) = split_renderer_flag(&args) {
         renderer::set_cli_request(mode);
     }
+    pen_gate::set_cli_off(pen_gate::split_flag(&args).0);
     // Commands that print: on Windows the release exe is a GUI program with no console of its own.
     if matches!(parsed, Ok(Command::Gui { .. } | Command::Icons)) {
         startup::install_panic_hook();
@@ -462,6 +467,17 @@ mod tests {
         // The flag does not disturb the rest of the command line.
         assert_eq!(parse_args(&a(&["--renderer", "gl"])), Ok(Command::Gui { file: None }));
         assert_eq!(parse_args(&a(&["--renderer", "gl", "--version"])), Ok(Command::Version));
+    }
+
+    #[test]
+    fn the_no_tablet_flag_is_accepted_and_does_not_disturb_the_rest() {
+        let a = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(parse_args(&a(&["--no-tablet"])), Ok(Command::Gui { file: None }));
+        assert_eq!(
+            parse_args(&a(&["--no-tablet", "doc.procreate"])),
+            Ok(Command::Gui { file: Some(PathBuf::from("doc.procreate")) })
+        );
+        assert_eq!(parse_args(&a(&["--renderer", "gl", "--no-tablet", "--version"])), Ok(Command::Version));
     }
 
     use super::*;

@@ -225,6 +225,8 @@ struct State {
     banner_taken: bool,
     /// The renderer being tried (for the watchdog).
     current: Option<Stage>,
+    /// The pen backend was switched off by a freeze in the last run; the notice is still to show.
+    pen_banner: bool,
 }
 
 /// This start runs below the top rung because of earlier problems.
@@ -251,6 +253,7 @@ fn state() -> &'static Mutex<State> {
             safe: None,
             banner_taken: false,
             current: None,
+            pen_banner: false,
         })
     })
 }
@@ -299,6 +302,7 @@ pub fn init_in(dir: Option<PathBuf>, args: &[String], order: &[Stage]) -> Option
         }
         step_reason = Some(format!("The last start stopped before its window appeared while using {}.", c.label()));
     }
+    let pen_newly_off = skips.pen_off && !before.pen_off;
     if let Some(d) = &dir {
         if skips != before {
             skips.save(d);
@@ -313,6 +317,7 @@ pub fn init_in(dir: Option<PathBuf>, args: &[String], order: &[Stage]) -> Option
         s.step_reason = step_reason;
         s.safe = None;
         s.banner_taken = false;
+        s.pen_banner = pen_newly_off;
     });
     if let Some(d) = &dir {
         let _ = fs::create_dir_all(d);
@@ -369,6 +374,22 @@ pub fn retry_normal_graphics() {
     with(|s| s.safe = None);
 }
 
+/// The "pen input was switched off after a freeze" notice, once per run.
+pub fn take_pen_banner() -> bool {
+    with(|s| std::mem::take(&mut s.pen_banner))
+}
+
+/// Forget that a freeze blamed the pen backend (the user turned pen input back on).
+pub fn clear_pen_skip() {
+    log("pen input: turned back on by the user; the learned skip is cleared");
+    with(|s| {
+        s.skips.pen_off = false;
+        if let Some(d) = &s.dir {
+            s.skips.save(d);
+        }
+    });
+}
+
 /// What earlier crashes and stalls ruled out (set by [`init`]).
 pub fn skips() -> crate::stall::Skips {
     with(|s| s.skips.clone())
@@ -377,7 +398,9 @@ pub fn skips() -> crate::stall::Skips {
 /// Forget earlier crashes and stalls: `--renderer auto` and Try normal graphics start at the top again.
 pub fn clear_skips() {
     with(|s| {
-        s.skips = crate::stall::Skips::default();
+        // What a freeze taught about the pen backend is not a graphics matter: only the
+        // pen notice or Settings > Pen turns it back on.
+        s.skips = crate::stall::Skips { pen_off: s.skips.pen_off, ..crate::stall::Skips::default() };
         if let Some(d) = &s.dir {
             s.skips.save(d);
         }
@@ -799,7 +822,7 @@ mod tests {
         start(&d, &mac);
         draw();
         // The watchdog saw the window freeze; the user ended it.
-        crate::stall::report_stall(Some(&d), WgpuMetal, crate::stall::Phase::Gallery, 3.5, false);
+        crate::stall::report_stall(Some(&d), WgpuMetal, crate::stall::Phase::Gallery, 3.5, false, false);
         let p = start(&d, &mac);
         assert_eq!((p.stages[0], p.safe), (Glow, true));
         let banner = take_safe_banner().expect("notice");

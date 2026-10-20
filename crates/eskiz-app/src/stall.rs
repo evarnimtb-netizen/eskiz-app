@@ -59,6 +59,10 @@ pub enum Phase {
     /// The surface texture was acquired and the render pass is recorded; what follows is the
     /// encoder finish, `Queue::submit` and `Queue::present`.
     SubmitPresent = 10,
+    /// The pen backend (Windows Ink) is being connected.
+    PenSetup = 11,
+    /// The pen backend is being polled for events.
+    PenEvents = 12,
 }
 
 impl Phase {
@@ -75,6 +79,8 @@ impl Phase {
             Self::GpuComposite => "GPU composite submit",
             Self::SurfaceAcquire => "surface acquire",
             Self::SubmitPresent => "queue submit + present",
+            Self::PenSetup => "pen set-up",
+            Self::PenEvents => "pen events",
         }
     }
 
@@ -97,6 +103,8 @@ impl Phase {
             Self::GpuComposite,
             Self::SurfaceAcquire,
             Self::SubmitPresent,
+            Self::PenSetup,
+            Self::PenEvents,
         ]
         .into_iter()
         .find(|p| p.name() == name)
@@ -114,6 +122,8 @@ impl Phase {
             8 => Self::GpuComposite,
             9 => Self::SurfaceAcquire,
             10 => Self::SubmitPresent,
+            11 => Self::PenSetup,
+            12 => Self::PenEvents,
             _ => Self::Idle,
         }
     }
@@ -125,6 +135,14 @@ static LAST_BEAT_MS: AtomicU64 = AtomicU64::new(0);
 static VISIBLE: AtomicBool = AtomicBool::new(true);
 /// The GPU compositor is the one on screen (written by the UI thread, read by the watchdog).
 static GPU_COMPOSITOR: AtomicBool = AtomicBool::new(false);
+
+/// The Windows Ink pen backend is connected (written by the UI thread, read by the watchdog), so a
+/// stall report can name it.
+static PEN_BACKEND: AtomicBool = AtomicBool::new(false);
+
+pub fn set_pen_backend(on: bool) {
+    PEN_BACKEND.store(on, Ordering::Relaxed);
+}
 
 /// Tell the watchdog which compositor is in use, so a stall report names it.
 pub fn set_gpu_compositor(on: bool) {
@@ -213,26 +231,36 @@ pub struct StallMarker {
     pub phase: String,
     /// The GPU compositor was in use when the stall began.
     pub gpu_compositor: bool,
+    /// The Windows Ink pen backend was connected when the stall began.
+    pub pen: bool,
 }
 
 impl StallMarker {
     pub fn encode(&self) -> String {
-        format!("renderer={}\nphase={}\ncompositor={}\n", self.stage.name(), self.phase, if self.gpu_compositor { "gpu" } else { "cpu" })
+        format!(
+            "renderer={}\nphase={}\ncompositor={}\npen={}\n",
+            self.stage.name(),
+            self.phase,
+            if self.gpu_compositor { "gpu" } else { "cpu" },
+            if self.pen { "on" } else { "off" }
+        )
     }
 
     pub fn parse(text: &str) -> Option<Self> {
         let mut stage = None;
         let mut phase = String::new();
         let mut gpu_compositor = false;
+        let mut pen = false;
         for line in text.lines() {
             match line.split_once('=') {
                 Some(("renderer", v)) => stage = Stage::parse(v),
                 Some(("phase", v)) => phase = v.trim().to_owned(),
                 Some(("compositor", v)) => gpu_compositor = v.trim() == "gpu",
+                Some(("pen", v)) => pen = v.trim() == "on",
                 _ => {}
             }
         }
-        Some(Self { stage: stage?, phase, gpu_compositor })
+        Some(Self { stage: stage?, phase, gpu_compositor, pen })
     }
 
     fn phase(&self) -> Option<Phase> {
@@ -275,6 +303,8 @@ pub struct Skips {
     /// Composite on the CPU even on a wgpu renderer: the last freeze happened with the GPU
     /// compositor sharing the device with the window.
     pub cpu_compositor: bool,
+    /// Do not connect the pen backend: the last freeze happened with it connected.
+    pub pen_off: bool,
 }
 
 impl Skips {
@@ -291,6 +321,7 @@ impl Skips {
                 }
                 Some(("novsync", v)) => s.no_vsync = v.trim() == "1",
                 Some(("cpucomp", v)) => s.cpu_compositor = v.trim() == "1",
+                Some(("nopen", v)) => s.pen_off = v.trim() == "1",
                 _ => {}
             }
         }
@@ -305,6 +336,9 @@ impl Skips {
         if self.cpu_compositor {
             out.push_str("cpucomp=1\n");
         }
+        if self.pen_off {
+            out.push_str("nopen=1\n");
+        }
         out
     }
 
@@ -313,7 +347,7 @@ impl Skips {
     }
 
     pub fn save(&self, dir: &Path) {
-        if self.stages.is_empty() && !self.no_vsync && !self.cpu_compositor {
+        if self.stages.is_empty() && !self.no_vsync && !self.cpu_compositor && !self.pen_off {
             let _ = fs::remove_file(dir.join(SKIP_FILE));
         } else {
             let _ = fs::write(dir.join(SKIP_FILE), self.encode());
@@ -324,6 +358,15 @@ impl Skips {
     /// non-blocking present mode; a second one (or any other phase) gives the renderer up, unless
     /// it is `last`, the bottom of the ladder. Returns a sentence for the log and the toast.
     pub fn learn(&mut self, m: &StallMarker, last: Stage) -> String {
+        // The pen backend is the cheapest thing to take away and the most likely cause on a PC
+        // with a pen digitizer: a freeze with it connected turns it off before anything else.
+        if m.pen && !self.pen_off {
+            self.pen_off = true;
+            return format!(
+                "The last run froze with the pen backend (Windows Ink) connected, so Eskiz started without it. Mouse and touch work; turn pen input back on in Settings > Pen (last phase: '{}').",
+                m.phase
+            );
+        }
         // The compositor and the window share one device there: first take the compositor away
         // (the CPU compositor on the same renderer is what a software adapter runs fine).
         if m.gpu_compositor && !self.cpu_compositor && (m.is_present() || m.is_gpu_work()) {
@@ -452,7 +495,7 @@ fn watch_loop(run: &Running, poke: &dyn Fn()) {
             Verdict::Healthy => {}
             Verdict::Poke => poke(),
             Verdict::Stalled { phase, secs } => {
-                report_stall(run.dir.as_deref(), run.stage, phase, secs, GPU_COMPOSITOR.load(Ordering::Relaxed));
+                report_stall(run.dir.as_deref(), run.stage, phase, secs, GPU_COMPOSITOR.load(Ordering::Relaxed), PEN_BACKEND.load(Ordering::Relaxed));
             }
             Verdict::Recovered { .. } => {
                 if let Some(d) = &run.dir {
@@ -471,17 +514,18 @@ fn append_log(dir: &Path, line: &str) {
 }
 
 /// Write the log line and the marker for a stall. Also callable from tests.
-pub fn report_stall(dir: Option<&Path>, stage: Stage, phase: Phase, secs: f64, gpu_compositor: bool) {
+pub fn report_stall(dir: Option<&Path>, stage: Stage, phase: Phase, secs: f64, gpu_compositor: bool, pen: bool) {
     let line = format!(
-        "STALL: the UI thread has not finished a frame for {secs:.1}s; last phase: {}; renderer: {}; compositor: {}",
+        "STALL: the UI thread has not finished a frame for {secs:.1}s; last phase: {}; renderer: {}; compositor: {}; pen: {}",
         phase.name(),
         stage.name(),
-        if gpu_compositor { "gpu" } else { "cpu" }
+        if gpu_compositor { "gpu" } else { "cpu" },
+        if pen { "on" } else { "off" }
     );
     eprintln!("eskiz: {line}");
     if let Some(d) = dir {
         append_log(d, &line);
-        write_marker(d, &StallMarker { stage, phase: phase.name().to_owned(), gpu_compositor });
+        write_marker(d, &StallMarker { stage, phase: phase.name().to_owned(), gpu_compositor, pen });
     }
 }
 
@@ -539,13 +583,13 @@ mod tests {
     #[test]
     fn a_stall_writes_log_and_marker_that_the_next_start_reads() {
         let d = tmp("marker");
-        report_stall(Some(&d), Stage::WgpuDx12, Phase::Fake, 3.2, false);
+        report_stall(Some(&d), Stage::WgpuDx12, Phase::Fake, 3.2, false, false);
         let log = fs::read_to_string(d.join("startup.log")).unwrap();
         assert!(log.contains("STALL") && log.contains("fake phase") && log.contains("wgpu-dx12"), "{log}");
         let m = take_marker(&d).expect("marker");
-        assert_eq!(m, StallMarker { stage: Stage::WgpuDx12, phase: "fake phase".into(), gpu_compositor: false });
+        assert_eq!(m, StallMarker { stage: Stage::WgpuDx12, phase: "fake phase".into(), gpu_compositor: false, pen: false });
         assert!(take_marker(&d).is_none(), "read once");
-        report_stall(Some(&d), Stage::Wgpu, Phase::Gallery, 4.0, false);
+        report_stall(Some(&d), Stage::Wgpu, Phase::Gallery, 4.0, false, false);
         remove_marker(&d);
         assert!(take_marker(&d).is_none(), "a recovered stall leaves no marker");
     }
@@ -553,21 +597,21 @@ mod tests {
     #[test]
     fn a_stall_teaches_the_skip_list() {
         let mut s = Skips::default();
-        let m = StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into(), gpu_compositor: false };
+        let m = StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into(), gpu_compositor: false, pen: false };
         let last = Stage::WgpuSoftware;
         let msg = s.learn(&m, last);
         assert!(msg.contains("skips") && s.stages == [Stage::Wgpu]);
         // Present stalls try the non-blocking present mode first.
-        let p = StallMarker { stage: Stage::WgpuDx12, phase: Phase::PaintPresent.name().into(), gpu_compositor: false };
+        let p = StallMarker { stage: Stage::WgpuDx12, phase: Phase::PaintPresent.name().into(), gpu_compositor: false, pen: false };
         s.learn(&p, last);
         assert!(s.no_vsync && s.stages == [Stage::Wgpu]);
         s.learn(&p, last);
         assert_eq!(s.stages, [Stage::Wgpu, Stage::WgpuDx12]);
         // OpenGL is not the bottom on Windows and Linux: a frozen glow is skipped too.
-        s.learn(&StallMarker { stage: Stage::Glow, phase: Phase::Gallery.name().into(), gpu_compositor: false }, last);
+        s.learn(&StallMarker { stage: Stage::Glow, phase: Phase::Gallery.name().into(), gpu_compositor: false, pen: false }, last);
         assert_eq!(s.stages, [Stage::Wgpu, Stage::WgpuDx12, Stage::Glow]);
         // The bottom rung is never given up.
-        let msg = s.learn(&StallMarker { stage: last, phase: Phase::Gallery.name().into(), gpu_compositor: false }, last);
+        let msg = s.learn(&StallMarker { stage: last, phase: Phase::Gallery.name().into(), gpu_compositor: false, pen: false }, last);
         assert!(msg.contains("nothing else is left") && !s.stages.contains(&last), "{msg}");
         let again = Skips::parse(&s.encode());
         assert_eq!(again, s);
@@ -583,7 +627,7 @@ mod tests {
         let last = Stage::WgpuSoftware;
         for phase in [Phase::SubmitPresent, Phase::SurfaceAcquire, Phase::PaintPresent, Phase::GpuComposite, Phase::GpuUpload, Phase::GpuReadback] {
             let mut s = Skips::default();
-            let m = StallMarker { stage: Stage::WgpuDx12, phase: phase.name().into(), gpu_compositor: true };
+            let m = StallMarker { stage: Stage::WgpuDx12, phase: phase.name().into(), gpu_compositor: true, pen: false };
             let msg = s.learn(&m, last);
             assert!(s.cpu_compositor && !s.no_vsync && s.stages.is_empty(), "{phase:?}: {msg}");
             // It survives the file, and a second freeze (now on the CPU compositor) moves on.
@@ -595,18 +639,18 @@ mod tests {
         }
         // A freeze in the UI itself says nothing about the compositor.
         let mut s = Skips::default();
-        s.learn(&StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into(), gpu_compositor: true }, last);
+        s.learn(&StallMarker { stage: Stage::Wgpu, phase: Phase::Gallery.name().into(), gpu_compositor: true, pen: false }, last);
         assert!(!s.cpu_compositor);
     }
 
     #[test]
     fn the_marker_names_the_compositor_and_old_markers_still_read() {
-        let m = StallMarker { stage: Stage::WgpuDx12, phase: Phase::SubmitPresent.name().into(), gpu_compositor: true };
+        let m = StallMarker { stage: Stage::WgpuDx12, phase: Phase::SubmitPresent.name().into(), gpu_compositor: true, pen: false };
         assert_eq!(StallMarker::parse(&m.encode()), Some(m.clone()));
         assert!(m.is_present());
         let old = StallMarker::parse("renderer=wgpu-dx12\nphase=egui paint + present\n").unwrap();
         assert!(old.is_present() && !old.gpu_compositor);
-        for n in 0..=10u8 {
+        for n in 0..=12u8 {
             let p = Phase::from_u8(n);
             assert_eq!(p as u8, n, "{p:?}");
         }
@@ -627,5 +671,56 @@ mod tests {
         assert_eq!(t.problem(), SURFACE_TROUBLE_AFTER);
         assert!(t.take_tripped());
         assert!(!t.take_tripped(), "reported once");
+    }
+
+    #[test]
+    fn the_marker_round_trips_the_pen_state_and_old_markers_read_as_pen_off() {
+        let on = StallMarker { stage: Stage::Glow, phase: Phase::Gallery.name().into(), gpu_compositor: false, pen: true };
+        assert!(on.encode().contains("pen=on"));
+        assert_eq!(StallMarker::parse(&on.encode()), Some(on));
+        let off = StallMarker { pen: false, ..on_marker() };
+        assert!(off.encode().contains("pen=off"));
+        assert_eq!(StallMarker::parse(&off.encode()), Some(off));
+        assert!(!StallMarker::parse("renderer=glow\nphase=input\ncompositor=cpu\n").unwrap().pen);
+    }
+
+    fn on_marker() -> StallMarker {
+        StallMarker { stage: Stage::WgpuDx12, phase: Phase::PaintPresent.name().into(), gpu_compositor: true, pen: true }
+    }
+
+    #[test]
+    fn a_freeze_with_the_pen_backend_connected_turns_it_off_first_and_keeps_the_renderer() {
+        let last = Stage::WgpuSoftware;
+        // Even on the GPU compositor and on the present path: the pen goes first.
+        let mut s = Skips::default();
+        let msg = s.learn(&on_marker(), last);
+        assert!(s.pen_off && !s.cpu_compositor && !s.no_vsync && s.stages.is_empty(), "{msg}");
+        assert!(msg.contains("pen"), "{msg}");
+        // It survives the file.
+        let d = tmp("pen-skip");
+        s.save(&d);
+        assert!(Skips::load(&d).pen_off);
+        assert!(fs::read_to_string(d.join(SKIP_FILE)).unwrap().contains("nopen=1"));
+        // A second freeze, now without the pen, follows the old ladder.
+        s.learn(&StallMarker { pen: false, ..on_marker() }, last);
+        assert!(s.pen_off && s.cpu_compositor);
+        // A freeze without the pen never touches the pen setting.
+        let mut fresh = Skips::default();
+        fresh.learn(&StallMarker { pen: false, ..on_marker() }, last);
+        assert!(!fresh.pen_off);
+        // Clearing everything removes the file.
+        Skips::default().save(&d);
+        assert!(!Skips::load(&d).pen_off);
+    }
+
+    #[test]
+    fn a_stall_report_names_the_pen_backend() {
+        let d = tmp("pen-report");
+        report_stall(Some(&d), Stage::Glow, Phase::PenEvents, 3.1, false, true);
+        let log = fs::read_to_string(d.join("startup.log")).unwrap();
+        assert!(log.contains("last phase: pen events") && log.contains("pen: on"), "{log}");
+        let m = take_marker(&d).unwrap();
+        assert!(m.pen && m.phase == "pen events");
+        assert_eq!(Phase::from_name("pen set-up"), Some(Phase::PenSetup));
     }
 }

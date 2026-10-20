@@ -32,4 +32,18 @@ You can also choose the renderer yourself, three ways:
   c) Inside Eskiz: Settings > Graphics: Automatic, DirectX 12, Vulkan, OpenGL (compatibility) or
      Software. It applies the next time Eskiz starts.
 
+If the freeze comes from the pen
+--------------------------------
+On some PCs the pen tablet support (Windows Ink) is what hangs, not the graphics. The pen then
+only works like a mouse. You can switch it off three ways:
+
+  a) The "Eskiz (compatibility mode).bat" file also starts without pen input (--no-tablet).
+  b) From a terminal:  eskiz.exe --no-tablet     (or set the variable ESKIZ_TABLET=off)
+  c) Inside Eskiz: Settings > Pen tablet input (Windows Ink). It applies at once.
+
+Eskiz also learns this: if it froze while the pen was connected, the next start leaves the pen
+off, says so in a note, and the note has a button "Turn pen input back on". startup.log then
+says "pen: not connected (the last run froze while it was connected)". Eskiz only connects the
+pen when Windows reports a pen on the PC (a touch screen alone does not need it).
+
 Please send %LOCALAPPDATA%\Eskiz\logs\startup.log (and startup.prev.log) with a bug report.

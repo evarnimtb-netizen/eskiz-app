@@ -129,6 +129,8 @@ pub struct Prefs {
     pub reduce_motion: bool,
     /// Settings > Graphics > Renderer: Automatic or one rung of the ladder. Applied on the next start.
     pub graphics: crate::renderer::Mode,
+    /// Settings > Pen: use the pen tablet (Windows Ink on Windows). Applied at once.
+    pub pen_input: bool,
 }
 
 impl Default for Prefs {
@@ -156,6 +158,7 @@ impl Default for Prefs {
             touch_painting: true,
             reduce_motion: false,
             graphics: crate::renderer::Mode::Auto,
+            pen_input: true,
         }
     }
 }
@@ -173,7 +176,7 @@ impl Prefs {
     /// `key=value` pairs separated by `;`.
     pub fn encode(&self) -> String {
         format!(
-            "ver={PREFS_VERSION};light={};right={};cursor={};eyedrop={};hold_shape={};sidebar_y={};pcurve={};undo_gest={};repeat_undo={};touch_nav={};tl={};tlq={};tlr={};eyed_s={:.2};qs_s={:.2};scrub={};swipe={};fs4={};touch_paint={};rmotion={};identity={};gfx={}",
+            "ver={PREFS_VERSION};light={};right={};cursor={};eyedrop={};hold_shape={};sidebar_y={};pcurve={};undo_gest={};repeat_undo={};touch_nav={};tl={};tlq={};tlr={};eyed_s={:.2};qs_s={:.2};scrub={};swipe={};fs4={};touch_paint={};rmotion={};identity={};gfx={};pen={}",
             u8::from(self.light),
             u8::from(self.sidebar_right),
             u8::from(self.brush_cursor),
@@ -195,7 +198,8 @@ impl Prefs {
             u8::from(self.touch_painting),
             u8::from(self.reduce_motion),
             self.identity.key(),
-            self.graphics.name()
+            self.graphics.name(),
+            u8::from(self.pen_input)
         )
     }
 
@@ -250,6 +254,7 @@ impl Prefs {
                 "fs4" => p.fullscreen_taps = flag,
                 "touch_paint" => p.touch_painting = flag,
                 "rmotion" => p.reduce_motion = flag,
+                "pen" => p.pen_input = flag,
                 // Older builds wrote 1 for Compatibility (OpenGL) and 0 for Automatic.
                 "gfx" => {
                     p.graphics = match v {
@@ -2269,7 +2274,10 @@ impl eframe::App for EskizApp {
         if cfg!(target_os = "android") || !self.safe.is_zero() {
             raw_input.safe_area_insets = Some(self.safe.insets());
         }
+        self.pen_tick(ctx);
+        crate::stall::crumb(crate::stall::Phase::PenEvents);
         self.pump_pen(ctx, raw_input);
+        crate::stall::crumb(crate::stall::Phase::Input);
         trace_key_events(&raw_input.events, raw_input.focused);
     }
 
@@ -2331,6 +2339,97 @@ impl EskizApp {
         crate::exit::step("app state released; the graphics teardown follows");
     }
 
+    /// Decide at start-up whether the pen backend is connected, and when. On Windows it waits for
+    /// the first frames; elsewhere it connects now, as before.
+    fn plan_pen(&mut self, cc: &eframe::CreationContext<'_>) {
+        #[cfg(all(feature = "tablet", windows))]
+        {
+            let off = crate::pen_gate::decide(crate::pen_gate::Inputs {
+                cli_off: crate::pen_gate::cli_off(),
+                env: crate::pen_gate::env_switch(),
+                setting_on: self.prefs.pen_input,
+                learned_off: crate::startup::skips().pen_off,
+                digitizer: crate::pen_gate::digitizer(),
+            });
+            self.pen.later.handles = crate::tablet_backend::handles(cc).ok();
+            self.pen.later.setting_seen = Some(self.prefs.pen_input);
+            self.pen.banner = crate::startup::take_pen_banner();
+            match off {
+                Some(why) => {
+                    crate::startup::log(&format!("pen: not connected ({})", why.reason()));
+                    self.pen.status = format!("Tablet: off ({})", why.reason());
+                }
+                None => {
+                    crate::startup::log("pen: Windows Ink will be connected after the first frames");
+                    self.pen.later.pending = true;
+                }
+            }
+        }
+        #[cfg(not(all(feature = "tablet", windows)))]
+        {
+            if crate::pen_gate::cli_off() || crate::pen_gate::env_switch() == crate::pen_gate::EnvSwitch::Off {
+                self.set_pen_source(Err("off (--no-tablet or ESKIZ_TABLET=off)".to_owned()));
+            } else {
+                self.set_pen_source(crate::tablet_backend::connect(cc));
+            }
+        }
+    }
+
+    /// Once per frame: connect a waiting pen backend, and follow Settings > Pen. Windows only.
+    fn pen_tick(&mut self, ctx: &egui::Context) {
+        #[cfg(all(feature = "tablet", windows))]
+        {
+            let on = self.prefs.pen_input;
+            if self.pen.later.setting_seen.is_some_and(|seen| seen != on) {
+                self.pen.later.setting_seen = Some(on);
+                if on {
+                    if crate::startup::skips().pen_off {
+                        crate::startup::clear_pen_skip();
+                    }
+                    crate::startup::log("pen: switched on in Settings");
+                    self.pen.later.pending = true;
+                    self.pen.later.frames = crate::tablet::CONNECT_AFTER_FRAMES;
+                } else {
+                    crate::startup::log("pen: switched off in Settings");
+                    self.pen.later.pending = false;
+                    self.pen.source = None;
+                    crate::stall::set_pen_backend(false);
+                    self.pen.status = "Tablet: off (Settings > Pen)".to_owned();
+                }
+            }
+            if !self.pen.later.pending {
+                return;
+            }
+            self.pen.later.frames += 1;
+            if self.pen.later.frames < crate::tablet::CONNECT_AFTER_FRAMES {
+                ctx.request_repaint();
+                return;
+            }
+            self.pen.later.pending = false;
+            let Some(handles) = self.pen.later.handles else {
+                self.set_pen_source(Err("no window handle".to_owned()));
+                return;
+            };
+            // The marker names the backend from here on, so a freeze inside it is blamed on it.
+            crate::stall::set_pen_backend(true);
+            crate::stall::crumb(crate::stall::Phase::PenSetup);
+            let result = crate::tablet_backend::connect_later(ctx.clone(), handles);
+            crate::stall::crumb(crate::stall::Phase::Input);
+            if result.is_err() {
+                crate::stall::set_pen_backend(false);
+            }
+            self.set_pen_source(result);
+        }
+        #[cfg(not(all(feature = "tablet", windows)))]
+        let _ = ctx;
+    }
+
+    /// The pen notice's button, and Settings > Pen: use the pen backend again.
+    pub(crate) fn turn_pen_back_on(&mut self) {
+        self.pen.banner = false;
+        self.prefs.pen_input = true;
+    }
+
     /// Attach the result of `tablet_backend::connect`. On failure the reason is shown in
     /// Prefs and the app carries on with mouse and touch.
     pub fn set_pen_source(&mut self, source: Result<Box<dyn PenSource>, String>) {
@@ -2341,6 +2440,8 @@ impl EskizApp {
             }
             Err(e) => {
                 self.pen.source = None;
+                crate::stall::set_pen_backend(false);
+                crate::startup::log(&format!("pen: not available ({e})"));
                 self.pen.status = format!("Tablet: {e}");
             }
         }
@@ -2360,6 +2461,8 @@ impl EskizApp {
         let mut events = source.poll();
         if source.failed() {
             self.pen.source = None;
+            crate::stall::set_pen_backend(false);
+            crate::startup::log("pen: the backend stopped; pen input is off for this run");
             self.show_toast("Pen input stopped. Mouse and touch still work.", 3.0);
             return;
         }
@@ -2506,7 +2609,7 @@ pub fn run_shared(file: Option<PathBuf>, tweak: impl Fn(&mut eframe::NativeOptio
             if let Some(text) = cc.storage.and_then(|s| crate::compat::storage_string(s, BRUSH_KEY, LEGACY_BRUSH_KEY)) {
                 app.set_brush_choice(&text);
             }
-            app.set_pen_source(crate::tablet_backend::connect(cc));
+            app.plan_pen(cc);
             if crate::renderer::saved_choice_was_reset() {
                 app.prefs.graphics = crate::renderer::Mode::Auto;
             }
@@ -2603,8 +2706,10 @@ mod tests {
             fullscreen_taps: false,
             touch_painting: false,
             graphics: crate::renderer::Mode::Vulkan,
+            pen_input: false,
         };
         assert_eq!(Prefs::decode(&p.encode()), p);
+        assert!(Prefs::decode("light=1").pen_input, "old strings keep pen input on");
         assert_eq!(Prefs::decode("light=1").graphics, crate::renderer::Mode::Auto, "old strings keep Automatic");
         assert_eq!(Prefs::decode("gfx=1").graphics, crate::renderer::Mode::Gl, "the old Compatibility switch");
         assert_eq!(Prefs::decode("gfx=0").graphics, crate::renderer::Mode::Auto);

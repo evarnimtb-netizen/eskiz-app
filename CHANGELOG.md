@@ -98,6 +98,11 @@ The full list of changes follows.
 - **Windows: the window no longer freezes ("Not Responding") with DirectX 12.** The canvas no longer queues more drawing work than the graphics driver can finish; if frames still cannot be shown, Eskiz switches to drawing the canvas on the processor for that session instead of freezing, and remembers it for the next start.
 - Android: the app now reaches its Java side (earlier builds showed "Method not found"). On an emulator, opening files, choosing a folder, imports, copying and pasting pictures, and the Back button work; saving into a chosen folder and Share are not checked on a device yet. Gallery > Import opens the system file picker directly.
 
+### Fixed (ninth release candidate)
+
+- **Windows: the window no longer freezes ("Not Responding") a few seconds after start on PCs with a pen or touch digitizer.** The pen tablet support (Windows Ink) now runs on its own thread and starts after the first frames, so it cannot stop the window; if it ever hangs, only pen input stops. It is only started when Windows reports a pen.
+- New switches for the pen tablet: **Settings → Pen tablet input (Windows Ink)** (applies at once), `--no-tablet` and `ESKIZ_TABLET=off`. The compatibility-mode start file uses `--no-tablet`. If Eskiz froze while the pen was connected, the next start leaves the pen off, says so, and offers a **Turn pen input back on** button.
+
 ### Fixed (code review)
 
 - Saving and crash recovery keep working if one save or recovery job fails; you now see a message instead of silence.

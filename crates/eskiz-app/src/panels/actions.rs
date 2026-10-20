@@ -610,6 +610,19 @@ impl EskizApp {
             self.sheet = Some(crate::sheets::Sheet::Gestures);
         }
         ui.add_space(6.0);
+        if cfg!(windows) {
+            small_label(ui, &pal, "PEN");
+            let on = self.prefs.pen_input;
+            let sub = if on { "Pressure and tilt from a pen tablet or pen display" } else { "Off: the pen works like a mouse, without pressure" };
+            if list_row(ui, &pal, ia::icon_info, "Pen tablet input (Windows Ink)", Some(sub), true, Trailing::Switch(on)).clicked() {
+                if on {
+                    self.prefs.pen_input = false;
+                } else {
+                    self.turn_pen_back_on();
+                }
+            }
+            ui.add_space(6.0);
+        }
         egui::Frame::new()
             .fill(pal.row)
             .corner_radius(CornerRadius::same(10))

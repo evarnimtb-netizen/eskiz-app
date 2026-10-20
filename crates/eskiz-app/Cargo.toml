@@ -33,7 +33,7 @@ gl-fallback = ["eframe/glow"]
 # Pen tablet pressure, tilt and azimuth through the `octotablet` crate (Windows Ink and
 # Wayland). `cargo check` passes with it on for x86_64-unknown-linux-gnu,
 # x86_64-pc-windows-msvc and aarch64-apple-darwin (where it is a no-op).
-tablet = ["dep:octotablet"]
+tablet = ["dep:octotablet", "dep:raw-window-handle"]
 # Native open/save/folder dialogs through `rfd` (IFileDialog on Windows, NSOpenPanel on macOS,
 # the xdg-desktop-portal on Linux, so no GTK build dependency). Android builds use
 # `--no-default-features` and a later SAF backend behind the same `FileAccess` trait.
@@ -93,6 +93,8 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit"] 
 # `tablet` feature is accepted and does nothing.
 [target.'cfg(any(windows, all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "redox")))))'.dependencies]
 octotablet = { version = "0.1.0", optional = true }
+# The window handles octotablet asks for (same version as eframe uses).
+raw-window-handle = { version = "0.6", optional = true }
 
 # macOS only: the native tablet reader (`tablet_mac.rs`, feature `tablet`). All of these are
 # already in the lock file through winit; only NSEvent, NSWindow and NSView are needed.
