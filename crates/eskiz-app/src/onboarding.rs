@@ -320,6 +320,14 @@ impl Tour {
         true
     }
 
+    /// Test hook: end the tour now and never start it automatically (the version is marked seen).
+    pub(crate) fn dismiss_for_test(&mut self) {
+        self.wait = Wait::No;
+        self.step = None;
+        self.base = None;
+        self.stored = Some(TOUR_VERSION);
+    }
+
     /// Help > Welcome tour: start from card 1. The stored version is left alone.
     pub(crate) fn replay(&mut self) {
         self.wait = Wait::No;

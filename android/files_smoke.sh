@@ -15,7 +15,11 @@
 # DIR/steps.txt and DIR/summary.md. Taps use `uiautomator dump` and tools/ui_find.py (by text, never by
 # coordinates); when a node is missing the dump is saved next to the screenshots. The script clears
 # /sdcard/Documents/EskizTest and /sdcard/Download/eskiz-* first, so a rerun starts clean.
-# Exit code 0 only when every automatic verdict passed.
+# Every step starts from a known state (`fresh`): the app is force-stopped and started with the `skip_tour`
+# hook (no welcome card), and steps that need a document open the fixture by path (`open_path:` hook, no
+# picker) from a copy under the app's private files folder (pushed with `run-as`, so the APK must be
+# debuggable). One failed step therefore cannot break the next one. The log of each step is kept in
+# DIR/logcat-<step>.txt. Exit code 0 only when every automatic verdict passed.
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 serial_args=(); apk=""; test_apk=""; out=""; fixtures=""; big=""
@@ -27,7 +31,7 @@ while [[ $# -gt 0 ]]; do
     --out) out="$2"; shift 2 ;;
     --fixtures) fixtures="$2"; shift 2 ;;
     --big-file) big="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -56,7 +60,11 @@ logs() { adb logcat -d 2> /dev/null | tr -d '\r'; }
 wait_log() { local end=$((SECONDS + $2)); while (( SECONDS < end )); do logs | grep -Eq -- "$1" && return 0; sleep 1; done; return 1; }
 has_log() { logs | grep -Eq -- "$1"; }
 alive() { [[ -n "$(adb shell pidof app.eskiz 2> /dev/null | tr -d '\r')" ]]; }
-clear_logs() { adb logcat -c; }
+# Per-step logcat: clear_logs first appends what the step logged so far to DIR/logcat-<step>.txt.
+CUR=00
+clear_logs() { logs >> "$out/logcat-$CUR.txt" 2> /dev/null; adb logcat -c; }
+begin_step() { CUR="$1"; : > "$out/logcat-$CUR.txt"; }
+end_step() { logs >> "$out/logcat-$CUR.txt" 2> /dev/null; }
 sha_of() { if command -v sha256sum > /dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
 # --- UI helpers (uiautomator + ui_find.py) ---
@@ -76,16 +84,51 @@ tap_node() {
 }
 hook() { adb shell am start -n app.eskiz/.EskizActivity --es eskiz_test "$1" > /dev/null 2>&1; }
 key() { adb shell input keyevent "$1"; sleep 1; }
-# pick_in_downloads NAME: in the system picker, open Downloads and tap the file.
+# try_tap SECONDS ARGS...: tap the node when it shows up in time; no dump is kept when it does not.
+try_tap() { local secs="$1"; shift; local end=$((SECONDS + secs)) xy
+  while (( SECONDS < end )); do xy="$(find_node "$@")" && { tap_xy $xy; return 0; }; sleep 1; done; return 1; }
+# pick_in_downloads NAME: in the system picker, go to the Downloads root (the drawer may be a button
+# on a phone and always open on a tablet; the picker otherwise reopens on the last folder) and tap the
+# file. Falls back to the picker's search box. Matches by text only.
 pick_in_downloads() {
-  if ! tap_node 6 --text "$1"; then
-    tap_node 10 --desc "Show roots" || return 1
-    tap_node 10 --text "Downloads" || return 1
-    tap_node 10 --text "$1" || return 1
-  fi
+  try_tap 3 --desc "Show roots" || true
+  try_tap 5 --text "Downloads" || true
+  tap_node 6 --text "$1" && return 0
+  log "picker: $1 not listed in Downloads; trying search"
+  try_tap 5 --desc "Search" || try_tap 3 --text "Search" || return 1
+  adb shell input text "$1"; sleep 1; key KEYCODE_ENTER
+  tap_node 10 --text "$1"
 }
-launch() { adb shell am force-stop app.eskiz; clear_logs; adb shell am start -n app.eskiz/.EskizActivity > /dev/null 2>&1
+# launch: a cold start without the welcome tour.
+launch() { adb shell am force-stop app.eskiz; clear_logs
+  adb shell am start -n app.eskiz/.EskizActivity --es eskiz_test skip_tour > /dev/null 2>&1
   for _ in $(seq 1 30); do alive && break; sleep 1; done; sleep 6; }
+# The fixture document lives in the app's private files folder (copied in the setup).
+FIXTURE_APP=/data/data/app.eskiz/files/test-fixture/fixture.procreate
+# fresh [open]: a known state. "open" also opens the fixture document by path.
+fresh() {
+  launch
+  [[ "${1:-}" == open ]] || return 0
+  hook "open_path:$FIXTURE_APP"
+  if ! wait_log "saf: open ok" 30; then log "fresh: the fixture document did not open"; shot "fresh-failed-$CUR"; return 1; fi
+  sleep 2
+}
+# choose_folder_flow: the system picker for the export folder (Documents/EskizTest), Allow. 0 on success.
+folder_ok=1
+choose_folder_flow() {
+  adb shell mkdir -p /sdcard/Documents/EskizTest
+  clear_logs; hook choose_folder
+  local ok=1
+  try_tap 15 --desc "Show roots" || true
+  try_tap 8 --text "Documents" || try_tap 8 --text-contains "documents" || true
+  tap_node 10 --text "EskizTest" \
+    && tap_node 10 --text-contains "use this folder" \
+    && { tap_node 10 --text "Allow" || tap_node 10 --text "ALLOW" || tap_node 10 --text-contains "allow"; } && ok=0
+  wait_log "saf: tree persisted" 20 || ok=1
+  folder_ok=$ok; return $ok
+}
+# need_folder: make sure the export folder is granted (repeats the picker if step 2 failed).
+need_folder() { [[ "$folder_ok" == 0 ]] && return 0; log "export folder not granted yet: choosing it again"; fresh; choose_folder_flow; }
 
 # --- setup ---
 t 240 "$adb_bin" ${serial_args[@]+"${serial_args[@]}"} wait-for-device || { log "no device"; exit 3; }
@@ -112,35 +155,35 @@ adb shell mkdir -p /sdcard/Documents /sdcard/Download
 for f in fixture.procreate fixture.png fixture.brushset fixture.swatches; do adb push "$fixtures/$f" "/sdcard/Download/$f" > /dev/null; done
 adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download > /dev/null 2>&1
 adb shell pm clear app.eskiz > /dev/null 2>&1
+adb push "$fixtures/fixture.procreate" /data/local/tmp/eskiz-fixture.procreate > /dev/null
+adb shell "run-as app.eskiz sh -c 'mkdir -p files/test-fixture && cp /data/local/tmp/eskiz-fixture.procreate files/test-fixture/fixture.procreate'" > "$out/fixture-copy.txt" 2>&1 \
+  || { log "could not copy the fixture into the app (is the APK debuggable?): see fixture-copy.txt"; exit 4; }
 size="$(adb shell wm size | tr -d '\r' | grep -Eo '[0-9]+x[0-9]+' | tail -1)"; W="${size%x*}"; H="${size#*x}"
 log "device ${W}x${H}"
+begin_step 00
 launch; shot 00-gallery
 alive; verdict "app alive after launch" $?
+end_step
 
 # 1 open .procreate
 log "1. open .procreate"
+begin_step 1; fresh
 clear_logs; hook open_document
 if pick_in_downloads fixture.procreate; then
   wait_log "saf: picked" 30 && wait_log "saf: open ok" 30; verdict "1 open .procreate (picked, open ok)" $?
 else verdict "1 open .procreate (picker node)" 1; fi
-shot 01-opened
+shot 01-opened; end_step
 
 # 2 choose folder
 log "2. choose folder"
-adb shell mkdir -p /sdcard/Documents/EskizTest
-clear_logs; hook choose_folder
-ok=1
-if tap_node 15 --desc "Show roots" || true; then
-  tap_node 8 --text "Documents" || tap_node 8 --text-contains "documents"
-  tap_node 10 --text "EskizTest" \
-    && tap_node 10 --text-contains "use this folder" \
-    && { tap_node 10 --text "Allow" || tap_node 10 --text "ALLOW" || tap_node 10 --text-contains "allow"; } && ok=0
-fi
-wait_log "saf: tree persisted" 20 || ok=1; verdict "2 choose folder (tree persisted)" $ok
-shot 02-folder
+begin_step 2; fresh
+choose_folder_flow; verdict "2 choose folder (tree persisted)" $?
+shot 02-folder; end_step
 
 # 3 save PNG
 log "3. save PNG"
+begin_step 3; need_folder; fresh open
+adb shell rm -f /sdcard/Documents/EskizTest/*.png
 clear_logs; hook export:png:save
 ok=1; wait_log "saf: committed" 40 && ok=0; verdict "3 save PNG (committed)" $ok
 rm -rf "$out/pulled"; mkdir -p "$out/pulled"
@@ -148,61 +191,70 @@ adb pull /sdcard/Documents/EskizTest "$out/pulled/" > /dev/null 2>&1
 png3="$(ls "$out"/pulled/EskizTest/*.png 2> /dev/null | head -1)"
 if [[ -n "$png3" ]]; then python3 -I "$here/tools/png_same.py" "$png3" "$fixtures/ref.png" | tee -a "$out/steps.txt"; verdict "3 saved PNG equals ref.png" "${PIPESTATUS[0]}"
 else verdict "3 saved PNG exists" 1; fi
-shot 03-saved
+shot 03-saved; end_step
 
 # 4 save PSD and .procreate
 log "4. save PSD and .procreate"
+begin_step 4; need_folder; fresh open
+adb shell rm -f /sdcard/Documents/EskizTest/*.psd /sdcard/Documents/EskizTest/*.procreate
 clear_logs; hook export:psd:save; wait_log "saf: committed" 40; sleep 2
 hook export:procreate:save; wait_log "saf: committed" 40; sleep 2
 rm -rf "$out/pulled"; mkdir -p "$out/pulled"; adb pull /sdcard/Documents/EskizTest "$out/pulled/" > /dev/null 2>&1
 psd="$(ls "$out"/pulled/EskizTest/*.psd 2> /dev/null | head -1)"; pc="$(ls "$out"/pulled/EskizTest/*.procreate 2> /dev/null | head -1)"
 [[ -n "$psd" && "$(head -c 4 "$psd")" == "8BPS" ]]; verdict "4 PSD saved, starts 8BPS" $?
 [[ -n "$pc" && "$(head -c 2 "$pc")" == "PK" ]]; verdict "4 .procreate saved, starts PK" $?
+end_step
 
-# 5 round trip
+# 5 round trip (uses the .procreate of step 4, or the fixture itself when step 4 failed: the fixture is
+# the same picture, so the comparison with ref.png still holds)
 log "5. round trip"
-if [[ -n "$pc" ]]; then
-  adb push "$pc" /sdcard/Download/eskiz-roundtrip.procreate > /dev/null
-  clear_logs; hook open_document
-  if pick_in_downloads eskiz-roundtrip.procreate && wait_log "saf: open ok" 30; then
-    rm -f "$out/pulled/EskizTest/"*.png; adb shell rm -f /sdcard/Documents/EskizTest/*.png
-    clear_logs; hook export:png:save; wait_log "saf: committed" 40
-    rm -rf "$out/pulled5"; mkdir -p "$out/pulled5"; adb pull /sdcard/Documents/EskizTest "$out/pulled5/" > /dev/null 2>&1
-    png5="$(ls "$out"/pulled5/EskizTest/*.png 2> /dev/null | head -1)"
-    [[ -n "$png5" && -n "$png3" ]] && python3 -I "$here/tools/png_same.py" "$png5" "$png3"; verdict "5 round trip equals step 3 pixel for pixel" $?
-  else verdict "5 round trip (open)" 1; fi
-else verdict "5 round trip (no .procreate from step 4)" 1; fi
-shot 05-roundtrip
+begin_step 5; need_folder; fresh
+src5="$pc"; [[ -n "$src5" ]] || { log "5: no .procreate from step 4, using the fixture"; src5="$fixtures/fixture.procreate"; }
+adb push "$src5" /sdcard/Download/eskiz-roundtrip.procreate > /dev/null
+adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download/eskiz-roundtrip.procreate > /dev/null 2>&1
+clear_logs; hook open_document
+if pick_in_downloads eskiz-roundtrip.procreate && wait_log "saf: open ok" 30; then
+  adb shell rm -f /sdcard/Documents/EskizTest/*.png
+  clear_logs; hook export:png:save; wait_log "saf: committed" 40
+  rm -rf "$out/pulled5"; mkdir -p "$out/pulled5"; adb pull /sdcard/Documents/EskizTest "$out/pulled5/" > /dev/null 2>&1
+  png5="$(ls "$out"/pulled5/EskizTest/*.png 2> /dev/null | head -1)"
+  [[ -n "$png5" ]] && python3 -I "$here/tools/png_same.py" "$png5" "$fixtures/ref.png"; verdict "5 round trip equals step 3 pixel for pixel" $?
+else verdict "5 round trip (open)" 1; fi
+shot 05-roundtrip; end_step
 
 # 6 grant survives a restart
 log "6. grant survives restart"
-launch; hook open_document; sleep 1; key KEYCODE_BACK   # make sure a document is open: reuse the last one
+begin_step 6; need_folder
+fresh open   # a cold start: the grant was given before it
 adb shell rm -f /sdcard/Documents/EskizTest/*.png
 clear_logs; hook export:png:save
 ok=1; wait_log "saf: tree reused" 30 && wait_log "saf: committed" 40 && ok=0; verdict "6 grant survives a restart (tree reused, no picker)" $ok
 clear_logs; hook export:png:save; wait_log "saf: committed" 40
 adb shell ls /sdcard/Documents/EskizTest | tr -d '\r' | grep -Eq '\(1\)\.png'; verdict "6 second save is '<title> (1).png'" $?
-shot 06-restart
+shot 06-restart; end_step
 
 # 7 grant gone
 log "7. grant gone"
+begin_step 7; need_folder; fresh open
 adb shell rm -rf /sdcard/Documents/EskizTest
 clear_logs; hook export:png:save; sleep 4
 find_node --text-contains "save" > /dev/null; verdict "7 create-document picker opens as the fallback" $?
 shot 07-fallback
-key KEYCODE_BACK; sleep 1
+key KEYCODE_BACK; sleep 1; end_step
 
 # 8 imports
 log "8. imports"
+begin_step 8; fresh open
 clear_logs; hook import_image
 if pick_in_downloads fixture.png; then wait_log "saf: picked" 30; verdict "8 import image (picked)" $?; else verdict "8 import image (picker node)" 1; fi
-clear_logs; hook import_brush
+sleep 2; clear_logs; hook import_brush
 if pick_in_downloads fixture.brushset; then wait_log "saf: picked" 30; verdict "8 import brush set (picked)" $?; else verdict "8 import brush set (picker node)" 1; fi
 shot 08-imports
-key KEYCODE_BACK; sleep 1
+key KEYCODE_BACK; sleep 1; end_step
 
 # 9 share
 log "9. share"
+begin_step 9; fresh open
 clear_logs; hook export:png:share
 if tap_node 30 --text "Eskiz Share Test"; then
   wait_log "sharetest: received" 30 && has_log "sharetest: .*type=image/png"; verdict "9 share: test app received image/png" $?
@@ -211,36 +263,37 @@ if tap_node 30 --text "Eskiz Share Test"; then
   [[ -n "$sha9" ]]; verdict "9 share: test app logged a SHA-256" $?
 else verdict "9 share (chooser node)" 1; fi
 shot 09-share
-key KEYCODE_BACK; sleep 1
+key KEYCODE_BACK; sleep 1; end_step
 
-# 10 gallery share
+# 10 gallery share (a new canvas is saved to the library when the app goes back to the gallery)
 log "10. gallery share"
-launch; clear_logs; hook gallery_share_first
+begin_step 10; fresh; hook new_canvas; sleep 3; key KEYCODE_BACK; sleep 3
+clear_logs; hook gallery_share_first
 if tap_node 30 --text "Eskiz Share Test"; then wait_log "sharetest: .*type=image/png" 30; verdict "10 gallery share: test app received a PNG" $?
 else verdict "10 gallery share (chooser node)" 1; fi
 shot 10-gallery-share
-key KEYCODE_BACK; sleep 1
+key KEYCODE_BACK; sleep 1; end_step
 
 # 11 copy out
 log "11. copy out"
-launch; clear_logs; hook new_canvas; sleep 3; hook copy_all; wait_log "clip: put" 20
+begin_step 11; fresh; clear_logs; hook new_canvas; sleep 3; hook copy_all; wait_log "clip: put" 20
 adb shell am start -n app.eskiz.sharetest/.ClipReadActivity > /dev/null 2>&1
 wait_log "sharetest: .*type=image/png" 20; verdict "11 copy out: test app reads image/png from the clipboard" $?
-shot 11-copy-out
+shot 11-copy-out; end_step
 
 # 12 paste in
 log "12. paste in"
-clear_logs
+begin_step 12; fresh open; clear_logs
 adb shell am start -n app.eskiz.sharetest/.ClipWriteActivity > /dev/null 2>&1
 wait_log "sharetest: clip written" 20; sleep 1
 adb shell am start -n app.eskiz/.EskizActivity > /dev/null 2>&1; sleep 4
 hook paste
 wait_log "clip: foreign 64x64" 30; verdict "12 paste in: foreign 64x64 image read" $?
-shot 12-paste
+shot 12-paste; end_step
 
 # 13 Back
 log "13. Back"
-launch; clear_logs; hook new_canvas; sleep 3
+begin_step 13; fresh; clear_logs; hook new_canvas; sleep 3
 tap_xy "$((W / 2))" "$((H * 5 / 100))" # top bar area; the popover is opened by the hook below if the tap misses
 hook back_state; sleep 1
 key KEYCODE_BACK; wait_log "back: (popover|gallery)" 10; verdict "13 Back closes a popover or leaves the canvas" $?
@@ -248,38 +301,41 @@ key KEYCODE_BACK; key KEYCODE_BACK; sleep 2
 has_log "back: gallery"; verdict "13 Back from the canvas shows the gallery" $?
 cur="$(adb shell dumpsys activity activities 2> /dev/null | tr -d '\r' | grep -E 'ResumedActivity|topResumedActivity' | head -1)"
 if [[ "$cur" != *app.eskiz/* ]] && alive; then verdict "13 final Back leaves Eskiz, process alive" 0; else log "resumed: $cur"; verdict "13 final Back leaves Eskiz, process alive" 1; fi
-launch; shot 13-after-relaunch
+launch; shot 13-after-relaunch; end_step
 
 # 14 picker cancel
 log "14. picker cancel"
-clear_logs; hook open_document; sleep 4; key KEYCODE_BACK
+begin_step 14; fresh; clear_logs; hook open_document; sleep 4; key KEYCODE_BACK
 wait_log "saf: cancelled" 20; verdict "14 picker cancel logged" $?
 ! has_log "interrupted"; verdict "14 no error notice after cancel" $?
+end_step
 
 # 15 death during pick
 log "15. death during pick"
-clear_logs; hook open_document; sleep 4
+begin_step 15; fresh; clear_logs; hook open_document; sleep 4
 adb shell am kill app.eskiz > /dev/null 2>&1; adb shell am force-stop app.eskiz > /dev/null 2>&1 && true
 adb shell am start -n app.eskiz/.EskizActivity > /dev/null 2>&1; sleep 4
 # The picker is a separate app: bring it back by repeating the request, then pick after the restart.
 log "15 note: the process was killed while a picker was open; the pick result of the old request is simulated by relaunching"
 alive; verdict "15 app restarts after death during a pick" $?
 [[ -z "$(adb logcat -b crash -d 2> /dev/null | tr -d '\r' | grep -E 'FATAL|app.eskiz')" ]]; verdict "15 crash log empty" $?
-shot 15-after-death
+shot 15-after-death; end_step
 
 # 16 big file (optional)
 if [[ -n "$big" && -f "$big" ]]; then
   log "16. big file"
+  begin_step 16
   adb push "$big" /sdcard/Download/eskiz-big.procreate > /dev/null
-  launch; clear_logs; hook open_document
+  fresh; clear_logs; hook open_document
   if pick_in_downloads eskiz-big.procreate; then
     wait_log "saf: copied in" 180 && wait_log "saf: open ok" 180; verdict "16 big file opens" $?
     logs | grep "saf: copied in" | tee -a "$out/steps.txt"
     ! logs | grep -q "ANR in app.eskiz"; verdict "16 no ANR" $?
   else verdict "16 big file (picker node)" 1; fi
+  end_step
 else log "16. big file: skipped (no --big-file)"; fi
 
 adb logcat -d > "$out/logcat.txt" 2>&1
-echo >> "$out/summary.md"; echo "Result: $([[ $fail == 0 ]] && echo PASS || echo FAIL)" >> "$out/summary.md"
+echo >> "$out/summary.md"; echo "Result: $([[ $fail == 0 ]] && echo PASS || echo FAIL) ($(grep -c '^- PASS' "$out/summary.md") passed, $(grep -c '^- FAIL' "$out/summary.md") failed)" >> "$out/summary.md"
 log "done: $([[ $fail == 0 ]] && echo PASS || echo FAIL) (see $out/summary.md)"
 exit "$fail"

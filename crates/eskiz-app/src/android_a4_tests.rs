@@ -523,6 +523,30 @@ fn hooks_run_the_same_paths_as_the_buttons() {
 }
 
 #[test]
+fn open_path_hook_opens_a_document_without_a_picker() {
+    let (mut h, mock, dir) = android("hook-open-path");
+    let file = dir.join("fixture.procreate");
+    crate::export::export_document(&crate::android_fixtures::fixture_document(), crate::export::ExportFormat::Procreate, &file).unwrap();
+    h.app.inbox.push_hook(format!("open_path:{}", file.display()));
+    h.step();
+    assert_eq!((h.app.session.doc.width, h.app.session.doc.height), (crate::android_fixtures::WIDTH, crate::android_fixtures::HEIGHT));
+    assert_eq!(h.app.session.doc.layer_count(), 3);
+    assert!(mock.requests().is_empty(), "no picker was opened");
+}
+
+#[test]
+fn skip_tour_hook_ends_the_welcome_tour_for_good() {
+    let (mut h, _mock, _dir) = android("hook-skip-tour");
+    h.app.tour = crate::onboarding::Tour::at_startup(None, false, false);
+    h.app.inbox.push_hook("skip_tour");
+    for _ in 0..6 {
+        h.step();
+    }
+    assert!(h.app.tour.step().is_none());
+    assert!(!h.app.tour.is_modal());
+}
+
+#[test]
 fn copy_all_and_paste_hooks_use_the_clipboard() {
     let (mut h, clip, _dir) = with_clipboard("hook-clip");
     h.app.inbox.push_hook("copy_all");

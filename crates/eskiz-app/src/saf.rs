@@ -563,6 +563,12 @@ pub enum Hook {
     Paste,
     BackState,
     NewCanvas,
+    /// `skip_tour`: dismiss the welcome tour and never start it.
+    SkipTour,
+    /// `open_path:<file>`: open a `.procreate` file by path, without a picker.
+    OpenPath(String),
+    /// `open_first`: open the first document of the library.
+    OpenFirst,
 }
 
 /// The formats the `export:<format>:<mode>` hook names.
@@ -586,6 +592,9 @@ pub fn parse_hook(text: &str) -> Option<Hook> {
         "paste" => Hook::Paste,
         "back_state" => Hook::BackState,
         "new_canvas" => Hook::NewCanvas,
+        "skip_tour" => Hook::SkipTour,
+        "open_first" => Hook::OpenFirst,
+        _ if text.starts_with("open_path:") && text.len() > "open_path:".len() => Hook::OpenPath(text["open_path:".len()..].to_owned()),
         _ => {
             let mut parts = text.split(':');
             if parts.next()? != "export" {

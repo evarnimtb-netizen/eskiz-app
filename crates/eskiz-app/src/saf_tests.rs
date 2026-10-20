@@ -319,6 +319,10 @@ fn hooks_parse() {
     assert_eq!(parse_hook("new_canvas"), Some(Hook::NewCanvas));
     assert_eq!(parse_hook("back_state"), Some(Hook::BackState));
     assert_eq!(parse_hook("gallery_share_first"), Some(Hook::GalleryShareFirst));
+    assert_eq!(parse_hook("skip_tour"), Some(Hook::SkipTour));
+    assert_eq!(parse_hook("open_first"), Some(Hook::OpenFirst));
+    assert_eq!(parse_hook("open_path:/data/x/fixture.procreate"), Some(Hook::OpenPath("/data/x/fixture.procreate".to_owned())));
+    assert_eq!(parse_hook("open_path:"), None);
     assert_eq!(
         parse_hook("export:png:save"),
         Some(Hook::Export { format: HookFormat::Still(ExportFormat::Png), share: false })

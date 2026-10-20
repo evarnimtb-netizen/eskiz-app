@@ -65,6 +65,19 @@ impl EskizApp {
                 let state = self.back_step().map_or("none", |s| s.log_name());
                 saf::log_line(&format!("back: state={state}"));
             }
+            Hook::SkipTour => self.tour.dismiss_for_test(),
+            Hook::OpenPath(path) => {
+                self.tour.dismiss_for_test();
+                self.load_document(ctx, std::path::Path::new(&path));
+            }
+            Hook::OpenFirst => {
+                self.tour.dismiss_for_test();
+                let first = self.gal.entries.first().map(|e| e.id.clone());
+                match first {
+                    Some(id) => self.open_entry(&id, egui::Rect::from_center_size(self.gal.body.center(), egui::vec2(160.0, 100.0))),
+                    None => saf::log_line("eskiz-test: the gallery is empty"),
+                }
+            }
             Hook::NewCanvas => {
                 let screen = ctx.content_rect();
                 self.new_canvas(0, 1024, 1024, egui::Rect::from_center_size(screen.center(), egui::vec2(120.0, 120.0)));

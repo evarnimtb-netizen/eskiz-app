@@ -890,7 +890,7 @@ impl EskizApp {
         self.gallery_share_to(Some(dir));
     }
 
-    fn open_entry(&mut self, id: &str, from: Rect) {
+    pub(crate) fn open_entry(&mut self, id: &str, from: Rect) {
         if self.gal.library.as_ref().is_some_and(|l| l.is_model_doc(id)) {
             self.start_model_open(id.to_owned());
             return;

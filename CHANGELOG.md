@@ -96,7 +96,7 @@ The full list of changes follows.
 ### Fixed (eighth release candidate)
 
 - **Windows: the window no longer freezes ("Not Responding") with DirectX 12.** The canvas no longer queues more drawing work than the graphics driver can finish; if frames still cannot be shown, Eskiz switches to drawing the canvas on the processor for that session instead of freezing, and remembers it for the next start.
-- Android: the file picker, Share, the picture clipboard and the Back button now work on a device. Earlier builds could not reach the app's Java side and showed "Method not found"; Import now opens the system picker directly.
+- Android: the app now reaches its Java side (earlier builds showed "Method not found"). On an emulator, opening files, choosing a folder, imports, copying and pasting pictures, and the Back button work; saving into a chosen folder and Share are not checked on a device yet. Gallery > Import opens the system file picker directly.
 
 ### Fixed (code review)
 
