@@ -2,7 +2,7 @@
 
 All notable changes to Eskiz are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-10-22
 
 First public preview of Eskiz, a free, open source painting app for macOS, Windows, Linux and (experimentally) Android.
 
@@ -143,7 +143,8 @@ The full list of changes follows.
   - Linux: make the AppImage executable with `chmod +x`.
   - Android: allow installing apps from your browser or file manager when asked.
 - **Windows has been tested on GitHub's Windows machines, and on real PCs only by a few testers so far.** If the window ever stops responding, Eskiz starts in a safer graphics mode next time; you can also start it with `Eskiz (compatibility mode).bat` from the zip. Please [report it](https://github.com/evarnimtb-netizen/eskiz-app/issues/new?template=bug_report.yml) and attach `startup.log` from `%LOCALAPPDATA%\Eskiz\logs`.
-- **Android is experimental.** Only arm64 devices running Android 10 or newer are supported. The APK is signed with a public debug key.
+- **Apple Pencil through Sidecar has not been tested on a real iPad yet.** Pressure support is built in; please report whether it works for you.
+- **Android is experimental.** Only arm64 devices running Android 10 or newer are supported. The APK is signed with a public debug key. Saving into a chosen folder and Share have not been checked on a real device yet.
 - **MP4 export is not included.** It needs the OpenH264 codec, which these builds do not bundle. GIF, APNG and PNG sequence export work. Developers can build with `--features mp4`.
 - Some adjustment defaults and several 3D and Liquify details are approximations and may change.
 
