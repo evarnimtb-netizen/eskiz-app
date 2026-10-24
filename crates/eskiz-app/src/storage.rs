@@ -674,8 +674,8 @@ impl TileSource for LayerTileSource {
     }
 }
 
-/// Convert items (bottom to top) to package nodes (top-most first). Layer masks, a group's
-/// blend mode, lock and private flag are not stored by the package writer, so they are not saved.
+/// Convert items (bottom to top) to package nodes (top-most first). A group's blend mode and
+/// mask have no place in the package, so they are not saved.
 fn builder_nodes(doc: &Document, items: &[eskiz_core::Node]) -> Vec<Node> {
     items
         .iter()
@@ -699,6 +699,7 @@ fn builder_nodes(doc: &Document, items: &[eskiz_core::Node]) -> Vec<Node> {
                     .filter(|l| !l.is_blank() && (l.width, l.height) == (doc.width, doc.height))
                     .map(|l| LayerTiles::new(LayerTileSource(l.clone()))),
                 text: doc.texts.get(&n.id).map(crate::text_tool::to_spec),
+                mask: n.mask.as_ref().filter(|m| m.data.len() == doc.width * doc.height).map(|m| m.data.clone()),
                 ..LayerSpec::default()
             }),
             eskiz_core::NodeKind::Group { children, collapsed } => Node::Group(GroupSpec {
@@ -706,6 +707,8 @@ fn builder_nodes(doc: &Document, items: &[eskiz_core::Node]) -> Vec<Node> {
                 opacity: n.props.opacity,
                 hidden: !n.props.visible,
                 collapsed: *collapsed,
+                locked: n.props.locked,
+                private: n.props.private,
                 animation_hold: n.props.hold,
                 children: builder_nodes(doc, children),
             }),

@@ -358,6 +358,36 @@ pub(crate) fn encode_layers(layers: &[(&LayerSpec, &str)], g: &Grid, bits: u32) 
     outs
 }
 
+/// Compresses a layer mask (`g.w * g.h` grey bytes) as an inverted-fill layer under `uuid`:
+/// grey opaque tiles at `bits` per channel, and no member for a tile that shows everything (a
+/// missing mask tile reads as 255).
+pub(crate) fn encode_mask(mask: &[u8], g: &Grid, bits: u32, uuid: &str) -> LayerOut {
+    let mut out = LayerOut::default();
+    let mut buf = Vec::new();
+    for row in 0..g.rows {
+        for col in 0..g.cols {
+            let (x0, y0, tw, th) = g.rect(col, row);
+            let line = |y: usize| &mask[(y0 + y) * g.w + x0..(y0 + y) * g.w + x0 + tw];
+            if (0..th).all(|y| line(y).iter().all(|&v| v == 255)) {
+                continue;
+            }
+            buf.clear();
+            for y in 0..th {
+                for &v in line(y) {
+                    if bits == 16 {
+                        let wide = (u16::from(v) * 257).to_le_bytes();
+                        buf.extend_from_slice(&[wide[0], wide[1], wide[0], wide[1], wide[0], wide[1], 0xFF, 0xFF]);
+                    } else {
+                        buf.extend_from_slice(&[v, v, v, 0xFF]);
+                    }
+                }
+            }
+            out.files.push((member(uuid, col, row), apple_lz4_compress(&buf)));
+        }
+    }
+    out
+}
+
 // ------------------------------------------------------------------------------ composite
 
 /// A node of the layer tree as the composite sees it: always at 8 bits.

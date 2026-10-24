@@ -249,10 +249,26 @@ pub(crate) fn layout(layer: &TextLayer, fonts: &mut FontLibrary) -> Layout {
     buffer.set_rich_text(spans, &default_attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(fonts.system_mut(), false);
 
+    // cosmic-text numbers a glyph's bytes from the start of its own paragraph; the rest of the
+    // layout (runs, spaces, carets) works in bytes of the whole displayed text.
+    let display_para_starts: Vec<usize> = std::iter::once(0)
+        .chain(cx.display.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
     let mut grouped: Vec<Vec<Vec<LayoutGlyph>>> = vec![Vec::new(); para_count];
     for run in buffer.layout_runs() {
         if let Some(lines) = grouped.get_mut(run.line_i) {
-            lines.push(run.glyphs.to_vec());
+            let base = display_para_starts.get(run.line_i).copied().unwrap_or(0);
+            lines.push(
+                run.glyphs
+                    .iter()
+                    .map(|g| {
+                        let mut g = g.clone();
+                        g.start += base;
+                        g.end += base;
+                        g
+                    })
+                    .collect(),
+            );
         }
     }
 

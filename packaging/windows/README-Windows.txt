@@ -1,4 +1,4 @@
-Eskiz 0.1.0 for Windows
+Eskiz 0.1.1 for Windows
 
 1. Extract the whole zip first (right-click the zip, Extract All...). Do not run eskiz.exe from
    inside the zip window.

@@ -798,7 +798,8 @@ impl Session {
 
     /// Merge layer `id` into the raster layer directly below it. The lower layer
     /// keeps its name and blend mode, and ends with opacity 1, visible and no mask. Refused when
-    /// the item below is a group or missing, or when either layer is locked.
+    /// the item below is a group, a text layer (its pixels are rendered from the text) or missing,
+    /// or when either layer is locked.
     pub fn merge_down(&mut self, id: u64) -> Option<Edit> {
         if !self.idle() {
             return None;
@@ -809,6 +810,9 @@ impl Session {
         let upper = self.doc.node(id)?;
         let lower = self.doc.node(lower_id)?;
         if upper.is_group() || lower.is_group() || upper.props.locked || lower.props.locked {
+            return None;
+        }
+        if self.doc.texts.contains_key(&lower_id) {
             return None;
         }
 
@@ -893,7 +897,13 @@ impl Session {
             return false;
         };
         match (self.doc.node(id), self.doc.node(lower)) {
-            (Some(u), Some(l)) => !u.is_group() && !l.is_group() && !u.props.locked && !l.props.locked,
+            (Some(u), Some(l)) => {
+                !u.is_group()
+                    && !l.is_group()
+                    && !u.props.locked
+                    && !l.props.locked
+                    && !self.doc.texts.contains_key(&lower)
+            }
             _ => false,
         }
     }
@@ -2533,5 +2543,17 @@ mod tests {
         // And the undo really restores each earlier state.
         let (states, trace) = &large;
         assert_eq!(trace[0], states[4]);
+    }
+
+    #[test]
+    fn merge_down_refuses_a_text_layer_below() {
+        let mut s = fresh();
+        let text = base(&s);
+        s.doc.texts.insert(text, eskiz_text::TextLayer::new("hi", eskiz_text::Attrs::default(), 0.0));
+        let upper = s.add_layer(Some(text)).unwrap().id.unwrap();
+        assert!(!s.can_merge_down(upper), "the text layer's pixels are rendered from its text");
+        assert!(s.merge_down(upper).is_none());
+        s.doc.texts.remove(&text);
+        assert!(s.can_merge_down(upper), "a raster layer below still merges");
     }
 }

@@ -20,8 +20,7 @@
 //!
 //! Restore rebuilds the document from the saved package (for the layers in `base_keys`),
 //! overlays the journal's tiles, and keeps the ids, so the layers come back pixel for pixel.
-//! Layer masks and text sources are not journaled (the package does not store masks either);
-//! text sources come from the save.
+//! Layer masks and text sources are not journaled: they come from the save.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -81,6 +80,7 @@ struct Base {
     keys: Vec<u64>,
     layers: Pixels,
     depth: Depth,
+    size: (usize, usize),
 }
 
 /// The UI-side planner for one document. It remembers the previous snapshot, so each plan
@@ -112,7 +112,12 @@ impl Planner {
     /// The package now holds `doc`: the journal starts again from it.
     pub fn rebase(&mut self, doc: &Document) {
         let pixels = pixels_of(doc);
-        self.base = Some(Base { keys: doc.layer_ids(), layers: pixels.clone(), depth: doc.depth });
+        self.base = Some(Base {
+            keys: doc.layer_ids(),
+            layers: pixels.clone(),
+            depth: doc.depth,
+            size: (doc.width, doc.height),
+        });
         self.prev = pixels;
         self.records.clear();
         self.broken = false;
@@ -125,13 +130,16 @@ impl Planner {
 
     /// Plan the snapshot of `doc`: which tiles changed since the last plan, and the manifest.
     pub fn plan(&mut self, doc: &Document, root: &Path, id: &str, title: &str) -> Plan {
-        // A depth change makes the base useless (its tiles are of another depth), so the
-        // journal then holds every pixel by itself.
-        let depth_changed = self.base.as_ref().is_some_and(|b| b.depth != doc.depth);
-        if depth_changed {
+        // A depth or canvas size change makes the base useless (its tiles are of another depth
+        // or grid), so the journal then holds every pixel by itself.
+        let base_changed = self
+            .base
+            .as_ref()
+            .is_some_and(|b| b.depth != doc.depth || b.size != (doc.width, doc.height));
+        if base_changed {
             self.base = None;
         }
-        let reset = self.broken || depth_changed;
+        let reset = self.broken || base_changed;
         self.broken = false;
         let reference: Pixels = if reset {
             self.records.clear();
@@ -443,7 +451,9 @@ pub fn restore_counted(recovery: &Path, library: &Library, id: &str) -> Result<(
             if package.layer_count() != keys.len() {
                 return Err("journal: the package does not match the journal".to_owned());
             }
-            (package.depth == depth).then_some((keys, package))
+            // A package of another depth or size cannot be the base (an older journal written
+            // after Crop & Resize still names it).
+            (package.depth == depth && (package.width, package.height) == (width, height)).then_some((keys, package))
         }
         None => None,
     };
@@ -492,12 +502,17 @@ pub fn restore_counted(recovery: &Path, library: &Library, id: &str) -> Result<(
         doc.put_layer(key, layer);
     }
 
-    // Text layers keep the source they were saved with, when the save had one.
+    // Text layers keep the source, and masked layers the mask, they were saved with.
     if let Some((keys, package)) = &base {
         for (i, key) in keys.iter().enumerate() {
             if let (Some(pid), true) = (package.layer_id(i), doc.layer(*key).is_some()) {
                 if let Some(text) = package.texts.get(&pid) {
                     doc.texts.insert(*key, text.clone());
+                }
+                if let Some(mask) = package.node(pid).and_then(|n| n.mask.clone()) {
+                    if let Some(node) = doc.node_mut(*key) {
+                        node.mask = Some(mask);
+                    }
                 }
             }
         }
@@ -540,6 +555,17 @@ pub fn set_panic_snapshot(root: &Path, id: &str, title: &str, doc: &Document) {
     }
 }
 
+/// Forget the remembered snapshot unless it is of document `id`. The UI calls it with `None`
+/// once the document is saved (the package is then newer than the snapshot) or put away, so a
+/// later panic cannot write an old state that looks newer than the package.
+pub fn keep_panic_snapshot_for(id: Option<&str>) {
+    if let Ok(mut slot) = PANIC_SLOT.try_lock() {
+        if slot.as_ref().is_some_and(|s| Some(s.id.as_str()) != id) {
+            *slot = None;
+        }
+    }
+}
+
 /// Write the remembered snapshot now, on this thread. Does nothing if the slot is locked.
 pub fn flush_for_panic() {
     let Ok(slot) = PANIC_SLOT.try_lock() else {
@@ -557,13 +583,18 @@ pub fn flush_for_panic() {
     }
 }
 
-/// Install the panic hook once: the journal is flushed before the previous hook runs.
+/// Install the panic hook once: the journal is flushed before the previous hook runs. Only a
+/// panic on the thread that installs it (the UI thread) flushes: worker threads catch their own
+/// panics and carry on, and a flush then would rewrite the journal under the UI's planner.
 pub fn install_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        let ui_thread = std::thread::current().id();
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = std::panic::catch_unwind(flush_for_panic);
+            if std::thread::current().id() == ui_thread {
+                let _ = std::panic::catch_unwind(flush_for_panic);
+            }
             previous(info);
         }));
     });

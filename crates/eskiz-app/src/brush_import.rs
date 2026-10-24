@@ -174,6 +174,12 @@ pub fn decode_gray_png_with(bytes: &[u8], guess_inversion: bool) -> Result<GrayI
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    // Check the header before allocating: a small file can claim a huge image.
+    let (hw, hh) = (reader.info().width, reader.info().height);
+    let max = eskiz_format::limits::MAX_BRUSH_TIP_SIDE;
+    if hw > max || hh > max {
+        return Err(format!("{hw} x {hh} is larger than the {max} pixel limit for a brush image"));
+    }
     let size = reader.output_buffer_size().ok_or("the image is too large")?;
     let mut buf = vec![0u8; size];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
@@ -347,6 +353,25 @@ mod tests {
             writer.write_image_data(&data).unwrap();
         }
         out
+    }
+
+    #[test]
+    fn a_huge_brush_image_header_is_refused_before_decoding() {
+        // A 1 x 1 PNG whose header claims 40000 x 40000: it must not allocate the claimed size.
+        let mut png = png_rgba(1, 1, |_, _| [255; 4]);
+        png[16..20].copy_from_slice(&40_000u32.to_be_bytes());
+        png[20..24].copy_from_slice(&40_000u32.to_be_bytes());
+        // The IHDR CRC covers its type and data (bytes 12..29).
+        let mut crc = 0xffff_ffffu32;
+        for &byte in &png[12..29] {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            }
+        }
+        png[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        let err = decode_gray_png(&png).unwrap_err();
+        assert!(err.contains("limit"), "{err}");
     }
 
     #[test]

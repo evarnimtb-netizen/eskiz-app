@@ -1,6 +1,6 @@
 //! Bloom / glow: threshold, Gaussian blur, additive burn.
 
-use crate::colour::{luma, premultiply, sat, smoothstep, unpremultiply};
+use crate::colour::{luma, sat, smoothstep, unpremultiply};
 use crate::gaussian;
 use crate::image::{mix_masked, Image, Px};
 
@@ -55,18 +55,19 @@ pub fn threshold_px(px: Px, upper: f32, lower: f32) -> Px {
 
 /// Burn step for one pixel. The alpha takes the maximum of the
 /// colour components and the standard alpha (medium confidence, as the design notes say).
+/// `src`, `glow` and the result are premultiplied, so the colour is not multiplied by alpha again.
 pub fn burn_px(src: Px, glow: Px, burn: f32, preserve: bool) -> Px {
     let mut rgb: [f32; 3] = std::array::from_fn(|k| sat(sat((1.0 + burn) * glow[k]) + src[k]));
     let standard = sat(src[3] * (1.0 - glow[3]) + glow[3]);
     if preserve {
         let alpha = src[3];
         if standard > 0.0 {
-            rgb = rgb.map(|v| v * src[3] / standard);
+            rgb = rgb.map(|v| (v * src[3] / standard).min(alpha));
         }
-        premultiply(rgb, alpha)
+        [rgb[0], rgb[1], rgb[2], alpha]
     } else {
         let alpha = standard.max(rgb[0]).max(rgb[1]).max(rgb[2]);
-        premultiply(rgb, alpha)
+        [rgb[0], rgb[1], rgb[2], alpha]
     }
 }
 

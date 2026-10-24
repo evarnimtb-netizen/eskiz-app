@@ -813,12 +813,19 @@ impl EskizApp {
     }
 
     pub(crate) fn load_document(&mut self, ctx: &egui::Context, path: &Path) {
-        self.cancel_stroke();
-        self.shape_edit = None;
-        self.adjust_cancel();
-        self.exit_edit_mode();
+        // Read the file first: a file that does not open leaves the current drawing alone.
         match open_procreate(path) {
             Ok(doc) => {
+                self.commit_stroke("opening another drawing");
+                self.shape_edit = None;
+                self.adjust_cancel();
+                self.exit_edit_mode();
+                self.end_text_edit();
+                // The drawing being replaced is saved first (the snapshot is taken now).
+                if self.is_dirty() {
+                    self.ensure_storage(ctx);
+                    self.queue_save();
+                }
                 self.session.replace_document(doc);
                 self.active = self.session.valid_active(None);
                 self.need_fit = true;
@@ -1548,11 +1555,31 @@ impl EskizApp {
         if ctx.input_mut(|i| i.consume_shortcut(&sc::CLEAR_LAYER)) {
             self.clear_active_layer();
         }
-        if ctx.input_mut(|i| i.consume_shortcut(&sc::COPY)) {
+        // On desktop egui-winit turns Cmd/Ctrl+C, X and V into clipboard events, not key presses.
+        // While a text layer is being typed into they are left alone.
+        let typing = self.text.editing.is_some();
+        let clip = ctx.input_mut(|i| {
+            if typing {
+                return None;
+            }
+            let mut found = None;
+            i.events.retain(|e| {
+                let action = match e {
+                    egui::Event::Copy => ClipAction::Copy,
+                    egui::Event::Cut => ClipAction::Cut,
+                    egui::Event::Paste(_) => ClipAction::Paste,
+                    _ => return true,
+                };
+                found = found.or(Some(action));
+                false
+            });
+            found
+        });
+        if clip == Some(ClipAction::Copy) || ctx.input_mut(|i| i.consume_shortcut(&sc::COPY)) {
             self.clip_action(ClipAction::Copy);
-        } else if ctx.input_mut(|i| i.consume_shortcut(&sc::CUT)) {
+        } else if clip == Some(ClipAction::Cut) || ctx.input_mut(|i| i.consume_shortcut(&sc::CUT)) {
             self.clip_action(ClipAction::Cut);
-        } else if ctx.input_mut(|i| i.consume_shortcut(&sc::PASTE)) {
+        } else if clip == Some(ClipAction::Paste) || ctx.input_mut(|i| i.consume_shortcut(&sc::PASTE)) {
             self.clip_action(ClipAction::Paste);
         }
         if self.text.editing.is_some() && self.three_d.is_none() {
@@ -2169,6 +2196,8 @@ impl EskizApp {
             self.tour_watch_input(&ctx);
             return;
         }
+        // Before the keys, so Enter never applies a stale transform.
+        self.transform_guard();
         self.handle_keys(&ctx);
         self.poll_share();
         self.timelapse_frame(&ctx);
@@ -2392,7 +2421,7 @@ impl EskizApp {
                 } else {
                     crate::startup::log("pen: switched off in Settings");
                     self.pen.later.pending = false;
-                    self.pen.source = None;
+                    self.drop_pen_source();
                     crate::stall::set_pen_backend(false);
                     self.pen.status = "Tablet: off (Settings > Pen)".to_owned();
                 }
@@ -2424,9 +2453,22 @@ impl EskizApp {
         let _ = ctx;
     }
 
+    /// Disconnect the pen backend. Its last frame goes too, or it would keep overriding the mouse.
+    fn drop_pen_source(&mut self) {
+        self.pen.source = None;
+        self.pen.frame = PenFrame::default();
+        self.pen.tracker = crate::tablet::PenTracker::new();
+    }
+
     /// The pen notice's button, and Settings > Pen: use the pen backend again.
     pub(crate) fn turn_pen_back_on(&mut self) {
         self.pen.banner = false;
+        // After a freeze the pen is learned off while the setting stays on: let `pen_tick` see a
+        // change anyway, so it clears the learned skip and connects.
+        #[cfg(all(feature = "tablet", windows))]
+        if self.prefs.pen_input {
+            self.pen.later.setting_seen = Some(false);
+        }
         self.prefs.pen_input = true;
     }
 
@@ -2460,7 +2502,7 @@ impl EskizApp {
         source.set_scale(ctx.native_pixels_per_point().unwrap_or(1.0), zoom);
         let mut events = source.poll();
         if source.failed() {
-            self.pen.source = None;
+            self.drop_pen_source();
             crate::stall::set_pen_backend(false);
             crate::startup::log("pen: the backend stopped; pen input is off for this run");
             self.show_toast("Pen input stopped. Mouse and touch still work.", 3.0);
@@ -2862,6 +2904,41 @@ mod tests {
         assert_eq!(h.app.tool, Tool::Eraser);
         frame(vec![PenEvent::Leave], &mut h);
         assert_eq!(h.app.tool, Tool::Brush);
+    }
+
+    /// A transform whose drawing changed under it (another drawing opened) is cancelled, so
+    /// Apply cannot write its old snapshot into the new drawing.
+    #[test]
+    fn a_transform_ends_when_the_drawing_changes() {
+        use crate::snapshot::Headless;
+        let mut doc = Document::new(40, 30);
+        let id = doc.push_layer(None, eskiz_core::Props::new("ink"), None, vec![200; 40 * 30 * 4]);
+        let mut h = Headless::new(Vec2::new(1024.0, 700.0), doc, Prefs::default());
+        h.app.active = id;
+        h.step();
+        h.app.begin_transform();
+        assert!(h.app.transform.is_some());
+        h.step();
+        assert!(h.app.transform.is_some(), "a quiet frame keeps the transform");
+        h.app.session.replace_document(Document::new(60, 50));
+        h.step();
+        assert!(h.app.transform.is_none(), "the stale transform is cancelled");
+        assert_eq!(h.app.edit_mode, EditMode::Off);
+    }
+
+    /// Cmd/Ctrl+C arrives from egui-winit as `Event::Copy`, not as a key press.
+    #[test]
+    fn desktop_clipboard_events_copy_the_layer() {
+        use crate::snapshot::Headless;
+        let mut doc = Document::new(40, 30);
+        let id = doc.push_layer(None, eskiz_core::Props::new("ink"), None, vec![200; 40 * 30 * 4]);
+        let mut h = Headless::new(Vec2::new(1024.0, 700.0), doc, Prefs::default());
+        h.app.active = id;
+        h.step();
+        assert!(h.app.sel.clip.is_none());
+        h.event(egui::Event::Copy);
+        h.step();
+        assert!(h.app.sel.clip.is_some(), "Event::Copy copies the active layer");
     }
 
     /// The sidebar Pick Color button: a tap starts nothing, a hold past the delay starts the

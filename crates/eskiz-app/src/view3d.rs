@@ -229,6 +229,8 @@ pub struct ThreeD {
     /// Finished 3D strokes, oldest first, each as the texture maps it changed (see [`ThreeD::push_stroke`]).
     undo_steps: Vec<Vec<TexelChange>>,
     redo_steps: Vec<Vec<TexelChange>>,
+    /// The drawing's save target while the 3D view hides it, given back when the view closes.
+    canvas_doc: Option<crate::gallery::CurrentDoc>,
 }
 
 impl ThreeD {
@@ -247,6 +249,7 @@ impl ThreeD {
             export: None,
             undo_steps: Vec::new(),
             redo_steps: Vec::new(),
+            canvas_doc: None,
         }
     }
 
@@ -845,21 +848,32 @@ impl EskizApp {
     }
 
     /// Show a 3D document in the canvas area, in place of the 2D canvas.
-    fn open_three_d(&mut self, doc: ModelDoc, banner: Option<String>) {
+    pub(crate) fn open_three_d(&mut self, doc: ModelDoc, banner: Option<String>) {
+        // A model already open is saved and closed first, which also gives back the drawing.
+        self.close_three_d();
         self.commit_stroke("a 3D model opened");
         self.adjust_cancel();
         self.exit_edit_mode();
         // The text tool works on the 2D canvas only: finish any typing before the view changes.
         self.end_text_edit();
-        self.gal.current = None;
+        // Save the drawing before the 3D view hides it, and keep its save target for later.
+        if self.is_dirty() {
+            self.queue_save();
+        }
+        let canvas_doc = self.gal.current.take();
         self.gal.screen = Screen::Canvas;
-        self.three_d = Some(Box::new(ThreeD::new(doc, banner)));
+        let mut three = ThreeD::new(doc, banner);
+        three.canvas_doc = canvas_doc;
+        self.three_d = Some(Box::new(three));
     }
 
     /// Leave the 3D view: finish any stroke, wait for a running autosave, and save if changed.
     pub(crate) fn close_three_d(&mut self) {
         self.finish_three_d_stroke();
         let Some(mut three) = self.three_d.take() else { return };
+        if self.gal.current.is_none() {
+            self.gal.current = three.canvas_doc.take();
+        }
         if let Some(job) = three.saving.take() {
             let _ = job.join();
         }

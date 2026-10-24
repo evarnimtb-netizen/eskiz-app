@@ -204,3 +204,26 @@ fn edit_style_panel_snapshot() {
     assert!(h.app.session.doc.texts.values().any(|t| t.text == "Eskiz"));
     h.render().save_png(&snapshot_dir().join("text_edit_style_dark.png")).unwrap();
 }
+
+#[test]
+fn undo_while_typing_keeps_the_caret_inside_the_text() {
+    let mut h = crate::snapshot::Headless::new(
+        eframe::egui::Vec2::new(800.0, 600.0),
+        eskiz_core::document::Document::new(W, H),
+        crate::app::Prefs::default(),
+    );
+    let px = vec![0u8; W * H * 4];
+    let layer = TextLayer::new("", Attrs::default(), 0.0);
+    let id = h.app.session.add_text_layer(None, layer, px.clone()).unwrap().id.unwrap();
+    let mut t = h.app.session.doc.texts[&id].clone();
+    insert_at(&mut t, 0, "Hello world");
+    h.app.session.text_live(id, EDIT_STEP, t, px).unwrap();
+    h.app.text.editing = Some(id);
+    h.app.text.caret = 11;
+    h.app.text.anchor = Some(5);
+    h.app.undo_action();
+    let len = h.app.session.doc.texts[&id].text.len();
+    assert!(len < 11, "undo took the typing back");
+    assert!(h.app.text.caret <= len, "caret {} past the text ({len} bytes)", h.app.text.caret);
+    assert!(h.app.text.anchor.is_none_or(|a| a <= len));
+}

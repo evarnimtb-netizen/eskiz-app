@@ -545,6 +545,12 @@ fn b1_thresholds_above_layer_max_luma_add_nothing() {
         ..BloomParams::default()
     };
     assert_images_close(&bloom::apply(&src, None, &params), &src, 1e-6, "B1");
+    // Semi-transparent pixels (premultiplied) come back unchanged too, not darkened.
+    let soft = Image::generate(12, 12, |x, y| {
+        let a = 0.25 + 0.5 * ((x + y) % 3) as f32 / 2.0;
+        [0.4 * a, 0.3 * a, 0.2 * a, a]
+    });
+    assert_images_close(&bloom::apply(&soft, None, &params), &soft, 1e-6, "B1 soft");
 }
 
 #[test]

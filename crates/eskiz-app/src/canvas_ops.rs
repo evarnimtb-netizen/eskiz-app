@@ -422,6 +422,7 @@ impl EskizApp {
     /// Redraw after an undo or redo. `before` is the canvas size before the step, so a step that
     /// changed the size (a crop or resize) refits the view.
     pub(crate) fn apply_history_refresh(&mut self, before: (usize, usize), refresh: Refresh) {
+        self.clamp_text_caret();
         if before != (self.session.doc.width, self.session.doc.height) {
             self.canvas_resized(refresh);
         } else {

@@ -251,6 +251,8 @@ pub struct Group {
     pub opacity: f64,
     pub hidden: bool,
     pub collapsed: bool,
+    pub locked: bool,
+    pub private: bool,
     pub children: Vec<Item>,
     /// Extra Frames frames the group is held for (`animationHeldLength`).
     pub animation_hold: u32,
@@ -1150,6 +1152,8 @@ fn make_item(obj: &Object, canvas: (u32, u32)) -> Option<Item> {
             opacity: a.f64("opacity").unwrap_or(1.0),
             hidden: a.truthy("isHidden"),
             collapsed: a.truthy("isCollapsed"),
+            locked: a.truthy("isLocked"),
+            private: a.truthy("isPrivate"),
             children,
             animation_hold: hold(a),
         }))
@@ -1298,6 +1302,9 @@ pub struct LayerSpec {
     pub text: Option<TextSpec>,
     /// Extra Frames frames this layer is held for.
     pub animation_hold: u32,
+    /// The layer mask: one grey byte per canvas pixel, top row first (255 shows the layer, 0
+    /// hides it). Written as its own tile directory with inverted fill.
+    pub mask: Option<Vec<u8>>,
 }
 
 impl Default for LayerSpec {
@@ -1317,6 +1324,7 @@ impl Default for LayerSpec {
             tiles: None,
             text: None,
             animation_hold: 0,
+            mask: None,
         }
     }
 }
@@ -1328,6 +1336,8 @@ pub struct GroupSpec {
     pub opacity: f64,
     pub hidden: bool,
     pub collapsed: bool,
+    pub locked: bool,
+    pub private: bool,
     /// Children, top-most first.
     pub children: Vec<Node>,
     /// Extra Frames frames the group is held for.
@@ -1341,6 +1351,8 @@ impl Default for GroupSpec {
             opacity: 1.0,
             hidden: false,
             collapsed: false,
+            locked: false,
+            private: false,
             children: Vec::new(),
             animation_hold: 0,
         }
@@ -1348,6 +1360,8 @@ impl Default for GroupSpec {
 }
 
 /// One entry of the layer tree.
+// A tree holds a handful of nodes, so the size of a layer spec does not matter here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     Layer(LayerSpec),
@@ -1486,6 +1500,8 @@ impl DocumentBuilder {
         let mut archive = Archive {
             width: self.width,
             height: self.height,
+            grid: pass.grid,
+            bits: pass.bits,
             uuids: uuids.into_iter(),
             outs: layer_outs.into_iter(),
             flat: Vec::new(),
@@ -1667,6 +1683,16 @@ fn validate_nodes(nodes: &[Node], canvas_bytes: usize, tile: usize) -> Result<()
                         ));
                     }
                 }
+                if let Some(mask) = &layer.mask {
+                    if mask.len() != canvas_bytes / 4 {
+                        return invalid(format!(
+                            "layer {:?} has a mask of {} bytes, expected {}",
+                            layer.name,
+                            mask.len(),
+                            canvas_bytes / 4
+                        ));
+                    }
+                }
                 if let Some(tiles) = &layer.tiles {
                     if tiles.0.edge() != tile || !matches!(tiles.0.bits(), 8 | 16) {
                         return invalid(format!(
@@ -1732,6 +1758,9 @@ fn collect_uuids(nodes: &[Node], out: &mut Vec<String>) {
 struct Archive {
     width: u32,
     height: u32,
+    /// The tile grid and depth, for layer masks.
+    grid: pack::Grid,
+    bits: u32,
     uuids: std::vec::IntoIter<String>,
     /// The tile members of each raster layer in depth-first order.
     outs: std::vec::IntoIter<LayerOut>,
@@ -1762,9 +1791,9 @@ impl Archive {
                             .field("opacity", NsValue::Real(group.opacity))
                             .field("isCollapsed", NsValue::Bool(group.collapsed))
                             .field("isHidden", NsValue::Bool(group.hidden))
-                            .field("isLocked", NsValue::Bool(false))
+                            .field("isLocked", NsValue::Bool(group.locked))
                             .field("isClipped", NsValue::Bool(false))
-                            .field("isPrivate", NsValue::Bool(false))
+                            .field("isPrivate", NsValue::Bool(group.private))
                             .field("animationHeldLength", NsValue::Int(i64::from(group.animation_hold))),
                     ));
                 }
@@ -1807,6 +1836,36 @@ impl Archive {
                 .field("perspectiveAssisted", NsValue::Bool(false))
                 .field("animationHeldLength", NsValue::Int(i64::from(spec.animation_hold)))
                 .field("transform", NsValue::Data(identity_transform()));
+        let object = match &spec.mask {
+            Some(mask) => {
+                let mask_uuid = fresh_uuid();
+                let out = pack::encode_mask(mask, &self.grid, self.bits, &mask_uuid);
+                self.files.extend(out.files);
+                object.field(
+                    "mask",
+                    NsValue::Object(
+                        NsObject::new("SilicaLayer")
+                            .field("UUID", text(&mask_uuid))
+                            .field("name", text(""))
+                            .field("type", NsValue::Int(0))
+                            .field("version", NsValue::Int(LAYER_VERSION))
+                            .field("sizeWidth", NsValue::Int(i64::from(self.width)))
+                            .field("sizeHeight", NsValue::Int(i64::from(self.height)))
+                            .field("opacity", NsValue::Real(1.0))
+                            .field("blend", NsValue::Int(0))
+                            .field("extendedBlend", NsValue::Int(0))
+                            .field("extendedBlend2", NsValue::Int(0))
+                            .field("hidden", NsValue::Bool(false))
+                            .field("clipped", NsValue::Bool(false))
+                            .field("private", NsValue::Bool(false))
+                            .field("locked", NsValue::Bool(false))
+                            .field("preserve", NsValue::Bool(false))
+                            .field("transform", NsValue::Data(identity_transform())),
+                    ),
+                )
+            }
+            None => object,
+        };
         NsValue::Object(match &spec.text {
             Some(t) => object.field("text", text_value(t)),
             None => object,

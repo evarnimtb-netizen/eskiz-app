@@ -517,7 +517,7 @@ impl EskizApp {
     }
 
     /// Queue a background save of the current document. The snapshot is taken now.
-    fn queue_save(&mut self) {
+    pub(crate) fn queue_save(&mut self) {
         if self.session.is_stroking() {
             // The layer holds a half-drawn stroke: the autosave clock saves once the pen lifts.
             crate::stroke_trace::event("ignored", "save while a stroke is open (deferred)");
@@ -622,12 +622,16 @@ impl EskizApp {
             return;
         }
         let Some(cur) = self.gal.current.clone() else {
+            journal::keep_panic_snapshot_for(None);
             return;
         };
         let Some(id) = cur.id.clone() else {
+            journal::keep_panic_snapshot_for(None);
             return;
         };
         let dirty = self.is_dirty();
+        // A saved document needs no panic snapshot, and one of another document is stale.
+        journal::keep_panic_snapshot_for(dirty.then_some(id.as_str()));
         let (edits, sig) = (self.session.edits(), meta_signature(&self.session.doc));
         let now = self.now;
         let stroking = self.session.is_stroking();

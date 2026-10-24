@@ -51,6 +51,23 @@ fn simulated_crash_then_restore_gives_identical_layers() {
 }
 
 #[test]
+fn restore_after_a_canvas_size_change_does_not_use_the_old_package() {
+    let (lib, _dir) = library("resized");
+    let doc = sample_document(600, 400);
+    let id = storage::new_id();
+    lib.save(&id, "Resized", &doc).unwrap();
+    let mut planner = Planner::based_on(&doc);
+    let root = lib.recovery_root().to_owned();
+    // Crop & Resize, then a crash before the next save: the same layers on a smaller canvas.
+    let cropped = sample_document(300, 200);
+    assert_eq!(cropped.layer_ids(), doc.layer_ids());
+    execute(&planner.plan(&cropped, &root, &id, "Resized")).unwrap();
+    let back = restore(&root, &lib, &id).unwrap();
+    assert_eq!((back.width, back.height), (300, 200));
+    assert!(same_pixels(&back, &cropped), "the layers come from the journal, not the old package");
+}
+
+#[test]
 fn restore_of_an_unsaved_document_needs_no_package() {
     let (lib, dir) = library("unsaved");
     let doc = sample_document(300, 200);
@@ -245,4 +262,29 @@ fn a_panic_flush_uses_tile_names_the_worker_never_writes() {
         assert!(!worker_names.contains(&entry.file_name().to_string_lossy().into_owned()));
     }
     let _ = dir;
+}
+
+#[test]
+fn layer_masks_and_group_flags_survive_a_save() {
+    let (lib, _dir) = library("masks");
+    let (w, h) = (300, 200); // more than one tile across and down
+    let mut doc = sample_document(w, h);
+    let layer = doc.layer_id(0).unwrap();
+    let mut mask = eskiz_core::Mask::filled(w, h, 255);
+    for y in 0..h {
+        for x in 0..120 {
+            mask.data[y * w + x] = if y < 50 { 0 } else { (x * 2) as u8 };
+        }
+    }
+    doc.node_mut(layer).unwrap().mask = Some(mask.clone());
+    let props = eskiz_core::Props { locked: true, private: true, ..eskiz_core::Props::new("grp") };
+    let group = doc.push_group(None, props, None);
+    doc.push_layer(Some(group), eskiz_core::Props::new("inside"), None, vec![200; w * h * 4]);
+    let id = storage::new_id();
+    lib.save(&id, "Masks", &doc).unwrap();
+    let back = lib.load(&id).unwrap();
+    let masked = back.root.iter().find(|n| n.mask.is_some()).expect("the layer keeps its mask");
+    assert_eq!(masked.mask.as_ref().unwrap().data, mask.data);
+    let g = back.root.iter().find(|n| n.is_group()).expect("the group is saved");
+    assert!(g.props.locked && g.props.private, "the group keeps its lock and private flags");
 }

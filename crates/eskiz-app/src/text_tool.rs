@@ -493,6 +493,22 @@ impl EskizApp {
         }
     }
 
+    /// After undo or redo, the text being typed into may be shorter than before: keep the caret
+    /// and the selection anchor inside it, on character boundaries.
+    pub(crate) fn clamp_text_caret(&mut self) {
+        let Some(id) = self.text.editing else { return };
+        let Some(layer) = self.session.doc.texts.get(&id) else { return };
+        fn fit(text: &str, at: usize) -> usize {
+            let mut at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        }
+        self.text.caret = fit(&layer.text, self.text.caret);
+        self.text.anchor = self.text.anchor.map(|a| fit(&layer.text, a)).filter(|&a| a != self.text.caret);
+    }
+
     /// Ends the typing session, recording its changes as one step.
     pub(crate) fn end_text_edit(&mut self) {
         self.text.editing = None;

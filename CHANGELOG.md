@@ -2,6 +2,25 @@
 
 All notable changes to Eskiz are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-24
+
+Bug fixes for 0.1.0, from a second review of the whole code base. Your drawings and settings carry over; install it the same way as before (see the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install)). The known issues of 0.1.0 still apply.
+
+### Fixed
+
+- **Layer masks are saved.** Earlier versions dropped every layer mask when a drawing was saved, so hidden parts showed again after reopening. A group's lock and private settings are saved too. A group's blend mode and a group's mask are still not saved.
+- **Opening a 3D model no longer loses the drawing.** The drawing is saved first, and it keeps saving after you leave the 3D view.
+- **Opening a .procreate file from Actions saves the current drawing first.** A file that does not open leaves the current drawing as it was.
+- **Undo while typing text no longer crashes Eskiz.**
+- **Copy, Cut and Paste shortcuts (Ctrl or Cmd + C, X, V) work on Mac, Windows and Linux.**
+- **Multi-line text:** each line keeps its own colour and size, and the cursor and selection land in the right place on every line.
+- A Transform in progress is cancelled when the drawing changes under it (opening another drawing, flipping or cropping the canvas), instead of writing old pixels into the new drawing.
+- Crash recovery after Crop & Resize no longer brings back blank layers, and a recovered drawing keeps its masks. A problem in a background task no longer damages the recovery data, and a recovery copy is no longer offered for a drawing that was already saved.
+- Merge Down onto a text layer is no longer offered (the merged pixels were lost at the next text edit).
+- Brush files with a huge tip or grain image are refused instead of running out of memory at every start.
+- Windows: **Turn pen input back on** in the pen notice now works, and the mouse keeps working after pen input stops or is switched off.
+- Bloom no longer darkens soft, semi-transparent edges.
+
 ## [0.1.0] - 2026-10-22
 
 First public preview of Eskiz, a free, open source painting app for macOS, Windows, Linux and (experimentally) Android.
@@ -148,4 +167,5 @@ The full list of changes follows.
 - **MP4 export is not included.** It needs the OpenH264 codec, which these builds do not bundle. GIF, APNG and PNG sequence export work. Developers can build with `--features mp4`.
 - Some adjustment defaults and several 3D and Liquify details are approximations and may change.
 
+[0.1.1]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.1
 [0.1.0]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.0

@@ -237,6 +237,8 @@ pub struct TransformTool {
     /// The layer with the footprint cleared (8-bit), under the moved content in the preview.
     /// Built on the first preview; the footprint does not change during a session.
     base: Option<Layer>,
+    /// The session's edit count at the start: the snapshot is stale once it changes.
+    edits: u64,
 }
 
 /// Longest side the live preview of a transform is rendered at; larger canvases preview from a
@@ -322,6 +324,7 @@ impl TransformTool {
             drag: None,
             dirty: true,
             base: None,
+            edits: session.edits(),
         })
     }
 
@@ -429,6 +432,18 @@ impl EskizApp {
         if let Some(layer) = t.preview(&self.session) {
             self.session.set_preview_layer(t.layer, layer);
             self.needs_full = true;
+        }
+    }
+
+    /// Once per frame: end a transform whose snapshot is stale (another drawing was opened, or
+    /// the canvas was flipped, cropped or converted), so Apply never writes old pixels.
+    pub(crate) fn transform_guard(&mut self) {
+        let Some(t) = self.transform.as_ref() else {
+            return;
+        };
+        if self.session.edits() != t.edits || self.session.doc.layer(t.layer).is_none() {
+            self.cancel_transform();
+            self.show_toast("The transform was cancelled because the drawing changed.", 2.5);
         }
     }
 

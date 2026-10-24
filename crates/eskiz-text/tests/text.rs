@@ -471,3 +471,18 @@ fn outline_width_is_limited_by_the_text_size() {
     .clamped();
     assert!(a.outline_pt <= 10.0);
 }
+
+#[test]
+fn later_lines_keep_their_own_run_and_text_offsets() {
+    let Some(mut fonts) = fonts_or_skip() else {
+        return;
+    };
+    let mut layer = TextLayer::new("Hello\nWorld", attrs(20.0), 0.0);
+    let red = Color { r: 255, g: 0, b: 0, a: 255 };
+    layer.set_attrs(6..11, |a| a.color = red);
+    let layout = layer.layout(&mut fonts);
+    let second: Vec<_> = layout.glyphs.iter().filter(|g| g.cluster >= 6).collect();
+    assert!(!second.is_empty(), "glyphs of line 2 are numbered from the start of the text");
+    assert!(second.iter().all(|g| g.color == red), "line 2 takes its own run's colour");
+    assert!(layout.glyphs.iter().filter(|g| g.cluster < 5).all(|g| g.color != red));
+}

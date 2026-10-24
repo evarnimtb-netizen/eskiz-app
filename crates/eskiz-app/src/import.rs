@@ -371,6 +371,8 @@ fn add_group(doc: &mut Document, src: &mut ProcDocument, parent: Option<u64>, gr
     });
     props.opacity = group.opacity.clamp(0.0, 1.0);
     props.visible = !group.hidden;
+    props.locked = group.locked;
+    props.private = group.private;
     props.hold = group.animation_hold;
     let id = doc.push_group(parent, props, None);
     if let Some(eskiz_core::Node {

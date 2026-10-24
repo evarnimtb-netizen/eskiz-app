@@ -62,6 +62,8 @@ fn convert(doc: &mut Document, items: &[Item]) -> Result<Vec<Node>, Box<dyn Erro
                 opacity: group.opacity,
                 hidden: group.hidden,
                 collapsed: group.collapsed,
+                locked: group.locked,
+                private: group.private,
                 children: convert(doc, &group.children)?,
                 animation_hold: group.animation_hold,
             })),
@@ -84,6 +86,13 @@ fn layer_spec(doc: &mut Document, layer: &Layer) -> Result<LayerSpec, Box<dyn Er
         }
         out
     };
+    // A canvas-sized mask keeps its grey values (the red channel).
+    let mask = match doc.mask_rgba(layer)? {
+        Some(rgba) if layer.mask.as_ref().is_some_and(|m| (m.width as usize, m.height as usize) == (cw, ch)) => {
+            Some(rgba.as_chunks::<4>().0.iter().map(|p| p[0]).collect())
+        }
+        _ => None,
+    };
     Ok(LayerSpec {
         text: None,
         name: layer.name.clone(),
@@ -99,5 +108,6 @@ fn layer_spec(doc: &mut Document, layer: &Layer) -> Result<LayerSpec, Box<dyn Er
         pixels: Some(canvas),
         pixels16: None,
         tiles: None,
+        mask,
     })
 }

@@ -376,3 +376,25 @@ fn an_unsupported_usd_feature_shows_a_clear_message() {
         Outcome::Opened { .. } => panic!("instancing must be refused"),
     }
 }
+
+/// Opening a model saves the drawing it hides, and closing the 3D view gives the drawing back its
+/// save target (autosave and the exit save need it).
+#[test]
+fn opening_a_model_saves_the_drawing_and_keeps_its_save_target() {
+    let dir = temp_dir("open-model-saves");
+    let lib = Library::at(dir.clone());
+    let app_lib = lib.clone();
+    let mut h = Headless::from_app(Vec2::new(1024.0, 700.0), move |ctx| {
+        EskizApp::with_library(ctx, Prefs::default(), app_lib)
+    });
+    h.settle_storage();
+    h.app.set_external_document("Sketch".into());
+    let layer = h.app.session.doc.layer_id(0).unwrap();
+    h.app.session.pour_fill(layer, (5, 5), 0.5, [255, 0, 0]).unwrap();
+    assert!(h.app.is_dirty());
+    h.app.open_three_d(cube_doc(), None);
+    h.settle_storage();
+    assert!(lib.list().iter().any(|e| e.title == "Sketch"), "the drawing was saved before the 3D view");
+    h.app.close_three_d();
+    assert!(h.app.gal.current.is_some(), "the drawing has its save target back");
+}
