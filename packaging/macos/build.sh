@@ -57,7 +57,7 @@ chmod 755 "$APP/Contents/MacOS/eskiz"
 cp "$ICON" "$APP/Contents/Resources/eskiz.icns"
 # Licences and third-party notices travel inside the app (copied before signing so they are sealed).
 cp "$ESKIZ_DIR/THIRD_PARTY_NOTICES.md" "$ESKIZ_DIR/LICENSE-MIT" "$ESKIZ_DIR/LICENSE-APACHE" "$APP/Contents/Resources/"
-sed "s/0.1.1/$VERSION/g" "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
+sed "s/0.1.2/$VERSION/g" "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 plutil -lint "$APP/Contents/Info.plist"
 

@@ -411,12 +411,14 @@ impl<R: Read + Seek> Document<R> {
         }
         let mut layers = Vec::new();
         collect_layers(&tree, &mut layers);
+        // A layer's mask is kept at canvas size (one byte per pixel) whatever size the file
+        // declares for the layer, so many tiny masked layers count as many canvases.
+        let canvas_px = u64::from(canvas.0).saturating_mul(u64::from(canvas.1));
         let layer_bytes: u64 = layers
             .iter()
             .map(|l| {
-                u64::from(l.width)
-                    .saturating_mul(u64::from(l.height))
-                    .saturating_mul(4)
+                let pixels = u64::from(l.width).saturating_mul(u64::from(l.height)).saturating_mul(4);
+                pixels.saturating_add(if l.mask.is_some() { canvas_px } else { 0 })
             })
             .fold(0, u64::saturating_add);
         if layer_bytes > limits::MAX_DOCUMENT_DECODED_BYTES {
@@ -605,6 +607,10 @@ impl<R: Read + Seek> Document<R> {
         let Some(mask) = layer.mask.as_ref() else {
             return Ok(None);
         };
+        // A mask with no tiles shows the whole layer: it is no mask, and nothing is allocated.
+        if self.placed_tiles(&mask.uuid, mask.width, mask.height).is_empty() {
+            return Ok(None);
+        }
         self.assemble_rgba(&mask.uuid, mask.width, mask.height, 0xFF).map(Some)
     }
 

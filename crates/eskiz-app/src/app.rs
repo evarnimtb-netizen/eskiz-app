@@ -787,6 +787,14 @@ impl EskizApp {
         }
         let doc = &self.session.doc;
         let size = [doc.width, doc.height];
+        // A texture over the device's limit makes the graphics driver fail (and the app stop):
+        // the canvas is then not shown, with a note, instead.
+        let max = ctx.input(|i| i.max_texture_side);
+        if size[0] > max || size[1] > max {
+            self.texture = None;
+            self.show_toast(format!("This canvas is too large for this graphics card to show (largest side {max} pixels)."), 6.0);
+            return;
+        }
         let image = color_image(size, self.session.display_pixels());
         let reuse = self.texture.as_ref().is_some_and(|t| t.size() == size);
         if let (true, Some(tex)) = (reuse, self.texture.as_mut()) {
@@ -895,6 +903,9 @@ impl EskizApp {
 
     /// Empty the active layer. One undo step.
     pub(crate) fn clear_active_layer(&mut self) {
+        if self.refuse_in_3d() {
+            return;
+        }
         if self.adjust.is_some() {
             return;
         }
@@ -2920,10 +2931,36 @@ mod tests {
         assert!(h.app.transform.is_some());
         h.step();
         assert!(h.app.transform.is_some(), "a quiet frame keeps the transform");
+        h.app.session.mark_edited();
+        h.app.flip_canvas_action(true);
+        h.step();
+        assert!(h.app.transform.is_some(), "an edit elsewhere keeps it, and Flip waits for it");
         h.app.session.replace_document(Document::new(60, 50));
         h.step();
         assert!(h.app.transform.is_none(), "the stale transform is cancelled");
         assert_eq!(h.app.edit_mode, EditMode::Off);
+    }
+
+    /// While the 3D view is open, the hidden drawing's tools are refused: Cut, Clear Layer,
+    /// Adjustments and Transform would otherwise edit it where undo cannot reach.
+    #[test]
+    fn two_d_edits_wait_while_the_3d_view_is_open() {
+        use crate::snapshot::Headless;
+        let mut doc = Document::new(40, 30);
+        let id = doc.push_layer(None, eskiz_core::Props::new("ink"), None, vec![200; 40 * 30 * 4]);
+        let mut h = Headless::new(Vec2::new(1024.0, 700.0), doc, Prefs::default());
+        h.app.active = id;
+        h.step();
+        let before = h.app.session.doc.layer(id).unwrap().to_rgba();
+        h.app.three_d = Some(Box::new(crate::view3d::ThreeD::new(crate::view3d_tests::cube_doc(), None)));
+        h.app.clip_action(ClipAction::Cut);
+        h.app.clear_active_layer();
+        h.event(egui::Event::Cut);
+        h.step();
+        assert!(!h.app.enter_adjustment_mode(eskiz_core::filters::AdjustKind::Hsb, false));
+        h.app.begin_transform();
+        assert!(h.app.transform.is_none() && h.app.adjust.is_none());
+        assert_eq!(h.app.session.doc.layer(id).unwrap().to_rgba(), before, "the hidden drawing is untouched");
     }
 
     /// Cmd/Ctrl+C arrives from egui-winit as `Event::Copy`, not as a key press.

@@ -288,3 +288,30 @@ fn layer_masks_and_group_flags_survive_a_save() {
     let g = back.root.iter().find(|n| n.is_group()).expect("the group is saved");
     assert!(g.props.locked && g.props.private, "the group keeps its lock and private flags");
 }
+
+#[test]
+fn a_mask_added_after_the_save_is_restored_from_the_journal() {
+    let (lib, _dir) = library("journal-mask");
+    let mut doc = sample_document(300, 200);
+    let id = storage::new_id();
+    lib.save(&id, "Mask", &doc).unwrap();
+    let root = lib.recovery_root().to_owned();
+    let mut planner = Planner::based_on(&doc);
+    let layer = doc.layer_id(0).unwrap();
+    let mut mask = eskiz_core::Mask::filled(300, 200, 255);
+    mask.data[..300 * 50].fill(0);
+    doc.node_mut(layer).unwrap().mask = Some(mask.clone());
+    execute(&planner.plan(&doc, &root, &id, "Mask")).unwrap();
+    // An unchanged mask keeps its file; a plan after it still lists it.
+    paint(&mut doc, 1, 10, 10, 20, 20);
+    let second = planner.plan(&doc, &root, &id, "Mask");
+    assert!(second.masks.is_empty(), "an unchanged mask is not written again");
+    execute(&second).unwrap();
+    let back = restore(&root, &lib, &id).unwrap();
+    assert_eq!(back.node(layer).and_then(|n| n.mask.as_ref()).map(|m| &m.data), Some(&mask.data));
+    // The panic flush works from the planner's base too.
+    write_from(planner.clone(), &root, &id, "Mask", &doc).unwrap();
+    let back = restore(&root, &lib, &id).unwrap();
+    assert!(same_pixels(&back, &doc));
+    assert_eq!(back.node(layer).and_then(|n| n.mask.as_ref()).map(|m| &m.data), Some(&mask.data));
+}

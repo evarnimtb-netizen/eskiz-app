@@ -218,7 +218,10 @@ impl EskizApp {
 
     /// Flip every layer, as one undo step.
     pub(crate) fn flip_canvas_action(&mut self, horizontal: bool) {
-        if self.adjust.is_some() || self.session.is_stroking() {
+        if self.refuse_in_3d() {
+            return;
+        }
+        if self.adjust.is_some() || self.transform.is_some() || self.session.is_stroking() {
             self.show_toast("Finish what you are doing first.", 2.0);
             return;
         }
@@ -231,7 +234,7 @@ impl EskizApp {
 
     /// Convert the document to `target` (Actions > Canvas > Convert to ...), as one undo step.
     pub(crate) fn convert_colour_space_action(&mut self, target: ColourSpace) {
-        if self.adjust.is_some() || self.session.is_stroking() {
+        if self.adjust.is_some() || self.transform.is_some() || self.session.is_stroking() {
             self.show_toast("Finish what you are doing first.", 2.0);
             return;
         }
@@ -252,7 +255,7 @@ impl EskizApp {
     /// Convert the document to `target` bits per channel (Actions > Canvas > Convert to 16-bit /
     /// 8-bit), as one undo step. Going down dithers, so gradients do not band.
     pub(crate) fn convert_depth_action(&mut self, target: eskiz_core::Depth) {
-        if self.adjust.is_some() || self.session.is_stroking() {
+        if self.adjust.is_some() || self.transform.is_some() || self.session.is_stroking() {
             self.show_toast("Finish what you are doing first.", 2.0);
             return;
         }

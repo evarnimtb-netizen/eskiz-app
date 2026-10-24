@@ -27,6 +27,8 @@ type Layers = Vec<(String, Vec<u8>)>;
 struct ImportJob {
     rx: Receiver<Result<Layers, String>>,
     label: String,
+    /// The drawing it was started for (`Session::document_generation`).
+    doc: u64,
 }
 
 /// Jobs in flight (at most one of each kind), and the Share sheet's options.
@@ -148,7 +150,7 @@ impl EskizApp {
             self.show_toast("Could not start the import.", 2.5);
             return;
         }
-        self.share.import = Some(ImportJob { rx, label });
+        self.share.import = Some(ImportJob { rx, label, doc: self.session.document_generation() });
         self.show_toast("Importing...", 30.0);
     }
 
@@ -175,12 +177,17 @@ impl EskizApp {
                 }
             }
         }
-        if let Some(job) = self.share.import.as_ref() {
+        // An import waits while the 3D view hides the drawing it is for.
+        if let Some(job) = self.share.import.as_ref().filter(|_| self.three_d.is_none()) {
             match job.rx.try_recv() {
                 Ok(result) => {
                     let label = job.label.clone();
+                    let same_doc = job.doc == self.session.document_generation();
                     self.share.import = None;
                     match result {
+                        Ok(_) if !same_doc => {
+                            self.show_toast(format!("{label} was not added: another drawing was opened meanwhile."), 3.5);
+                        }
                         Ok(layers) => self.finish_import(&label, layers),
                         Err(e) => self.show_toast(format!("Could not import: {e}"), 4.0),
                     }

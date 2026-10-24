@@ -217,6 +217,9 @@ impl EskizApp {
     /// Open `kind` on the active layer. `pencil` opens it in Pencil mode. Refused (with
     /// a toast) for groups, locked layers and while a stroke is running or Liquify is open.
     pub fn enter_adjustment_mode(&mut self, kind: AdjustKind, pencil: bool) -> bool {
+        if self.refuse_in_3d() {
+            return false;
+        }
         if self.liquify.is_some() {
             return false;
         }
@@ -322,7 +325,7 @@ impl EskizApp {
     /// Choose which parameter the slider edits.
     pub fn adjust_select_param(&mut self, i: usize) {
         if let Some(st) = self.adjust.as_mut() {
-            st.param = i.min(st.adj.kind.params().len() - 1);
+            st.param = i.min(st.adj.kind.params().len().saturating_sub(1));
         }
     }
 
@@ -335,7 +338,10 @@ impl EskizApp {
         };
         let visible = st.adj.visible_params();
         let param = if visible.contains(&st.param) { st.param } else { visible.first().copied().unwrap_or(0) };
-        let spec = st.adj.kind.params()[param];
+        // Curves has no sliders: a drag on the canvas changes nothing.
+        let Some(&spec) = st.adj.kind.params().get(param) else {
+            return;
+        };
         if !spec.choices.is_empty() || spec.hidden {
             return;
         }
@@ -469,8 +475,15 @@ impl EskizApp {
             return;
         };
         let applying = st.applying();
-        if !applying && (self.session.edits() != st.edits || self.active != st.layer || self.session.doc.layer(st.layer).is_none()) {
+        // Another drawing opened, or the layer changed (Clear, Fill, Merge Down...): the render
+        // would write old pixels over it. While Apply is rendering, the layer is the one it started
+        // on whatever is selected now.
+        let stale = self.session.edits() != st.edits || self.session.doc.layer(st.layer).is_none();
+        if stale || (!applying && self.active != st.layer) {
             self.adjust_cancel();
+            if applying {
+                self.show_toast("The adjustment was not applied: the drawing changed while it was rendering.", 3.0);
+            }
             return;
         }
         if let Some(job) = st.job.as_ref() {

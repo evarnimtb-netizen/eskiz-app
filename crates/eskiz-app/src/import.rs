@@ -148,10 +148,16 @@ pub fn limit_side(w: usize, h: usize, rgba: Vec<u8>, max_side: usize) -> (usize,
 
 fn decode_webp(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
     let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
-    let mut reader = image::ImageReader::open(path).map_err(|e| err(&e))?;
-    let (iw, ih) = reader.into_dimensions().map_err(|e| err(&e))?;
+    // The caller found WebP by its content: a pasted clip or a misnamed file has no matching
+    // extension, so the format is set rather than guessed from the name.
+    let open = || -> Result<image::ImageReader<std::io::BufReader<std::fs::File>>, String> {
+        let mut reader = image::ImageReader::open(path).map_err(|e| err(&e))?;
+        reader.set_format(image::ImageFormat::WebP);
+        Ok(reader)
+    };
+    let (iw, ih) = open()?.into_dimensions().map_err(|e| err(&e))?;
     check_picture_size(path, u64::from(iw), u64::from(ih))?;
-    reader = image::ImageReader::open(path).map_err(|e| err(&e))?;
+    let mut reader = open()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(1 << 30);
     reader.limits(limits);

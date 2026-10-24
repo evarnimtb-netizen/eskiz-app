@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use glam::{Mat3, Mat4, Vec2, Vec3};
 
@@ -250,6 +250,23 @@ fn default_set(opts: &ImportOptions) -> TextureSet {
 
 /// Load a `.gltf` or `.glb` file (external buffers and images resolve next to it).
 pub fn load_gltf(path: &Path, opts: &ImportOptions) -> Result<ImportedModel, ImportError> {
+    // External buffers and images must stay in the model's folder: a file could otherwise name
+    // any file on the disk (or a device that never ends).
+    let gltf = gltf::Gltf::open(path).map_err(|e| ImportError::Parse(e.to_string()))?;
+    let buffer_uris = gltf.buffers().filter_map(|b| match b.source() {
+        gltf::buffer::Source::Uri(u) => Some(u),
+        gltf::buffer::Source::Bin => None,
+    });
+    let image_uris = gltf.images().filter_map(|i| match i.source() {
+        gltf::image::Source::Uri { uri, .. } => Some(uri),
+        gltf::image::Source::View { .. } => None,
+    });
+    for uri in buffer_uris.chain(image_uris) {
+        if !uri_stays_inside(uri) {
+            return Err(ImportError::Unsupported(format!("the model refers to a file outside its folder ({uri})")));
+        }
+    }
+    drop(gltf);
     let (doc, buffers, images) =
         gltf::import(path).map_err(|e| ImportError::Parse(e.to_string()))?;
     build_gltf(&doc, &buffers, &images, opts)
@@ -486,10 +503,43 @@ pub fn load_obj_str(
     load_obj_impl(obj, mtl, None, opts)
 }
 
+/// A glTF URI that is data, or a relative path that stays in the model's folder.
+fn uri_stays_inside(uri: &str) -> bool {
+    if uri.starts_with("data:") {
+        return true;
+    }
+    let lower = uri.to_ascii_lowercase();
+    !uri.contains("://") && !lower.contains("%2e%2e") && !lower.contains("%2f") && !lower.contains("%5c") && relative_inside(uri)
+}
+
+/// A relative path with no `..`, root or drive: it cannot leave the folder it is joined to.
+fn relative_inside(name: &str) -> bool {
+    let name = name.replace('\\', "/");
+    let path = Path::new(&name);
+    !name.starts_with('/') && path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
+/// The largest material library or texture file an OBJ may name.
+const MAX_SIDE_FILE_BYTES: u64 = 512 << 20;
+
+/// A file named by an OBJ, next to it: only a regular file inside `base`, up to
+/// [`MAX_SIDE_FILE_BYTES`].
+fn side_file(base: &Path, name: &str) -> Option<PathBuf> {
+    if !relative_inside(name) {
+        return None;
+    }
+    let path = base.join(name.replace('\\', "/"));
+    let meta = std::fs::metadata(&path).ok()?;
+    (meta.is_file() && meta.len() <= MAX_SIDE_FILE_BYTES).then_some(path)
+}
+
 fn read_texture(base: Option<&Path>, name: &str, notes: &mut Vec<String>) -> Option<Img> {
     let base = base?;
     let name = name.trim();
-    let path = base.join(name.replace('\\', "/"));
+    let Some(path) = side_file(base, name) else {
+        notes.push(format!("texture {name} is not a file next to the model; skipped"));
+        return None;
+    };
     let decoded = image::ImageReader::open(&path)
         .and_then(|r| r.with_guessed_format())
         .map_err(image::ImageError::IoError)
@@ -530,7 +580,8 @@ fn load_obj_impl(
         if let Some(text) = mtl {
             return tobj::load_mtl_buf(&mut Cursor::new(text.as_bytes()));
         }
-        match base.map(|b| std::fs::read_to_string(b.join(p))) {
+        let file = base.and_then(|b| side_file(b, &p.to_string_lossy()));
+        match file.map(std::fs::read_to_string) {
             Some(Ok(text)) => tobj::load_mtl_buf(&mut Cursor::new(text.into_bytes())),
             _ => Err(tobj::LoadError::OpenFileFailed),
         }

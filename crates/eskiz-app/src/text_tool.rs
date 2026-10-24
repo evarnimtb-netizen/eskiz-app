@@ -640,6 +640,12 @@ impl EskizApp {
                     out.push(t.clone());
                     false
                 }
+                // Pasted text keeps its line breaks and loses other control characters.
+                Event::Paste(t) => {
+                    let lines = t.replace("\r\n", "\n").replace('\r', "\n");
+                    out.push(lines.chars().filter(|c| *c == '\n' || !c.is_control()).collect());
+                    false
+                }
                 _ => true,
             });
             out
@@ -696,7 +702,7 @@ impl EskizApp {
             }
         }
         for s in typed {
-            if s.chars().all(|c| !c.is_control()) && !s.is_empty() {
+            if s.chars().all(|c| c == '\n' || !c.is_control()) && !s.is_empty() {
                 self.text_replace(self.text.selection(), &s);
             }
         }

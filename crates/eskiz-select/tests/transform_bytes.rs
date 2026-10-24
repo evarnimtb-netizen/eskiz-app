@@ -254,3 +254,22 @@ fn probe_commit_speed() {
     }
     let _ = &mut s;
 }
+
+/// A transform that moves nothing gives the layer back, even along a soft (feathered) selection
+/// edge: the lifted content fills its own hole instead of going over what is left.
+#[test]
+fn an_identity_transform_of_a_soft_selection_changes_nothing() {
+    let (w, h) = (24, 16);
+    let opaque: Vec<u8> = (0..w * h).flat_map(|i| [(i % 200) as u8, 90, 40, 255]).collect();
+    let mut sel = Mask::empty(w, h);
+    for (i, s) in sel.data.iter_mut().enumerate() {
+        *s = (i % w) as f32 / (w - 1) as f32; // a ramp from 0 to 1 across the layer
+    }
+    let s = TransformSession::new_bytes(w, h, opaque.clone(), Some(sel), Mat3::IDENTITY, Interp::Nearest).expect("session");
+    let out = s.commit_premul(Some(&opaque)).expect("commit");
+    for (got, want) in out.as_chunks::<4>().0.iter().zip(opaque.as_chunks::<4>().0) {
+        for c in 0..4 {
+            assert!(got[c].abs_diff(want[c]) <= 1, "{got:?} vs {want:?}");
+        }
+    }
+}

@@ -374,6 +374,7 @@ impl Gallery {
     }
 
     /// Wait (at most `limit`) until the worker has finished every queued job. `true` when it did.
+    /// See also [`EskizApp::wait_for_saves`].
     pub(crate) fn drain_worker(&self, limit: Duration) -> bool {
         let Some(w) = &self.worker else {
             return true;
@@ -516,6 +517,16 @@ impl EskizApp {
         self.gal.is_dirty(&self.session.doc, self.session.edits())
     }
 
+    /// Before a delete or rename in the gallery: let queued saves finish, so none of them writes
+    /// a drawing (or its old title) back afterwards. False, with a note, when they take too long.
+    pub(crate) fn wait_for_saves(&mut self) -> bool {
+        if self.gal.saves_in_flight == 0 || self.gal.drain_worker(Duration::from_secs(20)) {
+            return true;
+        }
+        self.show_toast("Still saving. Try again in a moment.", 3.0);
+        false
+    }
+
     /// Queue a background save of the current document. The snapshot is taken now.
     pub(crate) fn queue_save(&mut self) {
         if self.session.is_stroking() {
@@ -539,7 +550,10 @@ impl EskizApp {
     /// Tap on "Gallery": save the document if it changed, then show the gallery.
     pub(crate) fn open_gallery(&mut self, ctx: &egui::Context) {
         self.ensure_storage(ctx);
-        self.close_three_d();
+        // A 3D document that cannot be saved stays open rather than losing its paint.
+        if !self.close_three_d() {
+            return;
+        }
         self.commit_stroke("leaving the canvas for the gallery");
         self.popovers.close();
         if self.is_dirty() {
@@ -618,7 +632,12 @@ impl EskizApp {
         if let Some((id, title, doc)) = self.gal.restored.take() {
             self.show_restored(ctx, id, title, *doc);
         }
-        if !matches!(self.gal.screen, Screen::Canvas | Screen::Gallery) || self.gal.library.is_none() || self.three_d.is_some() {
+        if self.three_d.is_some() {
+            // Opening the 3D view saved the drawing: its panic snapshot is older than that save.
+            journal::keep_panic_snapshot_for(None);
+            return;
+        }
+        if !matches!(self.gal.screen, Screen::Canvas | Screen::Gallery) || self.gal.library.is_none() {
             return;
         }
         let Some(cur) = self.gal.current.clone() else {
@@ -659,7 +678,7 @@ impl EskizApp {
         let plan = js.planner.plan(&self.session.doc, &root, &id, &cur.title);
         js.last_plan = now;
         js.changed_at = None;
-        journal::set_panic_snapshot(&root, &id, &cur.title, &self.session.doc);
+        journal::set_panic_snapshot(&root, &id, &cur.title, &self.session.doc, &js.planner);
         self.gal.send(Job::Journal(plan));
     }
 
@@ -969,6 +988,10 @@ impl EskizApp {
         let Some(lib) = self.gal.library.clone() else {
             return;
         };
+        // A queued save of one of them would write it back after the delete: let it finish first.
+        if !self.wait_for_saves() {
+            return;
+        }
         let mut failed = 0;
         for id in ids {
             if lib.delete(id).is_err() {

@@ -360,7 +360,8 @@ pub(crate) fn encode_layers(layers: &[(&LayerSpec, &str)], g: &Grid, bits: u32) 
 
 /// Compresses a layer mask (`g.w * g.h` grey bytes) as an inverted-fill layer under `uuid`:
 /// grey opaque tiles at `bits` per channel, and no member for a tile that shows everything (a
-/// missing mask tile reads as 255).
+/// missing mask tile reads as 255). The first tile is always written: a mask with no tiles at
+/// all reads back as no mask.
 pub(crate) fn encode_mask(mask: &[u8], g: &Grid, bits: u32, uuid: &str) -> LayerOut {
     let mut out = LayerOut::default();
     let mut buf = Vec::new();
@@ -368,7 +369,7 @@ pub(crate) fn encode_mask(mask: &[u8], g: &Grid, bits: u32, uuid: &str) -> Layer
         for col in 0..g.cols {
             let (x0, y0, tw, th) = g.rect(col, row);
             let line = |y: usize| &mask[(y0 + y) * g.w + x0..(y0 + y) * g.w + x0 + tw];
-            if (0..th).all(|y| line(y).iter().all(|&v| v == 255)) {
+            if (row, col) != (0, 0) && (0..th).all(|y| line(y).iter().all(|&v| v == 255)) {
                 continue;
             }
             buf.clear();

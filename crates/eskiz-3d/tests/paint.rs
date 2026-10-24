@@ -54,7 +54,7 @@ fn lookup_round_trip_at_centre_and_top_edge() {
     );
 
     // Depth equals the analytic NDC depth of a plane at distance 3.
-    let (n, f, d) = (cam.near, cam.far, 3.0f32);
+    let ((n, f), d) = (cam.clip_planes(), 3.0f32);
     let expect = f * (d - n) / (d * (f - n));
     assert!((lk.depth_at(50.5, 50.5).unwrap() - expect).abs() < 1e-5);
 
@@ -484,5 +484,22 @@ fn dab_on_a_shared_texel_never_paints_a_far_island() {
             0,
             "far island C texel {tx} must stay clear"
         );
+    }
+}
+
+/// The clip planes follow the model: zoomed far out the model is still in front of the far
+/// plane, and a tiny model is not cut by the near plane.
+#[test]
+fn clip_planes_keep_the_model_at_every_zoom_and_size() {
+    for radius in [0.001f32, 1.0, 500.0] {
+        let mut cam = OrbitCamera::default();
+        cam.frame(Vec3::splat(-radius), Vec3::splat(radius));
+        for zoom in [0.05f32, 1.0, 30.0] {
+            cam.zoom_by(zoom / cam.zoom());
+            let (near, far) = cam.clip_planes();
+            let r = radius * 3f32.sqrt();
+            assert!(cam.distance + r < far, "radius {radius} zoom {zoom}: far {far}");
+            assert!(near < (cam.distance - r).max(near * 2.0), "radius {radius} zoom {zoom}: near {near}");
+        }
     }
 }

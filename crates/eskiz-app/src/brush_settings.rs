@@ -277,6 +277,10 @@ pub fn to_settings(brush: &Brush) -> BTreeMap<String, SettingValue> {
 
 /// Overlays the `eskiz.*` settings of `ib` on `brush`. Keys the file lacks leave `brush` as it
 /// was; a value of the wrong type or a non-finite number is ignored.
+/// Settings whose Studio slider runs from 0 to 1. Imported values are clamped to that range.
+const UNIT_FIELDS: &[&str] =
+    &["smoothing", "pressure_smoothing", "stabilization", "motion_amount", "motion_expression", "spacing_jitter", "spacing_speed"];
+
 pub fn apply_settings(ib: &ImportedBrush, brush: &mut Brush) {
     let text = |name: &str| ib.text(&key(name)).map(str::to_owned);
     if let Some(v) = text("shape") {
@@ -312,7 +316,9 @@ pub fn apply_settings(ib: &ImportedBrush, brush: &mut Brush) {
         match field {
             Field::F(slot) => {
                 if let Some(v) = ib.number(&key(&name)).filter(|v| v.is_finite()) {
-                    *slot = v;
+                    // Values the Studio limits to 0..1 stay there: a file could ask for a
+                    // stabiliser that takes seconds per sample, or a spacing that never advances.
+                    *slot = if UNIT_FIELDS.contains(&name.as_str()) { v.clamp(0.0, 1.0) } else { v };
                 }
             }
             Field::B(slot) => {
@@ -324,7 +330,11 @@ pub fn apply_settings(ib: &ImportedBrush, brush: &mut Brush) {
     }
     for (name, pts) in curves(brush) {
         if let Some(SettingValue::Curve(p)) = ib.settings.get(&key(&format!("curve.{name}"))) {
-            if p.len() >= 2 && p.iter().all(|q| q[0].is_finite() && q[1].is_finite()) {
+            // Two points at the same x would make the curve's spline divide by zero.
+            let mut xs: Vec<f64> = p.iter().map(|q| q[0]).collect();
+            xs.sort_by(f64::total_cmp);
+            let distinct = xs.windows(2).all(|w| w[0] < w[1]);
+            if p.len() >= 2 && distinct && p.iter().all(|q| q[0].is_finite() && q[1].is_finite()) {
                 *pts = p.clone();
             }
         }

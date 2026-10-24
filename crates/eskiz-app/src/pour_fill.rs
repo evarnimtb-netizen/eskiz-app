@@ -144,6 +144,9 @@ impl PourPreviewer {
 impl EskizApp {
     /// The colour circle started to be dragged.
     pub(crate) fn begin_pour_fill(&mut self, pos: Pos2) {
+        if self.refuse_in_3d() {
+            return;
+        }
         if self.adjust.is_some() {
             return;
         }

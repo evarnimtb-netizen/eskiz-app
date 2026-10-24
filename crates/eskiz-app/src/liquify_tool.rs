@@ -378,6 +378,9 @@ impl EskizApp {
 
     /// Open Liquify on the active layer. Refused for groups, locked layers and during a stroke.
     pub fn enter_liquify(&mut self) -> bool {
+        if self.refuse_in_3d() {
+            return false;
+        }
         if self.liquify.is_some() {
             return true;
         }

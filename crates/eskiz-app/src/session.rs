@@ -76,6 +76,8 @@ pub struct Session {
     epochs: std::collections::HashMap<u64, u64>,
     /// Bumped when every layer may have changed (new document, canvas-wide operations).
     epoch_all: u64,
+    /// Counts documents: a new one each time the document is replaced.
+    doc_gen: u64,
     /// Guided Layer for the stroke in progress, when it was started with
     /// [`Session::begin_assisted_stroke`].
     assist: Option<StrokeAssist<'static>>,
@@ -168,6 +170,7 @@ impl Session {
             preview_gen: 0,
             epochs: std::collections::HashMap::new(),
             epoch_all: 0,
+            doc_gen: 0,
             assist: None,
             selection: Arc::new(Selection::none()),
             pending_text: None,
@@ -263,6 +266,13 @@ impl Session {
         self.selection = Arc::new(Selection::none());
         self.epoch_all += 1;
         self.edits += 1;
+        self.doc_gen += 1;
+    }
+
+    /// Which document this is: it changes each time the document is replaced. Background jobs
+    /// keep it, so a result is never applied to another drawing.
+    pub fn document_generation(&self) -> u64 {
+        self.doc_gen
     }
 
     pub fn is_stroking(&self) -> bool {

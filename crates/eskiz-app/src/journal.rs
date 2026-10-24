@@ -20,7 +20,8 @@
 //!
 //! Restore rebuilds the document from the saved package (for the layers in `base_keys`),
 //! overlays the journal's tiles, and keeps the ids, so the layers come back pixel for pixel.
-//! Layer masks and text sources are not journaled: they come from the save.
+//! Layer and group masks are journaled as whole files (`<seq>-mask-<id>.tile`, rewritten only
+//! when the mask changed). Text sources are not journaled: they come from the save.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -45,6 +46,7 @@ const FORMAT: u64 = 1;
 const MANIFEST: &str = "journal.json";
 const TILE_EXT: &str = "tile";
 const TILE_MAGIC: &[u8; 4] = b"EJT1";
+const MASK_MAGIC: &[u8; 4] = b"EJM1";
 
 /// A snapshot the UI has planned and the worker has to write.
 #[derive(Debug)]
@@ -56,6 +58,8 @@ pub struct Plan {
     pub reset: bool,
     /// Changed tiles to write: file name and pixels.
     pub tiles: Vec<(String, Arc<Tile>)>,
+    /// Changed masks to write: file name and the mask's bytes.
+    pub masks: Vec<(String, Arc<Vec<u8>>)>,
     /// The manifest, complete for this snapshot.
     pub manifest: Vec<u8>,
     /// Names of the tile files the manifest lists. Other `.tile` files in `dir` are removed.
@@ -85,8 +89,11 @@ struct Base {
 
 /// The UI-side planner for one document. It remembers the previous snapshot, so each plan
 /// writes only what changed.
+#[derive(Clone)]
 pub struct Planner {
     base: Option<Base>,
+    /// Masks at the last plan, by node id: the file that holds each and its bytes.
+    masks: BTreeMap<u64, (String, Arc<Vec<u8>>)>,
     /// Layers at the last plan.
     prev: Pixels,
     /// Tile records relative to `base`: `(layer, tx, ty)` to file name, `None` when empty.
@@ -99,7 +106,7 @@ pub struct Planner {
 impl Planner {
     /// A planner for a document with no package yet: the journal holds every pixel.
     pub fn unsaved() -> Self {
-        Self { base: None, prev: Vec::new(), records: BTreeMap::new(), seq: 0, broken: false }
+        Self { base: None, masks: BTreeMap::new(), prev: Vec::new(), records: BTreeMap::new(), seq: 0, broken: false }
     }
 
     /// A planner whose base is the package just written or opened from `doc`.
@@ -120,6 +127,7 @@ impl Planner {
         });
         self.prev = pixels;
         self.records.clear();
+        self.masks.clear();
         self.broken = false;
     }
 
@@ -143,6 +151,7 @@ impl Planner {
         self.broken = false;
         let reference: Pixels = if reset {
             self.records.clear();
+            self.masks.clear();
             self.base.as_ref().map(|b| b.layers.clone()).unwrap_or_default()
         } else {
             self.prev.clone()
@@ -177,13 +186,34 @@ impl Planner {
         self.records.retain(|(key, _, _), _| ids.contains(key));
         self.prev = pixels_of(doc);
 
-        let keep: HashSet<String> = self.records.values().flatten().cloned().collect();
+        // Masks: a changed or new mask gets a new file; the others keep theirs.
+        let mut current = Vec::new();
+        masks_of(&doc.root, &mut current);
+        let mut masks = Vec::new();
+        let mut next = BTreeMap::new();
+        for (node, data) in current {
+            let entry = match self.masks.remove(&node) {
+                Some((name, old)) if old.as_slice() == data => (name, old),
+                _ => {
+                    let name = format!("{}-mask-{node}.{TILE_EXT}", self.seq);
+                    let bytes = Arc::new(data.to_vec());
+                    masks.push((name.clone(), Arc::clone(&bytes)));
+                    (name, bytes)
+                }
+            };
+            next.insert(node, entry);
+        }
+        self.masks = next;
+
+        let mut keep: HashSet<String> = self.records.values().flatten().cloned().collect();
+        keep.extend(self.masks.values().map(|(name, _)| name.clone()));
         let manifest = manifest_json(self, doc, id, title);
         Plan {
             id: id.to_owned(),
             dir: root.join(id),
             reset,
             tiles,
+            masks,
             manifest: manifest.to_string().into_bytes(),
             keep,
         }
@@ -216,7 +246,20 @@ fn manifest_json(planner: &Planner, doc: &Document, id: &str, title: &str) -> Va
         "base_keys": base_keys,
         "tree": tree_json(&doc.root),
         "records": records,
+        "masks": planner.masks.iter().map(|(node, (file, _))| json!({"node": node, "file": file})).collect::<Vec<_>>(),
     })
+}
+
+/// Every layer and group mask in the tree, by node id.
+fn masks_of<'a>(nodes: &'a [Node], out: &mut Vec<(u64, &'a [u8])>) {
+    for n in nodes {
+        if let Some(mask) = &n.mask {
+            out.push((n.id, &mask.data));
+        }
+        if let NodeKind::Group { children, .. } = &n.kind {
+            masks_of(children, out);
+        }
+    }
 }
 
 fn pixels_of(doc: &Document) -> Pixels {
@@ -310,6 +353,12 @@ fn execute_locked(plan: &Plan) -> Result<(), String> {
     for (name, tile) in &plan.tiles {
         crate::storage::write_atomic_nodir(&plan.dir.join(name), &encode_tile(tile))?;
     }
+    for (name, mask) in &plan.masks {
+        let mut bytes = Vec::with_capacity(4 + mask.len());
+        bytes.extend_from_slice(MASK_MAGIC);
+        bytes.extend_from_slice(mask);
+        crate::storage::write_atomic_nodir(&plan.dir.join(name), &bytes)?;
+    }
     // The tiles and the manifest's name must be on disk before the files it no longer lists go.
     crate::storage::sync_dir(&plan.dir);
     write_atomic(&plan.dir.join(MANIFEST), &plan.manifest)?;
@@ -330,7 +379,13 @@ fn execute_locked(plan: &Plan) -> Result<(), String> {
 /// Write a full journal of `doc` now, on the calling thread. Used when the process is about
 /// to die: the last planned state goes to disk before the panic continues.
 pub fn write_now(root: &Path, id: &str, title: &str, doc: &Document) -> Result<(), String> {
-    let mut planner = Planner::unsaved();
+    write_from(Planner::unsaved(), root, id, title, doc)
+}
+
+/// [`write_now`] relative to `planner`'s base (the saved package), so a restore keeps the text
+/// sources of the save. Every change since the save is written again.
+fn write_from(mut planner: Planner, root: &Path, id: &str, title: &str, doc: &Document) -> Result<(), String> {
+    planner.mark_broken();
     // Tile names of this write never collide with the ones the worker writes.
     planner.seq = 1 << 32;
     let plan = planner.plan(doc, root, id, title);
@@ -502,6 +557,26 @@ pub fn restore_counted(recovery: &Path, library: &Library, id: &str) -> Result<(
         doc.put_layer(key, layer);
     }
 
+    // Masks: a journal that lists them has every mask of the snapshot. An older one has none,
+    // and its masked layers keep the mask they were saved with (below).
+    let journal_masks = m["masks"].as_array();
+    for e in journal_masks.into_iter().flatten() {
+        let (Some(node), Some(file)) = (e["node"].as_u64(), e["file"].as_str()) else {
+            continue;
+        };
+        if file.contains(['/', '\\']) || file.contains("..") {
+            return Err("journal: a mask name is not a plain file name".to_owned());
+        }
+        match fs::read(dir.join(file)) {
+            Ok(b) if b.len() == 4 + width * height && &b[..4] == MASK_MAGIC => {
+                if let Some(n) = doc.node_mut(node) {
+                    n.mask = Some(eskiz_core::document::Mask { data: b[4..].to_vec() });
+                }
+            }
+            _ => skipped += 1,
+        }
+    }
+
     // Text layers keep the source, and masked layers the mask, they were saved with.
     if let Some((keys, package)) = &base {
         for (i, key) in keys.iter().enumerate() {
@@ -509,7 +584,7 @@ pub fn restore_counted(recovery: &Path, library: &Library, id: &str) -> Result<(
                 if let Some(text) = package.texts.get(&pid) {
                     doc.texts.insert(*key, text.clone());
                 }
-                if let Some(mask) = package.node(pid).and_then(|n| n.mask.clone()) {
+                if let Some(mask) = package.node(pid).and_then(|n| n.mask.clone()).filter(|_| journal_masks.is_none()) {
                     if let Some(node) = doc.node_mut(*key) {
                         node.mask = Some(mask);
                     }
@@ -544,14 +619,22 @@ struct PanicSlot {
     id: String,
     title: String,
     doc: Box<Document>,
+    /// The UI's planner after that plan: its base is the saved package.
+    planner: Box<Planner>,
 }
 
 static PANIC_SLOT: Mutex<Option<PanicSlot>> = Mutex::new(None);
 
 /// Remember the document planned last, so [`flush_for_panic`] can write it.
-pub fn set_panic_snapshot(root: &Path, id: &str, title: &str, doc: &Document) {
+pub fn set_panic_snapshot(root: &Path, id: &str, title: &str, doc: &Document, planner: &Planner) {
     if let Ok(mut slot) = PANIC_SLOT.lock() {
-        *slot = Some(PanicSlot { root: root.to_owned(), id: id.to_owned(), title: title.to_owned(), doc: Box::new(doc.clone()) });
+        *slot = Some(PanicSlot {
+            root: root.to_owned(),
+            id: id.to_owned(),
+            title: title.to_owned(),
+            doc: Box::new(doc.clone()),
+            planner: Box::new(planner.clone()),
+        });
     }
 }
 
@@ -579,7 +662,7 @@ pub fn flush_for_panic() {
         Err(std::sync::TryLockError::WouldBlock) => return,
     };
     if let Some(s) = slot.as_ref() {
-        let _ = write_now(&s.root, &s.id, &s.title, &s.doc);
+        let _ = write_from((*s.planner).clone(), &s.root, &s.id, &s.title, &s.doc);
     }
 }
 
@@ -588,17 +671,24 @@ pub fn flush_for_panic() {
 /// panics and carry on, and a flush then would rewrite the journal under the UI's planner.
 pub fn install_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
+    // Android runs each activity on a new thread: the latest caller is the UI thread.
+    if let Ok(mut ui) = UI_THREAD.lock() {
+        *ui = Some(std::thread::current().id());
+    }
     ONCE.call_once(|| {
-        let ui_thread = std::thread::current().id();
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if std::thread::current().id() == ui_thread {
+            let on_ui = UI_THREAD.try_lock().ok().and_then(|ui| *ui) == Some(std::thread::current().id());
+            if on_ui {
                 let _ = std::panic::catch_unwind(flush_for_panic);
             }
             previous(info);
         }));
     });
 }
+
+/// The thread that last installed the panic hook: the UI thread.
+static UI_THREAD: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
 
 // ---------------------------------------------------------------- selftest
 

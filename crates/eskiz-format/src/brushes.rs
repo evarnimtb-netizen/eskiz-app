@@ -629,6 +629,7 @@ pub fn read_brushset(name_hint: &str, bytes: &[u8]) -> Result<BrushSet> {
     prefixes.sort_by_cached_key(|p| order.get(label_of(p).as_str()).copied().unwrap_or(usize::MAX));
 
     let mut set = BrushSet::default();
+    let mut image_bytes = 0u64;
     for prefix in &prefixes {
         let label = label_of(prefix);
         let label = if label.is_empty() {
@@ -637,7 +638,18 @@ pub fn read_brushset(name_hint: &str, bytes: &[u8]) -> Result<BrushSet> {
             label
         };
         match read_brush_at(&mut zip, prefix, &label) {
-            Ok(brush) => set.brushes.push(brush),
+            Ok(brush) => {
+                let images = [&brush.shape_png, &brush.grain_png].iter().filter_map(|p| p.as_ref()).map(|p| p.len() as u64).sum::<u64>();
+                image_bytes = image_bytes.saturating_add(images);
+                if image_bytes > limits::MAX_BRUSHSET_IMAGE_BYTES {
+                    return Err(limits::exceeded(format!(
+                        "the set's tip and grain images need more than {} bytes; the most Eskiz imports at once is {}",
+                        limits::MAX_BRUSHSET_IMAGE_BYTES,
+                        limits::MAX_BRUSHSET_IMAGE_BYTES
+                    )));
+                }
+                set.brushes.push(brush);
+            }
             Err(e) => set.failures.push(format!("{prefix}{BRUSH_ARCHIVE}: {e}")),
         }
     }

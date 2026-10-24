@@ -2,6 +2,26 @@
 
 All notable changes to Eskiz are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-10-24
+
+Fixes from a third review of the whole code base. Your drawings and settings carry over; install it the same way as before (see the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install)). The known issues of 0.1.0 still apply.
+
+### Fixed
+
+- **Curves no longer closes Eskiz** when you drag on the canvas.
+- **The 3D view no longer edits the hidden drawing.** Cut, Copy, Paste, Clear Layer, Adjustments, Liquify, Selection, Transform, Flip and Pour Fill wait until you close the 3D view (in 0.1.1 the Cut and Paste keys could change the hidden drawing).
+- **3D models:** a failed autosave is retried and shown instead of losing the paint, and a model that cannot be saved stays open. Zooming far out no longer makes the model vanish, tiny models are no longer cut away, a two-finger orbit or pinch no longer paints, and models with collapsed texture coordinates are shown.
+- **Closing Eskiz waits for a save that is still running**, instead of cutting it off after 2 seconds.
+- **Crash recovery keeps layer masks**, also masks added since the last save.
+- Deleting or renaming a drawing right after leaving it no longer brings it back or restores the old name.
+- An adjustment, import or paste that finishes after you open another drawing is no longer added to that drawing.
+- A Transform is no longer cancelled by unrelated changes (such as a layer's opacity), and Flip, Convert and Crop wait until it is finished.
+- Moving a soft-edged selection no longer leaves a faint ring around it.
+- Paste (Ctrl or Cmd + V) inserts text while you type in a text layer.
+- Pasting a WebP picture works on Android, and a failed save to a chosen place no longer leaves a broken file behind.
+- Hostile or broken files: very large masked documents, brush sets with huge images and 3D models that point outside their folder are refused, and imported brushes keep their settings within the ranges the Studio allows.
+- A canvas larger than the graphics card can show is no longer a crash.
+
 ## [0.1.1] - 2026-10-24
 
 Bug fixes for 0.1.0, from a second review of the whole code base. Your drawings and settings carry over; install it the same way as before (see the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install)). The known issues of 0.1.0 still apply.
@@ -167,5 +187,6 @@ The full list of changes follows.
 - **MP4 export is not included.** It needs the OpenH264 codec, which these builds do not bundle. GIF, APNG and PNG sequence export work. Developers can build with `--features mp4`.
 - Some adjustment defaults and several 3D and Liquify details are approximations and may change.
 
+[0.1.2]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.1
 [0.1.0]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.0

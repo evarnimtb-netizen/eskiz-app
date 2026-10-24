@@ -8,7 +8,7 @@
 use crate::error::{Result, SelectError};
 use crate::geom::{rect_to_quad, Mat3, Point, Quad, Rect};
 use crate::geom::IRect;
-use crate::image::{over, premul8_from_straight, straight_from_premul8, Image, Rgba};
+use crate::image::{drop_over, premul8_from_straight, straight_from_premul8, Image, Rgba};
 use crate::mask::Mask;
 use crate::resample::{dest_region, map_point, par_rows, resample_bounded, resample_mask, Interp, Sampler};
 use crate::warp::{embed, Warp};
@@ -301,14 +301,15 @@ impl TransformSession {
         }
         let rendered = self.render();
         let mut out = layer.clone();
-        for (i, px) in out.pixels.iter_mut().enumerate() {
-            px[3] *= (1.0 - self.footprint.at(i)).clamp(0.0, 1.0);
-            if px[3] <= 0.0 {
-                *px = [0.0; 4];
+        for (i, (dst, src)) in out.pixels.iter_mut().zip(rendered.pixels.iter()).enumerate() {
+            let f = self.footprint.at(i).clamp(0.0, 1.0);
+            let hole = dst[3] * f;
+            let mut base = *dst;
+            base[3] *= 1.0 - f;
+            if base[3] <= 0.0 {
+                base = [0.0; 4];
             }
-        }
-        for (dst, src) in out.pixels.iter_mut().zip(rendered.pixels.iter()) {
-            *dst = over(*src, *dst);
+            *dst = drop_over(*src, base, hole);
         }
         Ok(out)
     }
@@ -367,11 +368,13 @@ impl TransformSession {
                         [0.0; 4]
                     };
                     let mut base = layer.map_or([0.0; 4], |l| straight_from_premul8([l[i * 4], l[i * 4 + 1], l[i * 4 + 2], l[i * 4 + 3]]));
-                    base[3] *= (1.0 - f).clamp(0.0, 1.0);
+                    let f = f.clamp(0.0, 1.0);
+                    let hole = base[3] * f;
+                    base[3] *= 1.0 - f;
                     if base[3] <= 0.0 {
                         base = [0.0; 4];
                     }
-                    *dst = premul8_from_straight(over(src, base));
+                    *dst = premul8_from_straight(drop_over(src, base, hole));
                 }
             }
         });

@@ -192,7 +192,13 @@ struct ActiveStroke {
     session: PaintSession,
     /// Committed dabs already given to the session.
     sent: usize,
+    /// App time the stroke began.
+    started: f64,
 }
+
+/// A second finger that lands this soon after the first makes the gesture a camera move: the
+/// stroke the first finger began is taken back.
+const TWO_FINGER_GRACE: f64 = 0.3;
 
 /// The lookup buffer and the view it was built for.
 struct LookupCache {
@@ -626,7 +632,10 @@ fn surface_point(sm: &SubMesh, t: usize, u: f32, v: f32) -> Option<(Vec3, Vec3)>
     let (e1, e2, d) = (uv[1] - uv[0], uv[2] - uv[0], q - uv[0]);
     let det = e1.x * e2.y - e2.x * e1.y;
     if det.abs() < 1e-12 {
-        return None;
+        // Collapsed UVs cannot place the point: shade the triangle's centre with its face
+        // normal rather than leave it out (a model with every UV at one point would show nothing).
+        let normal = (p[1] - p[0]).cross(p[2] - p[0]);
+        return Some(((p[0] + p[1] + p[2]) / 3.0, normal.normalize_or_zero()));
     }
     let b1 = (d.x * e2.y - e2.x * d.y) / det;
     let b2 = (e1.x * d.y - d.x * e1.y) / det;
@@ -725,7 +734,7 @@ pub(crate) fn paint_dabs(doc: &mut ModelDoc, lookup: &LookupBuffer, brush: Brush
 }
 
 /// Begin a stroke. The brush is scaled from points to lookup pixels.
-fn begin_stroke(three: &mut ThreeD, settings: &StrokeSettings, ppp: f32) {
+fn begin_stroke(three: &mut ThreeD, settings: &StrokeSettings, ppp: f32, now: f64) {
     let mut brush = settings.brush.clone();
     brush.size *= f64::from(ppp);
     let ps = PaintSettings {
@@ -738,6 +747,7 @@ fn begin_stroke(three: &mut ThreeD, settings: &StrokeSettings, ppp: f32) {
         stroke: Stroke::new(brush.clone(), StrokeOptions::default()),
         session: PaintSession::new(brush, opts, ps),
         sent: 0,
+        started: now,
     });
 }
 
@@ -849,10 +859,14 @@ impl EskizApp {
 
     /// Show a 3D document in the canvas area, in place of the 2D canvas.
     pub(crate) fn open_three_d(&mut self, doc: ModelDoc, banner: Option<String>) {
-        // A model already open is saved and closed first, which also gives back the drawing.
-        self.close_three_d();
+        // A model already open is saved and closed first, which also gives back the drawing. If
+        // it cannot be saved it stays open, and the new one is not opened.
+        if !self.close_three_d() {
+            return;
+        }
         self.commit_stroke("a 3D model opened");
         self.adjust_cancel();
+        self.liquify_cancel();
         self.exit_edit_mode();
         // The text tool works on the 2D canvas only: finish any typing before the view changes.
         self.end_text_edit();
@@ -867,23 +881,40 @@ impl EskizApp {
         self.three_d = Some(Box::new(three));
     }
 
+    /// While the 3D view is open the 2D drawing is hidden, and its tools must not edit it (their
+    /// undo would step the 3D history instead). Says so and returns true when the 3D view is open.
+    pub(crate) fn refuse_in_3d(&mut self) -> bool {
+        if self.three_d.is_none() {
+            return false;
+        }
+        self.show_toast("Close the 3D view to edit the drawing.", 2.0);
+        true
+    }
+
     /// Leave the 3D view: finish any stroke, wait for a running autosave, and save if changed.
-    pub(crate) fn close_three_d(&mut self) {
+    /// Returns false, and keeps the view open, when the document could not be saved: closing it
+    /// then would throw its paint away.
+    pub(crate) fn close_three_d(&mut self) -> bool {
         self.finish_three_d_stroke();
-        let Some(mut three) = self.three_d.take() else { return };
+        let Some(mut three) = self.three_d.take() else { return true };
+        if let Some(job) = three.saving.take() {
+            // A failed autosave has already cleared `dirty`: the strokes in it still need saving.
+            if !matches!(job.join(), Ok(Ok(()))) {
+                three.doc.dirty = true;
+            }
+        }
+        // Without a library nothing can be saved, now or later: the view closes as before.
+        if let (true, Some(lib)) = (three.doc.dirty, self.gal.library.clone()) {
+            if let Err(e) = save_model_doc(&lib, &three.doc) {
+                self.show_toast(format!("Could not save the 3D document: {e}. It stays open."), 5.0);
+                self.three_d = Some(three);
+                return false;
+            }
+        }
         if self.gal.current.is_none() {
             self.gal.current = three.canvas_doc.take();
         }
-        if let Some(job) = three.saving.take() {
-            let _ = job.join();
-        }
-        if three.doc.dirty {
-            if let Some(lib) = self.gal.library.clone() {
-                if let Err(e) = save_model_doc(&lib, &three.doc) {
-                    self.show_toast(format!("Could not save the 3D document: {e}"), 4.0);
-                }
-            }
-        }
+        true
     }
 
     /// Save the open 3D document now if it changed (app exit and periodic saves).
@@ -891,7 +922,9 @@ impl EskizApp {
         self.finish_three_d_stroke();
         let Some(three) = self.three_d.as_mut() else { return };
         if let Some(job) = three.saving.take() {
-            let _ = job.join();
+            if !matches!(job.join(), Ok(Ok(()))) {
+                three.doc.dirty = true;
+            }
         }
         if !three.doc.dirty {
             return;
@@ -1003,9 +1036,15 @@ impl EskizApp {
     fn autosave_three_d(&mut self, now: f64) {
         let Some(lib) = self.gal.library.clone() else { return };
         let Some(three) = self.three_d.as_mut() else { return };
+        let mut failed = None;
         if three.saving.as_ref().is_some_and(JoinHandle::is_finished) {
             if let Some(job) = three.saving.take() {
-                if !matches!(job.join(), Ok(Ok(()))) {
+                match job.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => failed = Some(e),
+                    Err(_) => failed = Some("the save stopped unexpectedly".to_owned()),
+                }
+                if failed.is_some() {
                     three.doc.dirty = true;
                 }
             }
@@ -1019,6 +1058,9 @@ impl EskizApp {
                 .name("eskiz-3d-save".into())
                 .spawn(move || save_model_doc(&lib, &snap).map(|_| ()))
                 .ok();
+        }
+        if let Some(e) = failed {
+            self.show_toast(format!("Could not save the 3D document: {e}"), 4.0);
         }
     }
 
@@ -1040,6 +1082,16 @@ impl EskizApp {
         // Read the stroke settings before the 3D document is borrowed.
         let stroke_settings = start.then(|| self.stroke_settings());
         let Some(three) = self.three_d.as_mut() else { return };
+
+        // On touch the first finger starts a stroke a frame before the second lands: a second
+        // finger soon after takes that stroke back, and the gesture moves the camera instead.
+        if two_fingers.is_some() && three.stroke.as_ref().is_some_and(|s| now - s.started < TWO_FINGER_GRACE) {
+            if let Some(active) = three.stroke.take() {
+                let changes = active.session.finish(&mut three.doc.model);
+                restore_texels(&mut three.doc.model, &changes, false);
+                three.view_dirty = true;
+            }
+        }
 
         // Gestures: orbit with two fingers or right-drag, pan with middle or space drag, and
         // zoom with pinch or scroll over the view. The camera does not move during a stroke.
@@ -1077,7 +1129,7 @@ impl EskizApp {
         let rebuilt = three.ensure_lookup(width, height);
 
         if let (Some(settings), Some(p)) = (stroke_settings, input.press_origin) {
-            begin_stroke(three, &settings, ppp);
+            begin_stroke(three, &settings, ppp, now);
             let (x, y) = to_lookup_px(p, vp, ppp);
             feed_stroke(three, x, y, now);
         } else if three.stroke.is_some() && input.primary_down {

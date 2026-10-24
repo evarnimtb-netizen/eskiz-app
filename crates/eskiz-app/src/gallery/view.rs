@@ -510,8 +510,17 @@ impl EskizApp {
         let Some(lib) = self.gal.library.clone() else {
             return;
         };
+        if !self.wait_for_saves() {
+            return;
+        }
         match lib.rename(id, &title) {
-            Ok(()) => self.gal.refresh(),
+            Ok(()) => {
+                // Later saves of the open drawing keep the new title.
+                if let Some(cur) = self.gal.current.as_mut().filter(|c| c.id.as_deref() == Some(id)) {
+                    cur.title = title.clone();
+                }
+                self.gal.refresh();
+            }
             Err(e) => self.show_toast(format!("Could not rename: {e}"), 3.0),
         }
     }

@@ -105,6 +105,10 @@ pub const MAX_TILE_SIDE: u32 = 4096;
 /// clear message instead of being killed by the OS.
 pub const MAX_DECODED_BYTES: u64 = 8 << 30;
 
+/// The most tip and grain image bytes a brush set may hold in memory while it is imported. Its
+/// entries pass the compression-ratio check one by one; this bounds their sum.
+pub const MAX_BRUSHSET_IMAGE_BYTES: u64 = 1 << 30;
+
 /// Most bytes of decoded brush-tip pixels one ABR import may hold. Counted while decoding, so a
 /// small file of repeat runs cannot expand past it. Photoshop packs are far smaller.
 pub const MAX_BRUSH_DECODED_BYTES: u64 = 1 << 30;

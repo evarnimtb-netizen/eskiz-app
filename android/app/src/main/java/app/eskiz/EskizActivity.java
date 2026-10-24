@@ -484,6 +484,10 @@ public class EskizActivity extends NativeActivity {
                 nativeCommitResult(commitReq, 2, "The place to save to is gone. Choose it again.");
                 return;
             }
+            // The create picker usually makes a new, empty document. If the copy fails, that
+            // document would stay behind as a broken file: it is removed (writeTo restores one
+            // that had content).
+            final long before = docSize(uri);
             try {
                 final long t0 = System.nanoTime();
                 writeTo(uri, new File(staged));
@@ -492,6 +496,9 @@ public class EskizActivity extends NativeActivity {
                 nativeCommitResult(commitReq, 0, name);
             } catch (IOException | RuntimeException e) {
                 Log.w(TAG, "saf: commit failed", e);
+                if (before == 0) {
+                    deleteQuietly(uri);
+                }
                 nativeCommitResult(commitReq, 2, String.valueOf(e.getMessage()));
             }
         });

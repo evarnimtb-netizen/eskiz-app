@@ -73,6 +73,20 @@ pub fn begin() {
     });
 }
 
+/// After the window is gone: let a save that is still running finish (up to [`SAVE_HARD_CAP`]
+/// after the close request), so returning from `main` does not cut it off half written.
+pub fn wait_for_saves() {
+    if saves_pending() == 0 {
+        return;
+    }
+    step("waiting for a save that is still running");
+    let start = STARTED.get().copied().unwrap_or_else(Instant::now);
+    while saves_pending() > 0 && start.elapsed() < SAVE_HARD_CAP {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    step(if saves_pending() == 0 { "the save finished" } else { "a save was still running at the time limit" });
+}
+
 /// Start the thread that calls `terminate` once `grace` has passed and `pending()` is zero, or
 /// once `hard_cap` has passed whatever is pending.
 pub fn spawn_deadline(grace: Duration, hard_cap: Duration, pending: fn() -> usize, terminate: impl FnOnce() + Send + 'static) {

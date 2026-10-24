@@ -404,7 +404,7 @@ impl EskizApp {
     /// Open the Crop & Resize sheet on the canvas. Refused while a stroke, an adjustment or a 3D
     /// view is open.
     pub(crate) fn open_crop(&mut self) {
-        if self.three_d.is_some() || self.adjust.is_some() || self.session.is_stroking() {
+        if self.three_d.is_some() || self.adjust.is_some() || self.transform.is_some() || self.session.is_stroking() {
             self.show_toast("Finish what you are doing first.", 2.0);
             return;
         }

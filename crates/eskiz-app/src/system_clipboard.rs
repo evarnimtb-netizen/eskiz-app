@@ -211,6 +211,8 @@ pub struct ClipJobs {
     read: Option<Receiver<Result<PathBuf, String>>>,
     /// The decoded, fitted pixels of a foreign image (premultiplied canvas-sized RGBA8).
     decode: Option<Receiver<Result<Vec<u8>, String>>>,
+    /// The drawing the foreign paste was started for (`Session::document_generation`).
+    doc: u64,
     memo: std::cell::Cell<Option<(f64, ClipState)>>,
 }
 
@@ -268,6 +270,7 @@ impl EskizApp {
             return true;
         }
         self.clips.read = Some(self.sysclip.read_image());
+        self.clips.doc = self.session.document_generation();
         self.show_toast("Pasting...", 10.0);
         true
     }
@@ -320,11 +323,15 @@ impl EskizApp {
                 Err(TryRecvError::Disconnected) => self.clips.read = None,
             }
         }
-        if let Some(rx) = self.clips.decode.as_ref() {
+        // A paste waits while the 3D view hides the drawing it is for.
+        if let Some(rx) = self.clips.decode.as_ref().filter(|_| self.three_d.is_none()) {
             match rx.try_recv() {
                 Ok(result) => {
                     self.clips.decode = None;
                     match result {
+                        Ok(_) if self.clips.doc != self.session.document_generation() => {
+                            self.show_toast("The paste was not added: another drawing was opened meanwhile.", 3.5);
+                        }
                         Ok(pixels) => self.finish_foreign_paste(pixels),
                         Err(e) => self.show_toast(format!("Could not paste: {e}"), 4.0),
                     }

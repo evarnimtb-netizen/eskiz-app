@@ -437,3 +437,14 @@ fn banners_for_curves_gradients_and_handles_render() {
         h.app.adjust_cancel();
     }
 }
+
+/// Curves has no sliders: a drag on the canvas and a parameter pick change nothing and must not panic.
+#[test]
+fn a_drag_on_the_canvas_in_curves_does_not_panic() {
+    let mut h = headless(false, W, H);
+    assert!(h.app.enter_adjustment(AdjustKind::Curves));
+    h.app.adjust_drag_by(40.0);
+    h.app.adjust_select_param(3);
+    h.step();
+    assert!(h.app.adjust.is_some(), "Curves stays open");
+}

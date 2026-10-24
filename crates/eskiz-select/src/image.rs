@@ -146,6 +146,28 @@ pub fn over(src: Rgba, dst: Rgba) -> Rgba {
     ]
 }
 
+/// Drop moved content `src` onto `base`, the layer with the content's footprint taken out.
+/// `hole` is the coverage the footprint took out of this pixel: content up to that much fills
+/// the hole side by side with what is left, and only the rest goes over it. A transform that
+/// moves nothing gives the layer back exactly, where plain [`over`] would leave a translucent
+/// ring along a soft selection edge. With no hole it is [`over`]. Straight alpha in and out.
+pub fn drop_over(src: Rgba, base: Rgba, hole: f32) -> Rgba {
+    let hole = hole.clamp(0.0, 1.0);
+    // Pixel area: the content puts up to `hole` of its coverage in the hole, the rest anywhere
+    // else, where it covers the remnant only by chance (as in `over`).
+    let fill = src[3].min(hole);
+    let rest = src[3] - fill;
+    let room = 1.0 - hole;
+    let overlap = if room > 0.0 { (rest * base[3] / room).min(base[3]) } else { 0.0 };
+    let shown = base[3] - overlap;
+    let a_out = (src[3] + shown).min(1.0);
+    if a_out <= 0.0 {
+        return [0.0; 4];
+    }
+    let c = |k: usize| ((src[k] * src[3] + base[k] * shown) / a_out).clamp(0.0, 1.0);
+    [c(0), c(1), c(2), a_out]
+}
+
 #[cfg(test)]
 mod convert_tests {
     use super::*;

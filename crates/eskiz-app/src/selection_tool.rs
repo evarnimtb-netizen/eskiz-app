@@ -237,8 +237,9 @@ pub struct TransformTool {
     /// The layer with the footprint cleared (8-bit), under the moved content in the preview.
     /// Built on the first preview; the footprint does not change during a session.
     base: Option<Layer>,
-    /// The session's edit count at the start: the snapshot is stale once it changes.
-    edits: u64,
+    /// The drawing it was started on (`Session::document_generation`): the snapshot is stale in
+    /// any other. Flip, Convert and Crop wait until the transform is finished.
+    doc: u64,
 }
 
 /// Longest side the live preview of a transform is rendered at; larger canvases preview from a
@@ -324,7 +325,7 @@ impl TransformTool {
             drag: None,
             dirty: true,
             base: None,
-            edits: session.edits(),
+            doc: session.document_generation(),
         })
     }
 
@@ -389,6 +390,9 @@ impl EskizApp {
 
     /// The top-bar Selection button.
     pub(crate) fn toggle_select_mode(&mut self) {
+        if self.refuse_in_3d() {
+            return;
+        }
         if self.transform.is_some() {
             self.show_toast("Finish or cancel the transform first.", 2.0);
         } else if self.edit_mode == EditMode::Select {
@@ -401,6 +405,9 @@ impl EskizApp {
 
     /// Starts a transform of the active layer (acting on the selection if there is one).
     pub(crate) fn begin_transform(&mut self) {
+        if self.refuse_in_3d() {
+            return;
+        }
         if self.transform.is_some() {
             return;
         }
@@ -441,7 +448,7 @@ impl EskizApp {
         let Some(t) = self.transform.as_ref() else {
             return;
         };
-        if self.session.edits() != t.edits || self.session.doc.layer(t.layer).is_none() {
+        if self.session.document_generation() != t.doc || self.session.doc.layer(t.layer).is_none() {
             self.cancel_transform();
             self.show_toast("The transform was cancelled because the drawing changed.", 2.5);
         }
@@ -474,6 +481,9 @@ impl EskizApp {
 
     /// Runs one clipboard command on the active layer and the selection.
     pub(crate) fn clip_action(&mut self, action: ClipAction) {
+        if self.refuse_in_3d() {
+            return;
+        }
         if self.transform.is_some() {
             self.show_toast("Finish or cancel the transform first.", 2.0);
             return;

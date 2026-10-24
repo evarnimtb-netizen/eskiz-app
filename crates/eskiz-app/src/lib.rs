@@ -395,7 +395,10 @@ fn open_window(start: impl FnOnce() -> Result<(), String>) -> Result<(), String>
         }
     }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(start)) {
-        Ok(result) => result,
+        Ok(result) => {
+            exit::wait_for_saves();
+            result
+        }
         Err(payload) if renderer::window_created() => {
             // The panic hook has written the report. Say so, then let the process end.
             let summary = startup::last_panic_summary().unwrap_or_else(|| "unknown panic".to_owned());

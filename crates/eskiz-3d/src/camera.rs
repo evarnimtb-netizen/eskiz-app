@@ -68,9 +68,21 @@ impl OrbitCamera {
         Mat4::look_at_rh(self.eye(), self.target, Vec3::Y)
     }
 
-    /// Right-handed perspective projection with depth in 0..1.
+    /// Right-handed perspective projection with depth in 0..1, between [`Self::clip_planes`].
     pub fn projection(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far)
+        let (near, far) = self.clip_planes();
+        Mat4::perspective_rh(self.fov_y, aspect, near, far)
+    }
+
+    /// Near and far planes for the framed model at the current zoom. The far plane follows the
+    /// distance, so zooming out never puts the model behind it; the near plane scales with the
+    /// model, so a tiny model is not clipped away and a huge one keeps its depth precision.
+    /// `near` and `far` are lower and upper bounds on top of that.
+    pub fn clip_planes(&self) -> (f32, f32) {
+        let radius = (self.base_distance * (self.fov_y * 0.5).sin() / 1.1).max(1e-6);
+        let near = (radius * 1e-3).min(self.near);
+        let far = self.far.max((self.distance + radius) * 4.0);
+        (near, far)
     }
 
     /// `projection * view`.

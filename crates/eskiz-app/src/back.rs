@@ -192,7 +192,9 @@ impl EskizApp {
                     self.exit_edit_mode();
                 }
             }
-            BackStep::ThreeD => self.close_three_d(),
+            BackStep::ThreeD => {
+                self.close_three_d();
+            }
             BackStep::Canvas => self.open_gallery(ctx),
             BackStep::Opening => {}
             BackStep::Gallery(g) => self.gal.back_close(g),

@@ -255,3 +255,20 @@ fn huge_default_texture_size_is_capped() {
     let r = load_obj_str(&cube_obj(UvMode::Atlas, false), None, &o).unwrap();
     assert!(r.model.texture_sets[0].width <= 4096);
 }
+
+/// An OBJ's material library and textures must be files next to it: a path that leaves the
+/// folder (or names a device) is skipped, and the model still loads.
+#[test]
+fn obj_side_files_outside_the_folder_are_not_read() {
+    let dir = std::env::temp_dir().join(format!("eskiz-3d-side-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let obj = "mtllib /dev/zero\nmtllib ../outside.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n";
+    let path = dir.join("tri.obj");
+    std::fs::write(&path, obj).unwrap();
+    let start = std::time::Instant::now();
+    let loaded = eskiz_3d::load_obj(&path, &opts());
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "the import did not read an endless file");
+    assert!(loaded.is_ok(), "{:?}", loaded.err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
