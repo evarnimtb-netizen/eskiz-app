@@ -665,6 +665,9 @@ fn shade_hit(model: &Model, hit: &Hit, s: &ViewSettings, light: &Light, eye: Vec
         return None;
     }
     let (position, normal) = surface_point(sm, t, hit.u, hit.v)?;
+    // Back faces are drawn too (the exporters write `doubleSided`): light them from the side
+    // that faces the viewer, or a lamp on the viewer's side leaves them black.
+    let normal = if normal.dot(eye - position) < 0.0 { -normal } else { normal };
     let grey = |g: f32| {
         let b = to_u8(g);
         [b, b, b]
@@ -953,9 +956,10 @@ impl EskizApp {
         let Some(three) = self.three_d.as_mut() else { return };
         let Some(mut active) = three.stroke.take() else { return };
         let end = active.stroke.finish();
-        let rest: Vec<Dab> = end.dabs.get(active.sent..).unwrap_or(&[]).to_vec();
+        // `finish` redraws the tail with the end taper: the dabs sent so far are replaced by the
+        // final list, not just extended by the ones after them.
         if let Some(lookup) = three.lookup.as_ref() {
-            active.session.add_dabs(&three.doc.model, &lookup.buf, &rest);
+            active.session.replace_dabs(&three.doc.model, &lookup.buf, &end.dabs);
         }
         let changes = active.session.finish(&mut three.doc.model);
         three.push_stroke(changes);

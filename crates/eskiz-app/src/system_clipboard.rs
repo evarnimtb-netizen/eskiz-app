@@ -207,6 +207,9 @@ pub fn write_clip_png(dir: &Path, serial: u64, clip: &Clip) -> Result<PathBuf, S
 // ------------------------------------------------------------------------------------------------
 // The app side
 
+/// How long a foreign paste may wait for the other app's picture.
+const PASTE_TIMEOUT_SECS: f64 = 20.0;
+
 /// Copies in flight and the paste of a foreign image.
 #[derive(Default)]
 pub struct ClipJobs {
@@ -220,6 +223,8 @@ pub struct ClipJobs {
     decode: Option<Receiver<Result<Vec<u8>, String>>>,
     /// The drawing the foreign paste was started for (`Session::document_generation`).
     doc: u64,
+    /// When the foreign paste started (app time): a provider that never answers is given up.
+    since: f64,
     memo: std::cell::Cell<Option<(f64, ClipState)>>,
 }
 
@@ -278,6 +283,7 @@ impl EskizApp {
         }
         self.clips.read = Some(self.sysclip.read_image());
         self.clips.doc = self.session.document_generation();
+        self.clips.since = self.now;
         self.show_toast("Pasting...", 10.0);
         true
     }
@@ -325,6 +331,12 @@ impl EskizApp {
                 Ok(Err(e)) => {
                     self.clips.read = None;
                     self.show_toast(format!("Could not paste: {e}"), 4.0);
+                }
+                Err(TryRecvError::Empty) if self.now - self.clips.since > PASTE_TIMEOUT_SECS => {
+                    // A content provider waiting for the network (or never answering): give up
+                    // rather than show "Pasting..." for ever.
+                    self.clips.read = None;
+                    self.show_toast("The other app did not hand over the picture. Try again.", 3.5);
                 }
                 Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
                 Err(TryRecvError::Disconnected) => {

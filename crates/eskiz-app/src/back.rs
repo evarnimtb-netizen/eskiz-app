@@ -28,6 +28,9 @@ pub enum BackStep {
     /// A sheet over the canvas (Gesture controls, About, shortcuts, copy menu), the Crop &
     /// Resize sheet, Canvas information or the User guide.
     Sheet,
+    /// A floating window with a close button: the guide editor, Frames settings, the timelapse
+    /// replay, the Reference window or the 3D "could not open" message.
+    Window,
     /// An open popover.
     Popover,
     /// Brush Studio.
@@ -62,6 +65,7 @@ impl BackStep {
             Self::TextEdit => "text",
             Self::LayerInner => "layers",
             Self::Sheet => "sheet",
+            Self::Window => "window",
             Self::Popover => "popover",
             Self::Studio => "studio",
             Self::Edit => "edit",
@@ -121,6 +125,11 @@ impl EskizApp {
         if self.tour.step().is_some() {
             return Some(BackStep::Tour);
         }
+        self.back_step_below_tour()
+    }
+
+    /// What Back would close if the welcome tour were not running.
+    pub fn back_step_below_tour(&self) -> Option<BackStep> {
         match &self.gal.screen {
             Screen::Opening(_) => return Some(BackStep::Opening),
             Screen::Gallery => return self.gal.back_step().map(BackStep::Gallery),
@@ -134,6 +143,14 @@ impl EskizApp {
         }
         if self.sheet.is_some() || self.crop.is_some() || self.canvas_info_open || self.guide.open {
             return Some(BackStep::Sheet);
+        }
+        if self.guides.editor_open
+            || self.anim.settings_open
+            || self.timelapse.replay.is_some()
+            || self.model_jobs.error.is_some()
+            || self.reference.open
+        {
+            return Some(BackStep::Window);
         }
         if self.popovers.is_open() {
             return Some(BackStep::Popover);
@@ -177,6 +194,19 @@ impl EskizApp {
                     self.canvas_info_open = false;
                 } else {
                     self.guide.open = false;
+                }
+            }
+            BackStep::Window => {
+                if self.model_jobs.error.is_some() {
+                    self.model_jobs.error = None;
+                } else if self.guides.editor_open {
+                    self.guides.editor_open = false;
+                } else if self.anim.settings_open {
+                    self.anim.settings_open = false;
+                } else if self.timelapse.replay.is_some() {
+                    self.timelapse.replay = None;
+                } else {
+                    self.reference.open = false;
                 }
             }
             BackStep::Popover => self.popovers.close(),

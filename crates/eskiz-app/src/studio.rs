@@ -442,6 +442,7 @@ impl EskizApp {
             st.name = st.saved_name.clone();
             st.rev += 1;
             st.props_edited = false;
+            st.confirm_delete = false;
             st.status = None;
         }
     }
@@ -491,8 +492,14 @@ impl EskizApp {
             }
         };
         self.previews.invalidate(&id);
+        // A new entry may have been numbered ("Name 2") so the My Brushes rows differ.
+        let name = self.bank.source(&id).map_or(name, |ib| ib.name.clone());
         let st = self.studio.as_mut()?;
-        let (tool, props) = (st.tool, st.props_edited);
+        // Size or Opacity count as edited only if they differ now: moved and put back is no edit.
+        let differs = (st.working.brush.size - st.saved.brush.size).abs() > 1e-9
+            || (st.working.brush.opacity - st.saved.brush.opacity).abs() > 1e-9;
+        let (tool, props) = (st.tool, st.props_edited && differs);
+        st.confirm_delete = false;
         st.target = id.clone();
         st.name = name.clone();
         st.saved = st.working.clone();

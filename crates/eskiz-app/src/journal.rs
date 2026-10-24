@@ -451,11 +451,12 @@ pub fn scan(recovery: &Path, library: &Library) -> Vec<Pending> {
         };
         let saved_ms = m["saved_at_ms"].as_u64().unwrap_or(0);
         let saved_at = UNIX_EPOCH + Duration::from_millis(saved_ms);
-        let package_ms = library
-            .get(&id)
-            .and_then(|e| e.modified.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64);
-        if package_ms.is_some_and(|p| saved_ms <= p) {
+        // Both times come from the file system (the manifest's own modification time), so a
+        // computer clock that differs from it cannot make a newer journal look stale.
+        let ms = |t: SystemTime| t.duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis() as u64);
+        let journal_ms = fs::metadata(dir.path().join(MANIFEST)).and_then(|m| m.modified()).ok().and_then(ms).unwrap_or(saved_ms);
+        let package_ms = library.get(&id).and_then(|e| ms(e.modified));
+        if package_ms.is_some_and(|p| journal_ms <= p) {
             let _ = remove(recovery, &id);
             continue;
         }

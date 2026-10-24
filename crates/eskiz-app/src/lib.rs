@@ -193,7 +193,7 @@ USAGE:
                                         ESKIZ_TABLET=off. Mouse and touch still work
     eskiz --open FILE --export OUT.png  export a document to PNG without a window
     eskiz --version                     print the version
-    eskiz --selftest                    paint, undo and redo headlessly; writes selftest.png
+    eskiz --selftest                    paint, undo and redo headlessly; writes selftest.png to the temp dir
                                         and selftest.procreate to the temp folder
     eskiz --icons                       open a window showing every icon, for review
     eskiz --diagnose [--window]         report GPU backends, DPI, data folders, pen and MP4 support

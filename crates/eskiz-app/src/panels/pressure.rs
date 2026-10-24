@@ -51,15 +51,30 @@ impl EskizApp {
 
         // Drag handles first, so the curve below is drawn with this frame's points.
         let points = curve.points();
-        for i in 0..2 {
+        // When the hit boxes overlap, the handle nearer the pointer is registered last, so it
+        // wins: either point can be grabbed however close together they are.
+        let hover = ui.input(|i| i.pointer.hover_pos());
+        let nearer_first = hover.is_some_and(|h| {
+            h.distance(to_screen(rect, points[1])) < h.distance(to_screen(rect, points[2]))
+        });
+        let order = if nearer_first { [1, 0] } else { [0, 1] };
+        for i in order {
             let centre = to_screen(rect, points[i + 1]);
             let hit = Rect::from_center_size(centre, Vec2::splat(HANDLE * 4.0));
-            let resp = ui
-                .interact(hit, ui.id().with(("pressure-point", i)), Sense::click_and_drag())
-                .on_hover_cursor(egui::CursorIcon::Grab);
+            let id = ui.id().with(("pressure-point", i));
+            let resp = ui.interact(hit, id, Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::Grab);
+            // The point keeps its offset from the pointer, so grabbing a handle by its edge
+            // does not make it jump.
+            if resp.drag_started() {
+                // A drag starts once the pointer has moved: measure from where it was pressed.
+                if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+                    ui.data_mut(|d| d.insert_temp(id, centre - p));
+                }
+            }
             if resp.dragged() {
                 if let Some(p) = resp.interact_pointer_pos() {
-                    let c = from_screen(rect, p);
+                    let grab = ui.data(|d| d.get_temp::<Vec2>(id)).unwrap_or_default();
+                    let c = from_screen(rect, p + grab);
                     curve.set_point(i, c[0], c[1]);
                 }
             }
@@ -189,5 +204,25 @@ mod tests {
         assert!(!c.is_identity());
         assert!((c.points()[1][0] - 0.2).abs() < 0.03 && (c.points()[1][1] - 0.6).abs() < 0.03, "{c:?}");
         h.render().save_png(&snapshot_dir().join("pressure_editor_dragged.png")).unwrap();
+    }
+
+    #[test]
+    fn a_handle_grabbed_by_its_edge_does_not_jump() {
+        let mut h = open_prefs(false, PressureCurve::default());
+        let rect = h.app.pen.editor_rect.expect("editor was drawn");
+        let before = h.app.prefs.pressure_curve.points()[1];
+        let start = to_screen(rect, before) + Vec2::new(8.0, 8.0);
+        h.move_to(start);
+        h.press(start, true);
+        h.step();
+        let target = start + Vec2::new(0.0, -20.0);
+        h.move_to(target);
+        h.step();
+        h.press(target, false);
+        h.step();
+        let after = h.app.prefs.pressure_curve.points()[1];
+        // Moved straight up by 20 pt: x is unchanged, not pulled 8 pt towards the pointer.
+        assert!((after[0] - before[0]).abs() < 1e-3, "{before:?} -> {after:?}");
+        assert!((after[1] - before[1] - 20.0 / rect.height()).abs() < 0.01, "{before:?} -> {after:?}");
     }
 }

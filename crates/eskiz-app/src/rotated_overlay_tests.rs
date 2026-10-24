@@ -350,6 +350,8 @@ fn edit_shape_handles_follow_a_rotated_view() {
             drag: None,
             edits: h.app.session.edits(),
             previewing: false,
+            layer: h.app.active,
+            tool: h.app.tool,
         });
         h.advance(0.1);
         // Handle 3: the bottom-right corner (500, 360). Drag it to (560, 400).

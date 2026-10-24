@@ -193,8 +193,8 @@ impl EskizApp {
             // Draw the rest of the previews over the next frames.
             ui.ctx().request_repaint();
         }
-        if open_studio {
-            self.open_studio_for_library_tool();
+        if open_studio && !self.open_studio_for_library_tool() {
+            self.show_toast("This brush could not be loaded, so it cannot be edited", 3.0);
         }
     }
 
@@ -209,24 +209,31 @@ impl EskizApp {
             }
         };
         let (mut first, mut added, mut failed) = (None, 0usize, notes.len());
+        // The first reason is shown: "2 skipped" alone does not say what to fix.
+        let mut reason = notes.first().cloned();
         for ib in &list {
             match self.bank.add_imported(ib) {
                 Ok(id) => {
                     first = first.or(Some(id));
                     added += 1;
                 }
-                Err(_) => failed += 1,
+                Err(e) => {
+                    failed += 1;
+                    reason = reason.or(Some(format!("{}: {e}", ib.name)));
+                }
             }
         }
         let Some(id) = first else {
-            self.show_toast("No brush could be imported from that file.", 3.0);
+            let why = reason.map_or_else(String::new, |r| format!(" ({r})"));
+            self.show_toast(format!("No brush could be imported from that file{why}."), 4.0);
             return false;
         };
         self.tool_brushes[self.library_tool.index()] = id;
         self.brush_ui.adding = false;
         self.brush_ui.path.clear();
         let text = if failed > 0 {
-            format!("Imported {added} brush(es), {failed} skipped")
+            let why = reason.map_or_else(String::new, |r| format!(" (for example {r})"));
+            format!("Imported {added} brush(es), {failed} skipped{why}")
         } else {
             format!("Imported {added} brush(es)")
         };
@@ -236,10 +243,24 @@ impl EskizApp {
 
     /// Restores each tool's brush from prefs text (see [`encode_choice`]).
     pub(crate) fn set_brush_choice(&mut self, text: &str) {
+        let mut missing = 0;
         for (slot, id) in self.tool_brushes.iter_mut().zip(decode_choice(text)) {
-            if let Some(id) = id {
-                *slot = id;
+            match id {
+                // A brush whose file is gone or cannot be read: the tool keeps its default brush.
+                Some(id) if self.bank.find(&id).is_none() => missing += 1,
+                Some(id) => *slot = id,
+                None => {}
             }
+        }
+        let skipped = self.bank.skipped;
+        if missing > 0 || skipped > 0 {
+            let what = if skipped > 0 {
+                format!("{skipped} saved brush file(s) could not be read and are not listed")
+            } else {
+                "A chosen brush could not be found".to_owned()
+            };
+            let tail = if missing > 0 { "; tools that used one are back on their default brush" } else { "" };
+            self.show_toast(format!("{what}{tail}."), 4.0);
         }
     }
 

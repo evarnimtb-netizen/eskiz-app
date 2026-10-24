@@ -658,3 +658,26 @@ fn prefs_remember_a_my_brushes_choice() {
     h.app.set_brush_choice(&text);
     assert_eq!(h.app.tool_brushes[0], id);
 }
+
+#[test]
+fn saving_a_built_in_brush_twice_numbers_the_second_copy() {
+    let mut h = headless(false);
+    open_studio(&mut h);
+    let source = h.app.studio.as_ref().unwrap().target.clone();
+    let first = h.app.studio_save().unwrap();
+    h.app.studio.as_mut().unwrap().target = source;
+    let second = h.app.studio_save().unwrap();
+    assert_ne!(first, second);
+    let set = h.app.bank.sets.iter().find(|s| s.name == MY_BRUSHES_SET).unwrap();
+    let names: Vec<String> = set.brushes.iter().map(|b| b.name.clone()).collect();
+    assert_eq!(names.len(), 2);
+    assert_eq!(names[1], format!("{} 2", names[0]), "the rows can be told apart");
+    assert_eq!(h.app.studio.as_ref().unwrap().name, names[1], "the Studio shows the new name");
+}
+
+#[test]
+fn a_missing_my_brushes_choice_falls_back_to_the_default() {
+    let mut h = headless(false);
+    h.app.set_brush_choice("usr:Gone|lib:no.such.brush|");
+    assert_eq!(h.app.tool_brushes[0], crate::brush_library::default_brush(0), "a brush that is not in the bank is not kept");
+}

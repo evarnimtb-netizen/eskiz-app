@@ -25,8 +25,8 @@ android {
         applicationId = "app.eskiz"
         minSdk = 29
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.1.3"
+        versionCode = 5
+        versionName = "0.1.4"
         ndk { abiFilters += abis }
     }
     // Release signing. The real upload key belongs to the maintainer and is never in this

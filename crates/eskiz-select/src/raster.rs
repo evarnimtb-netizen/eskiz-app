@@ -37,14 +37,16 @@ pub fn ellipse(width: usize, height: usize, bbox: Rect) -> Mask {
         return mask;
     }
     let (cx, cy) = (bbox.x0 + rx, bbox.y0 + ry);
-    let r_min = rx.min(ry);
     for y in 0..height {
         for x in 0..width {
             let dx = (x as f32 + 0.5 - cx) / rx;
             let dy = (y as f32 + 0.5 - cy) / ry;
             let radial = (dx * dx + dy * dy).sqrt();
-            // Approximate signed distance to the edge in pixels, then a one-pixel ramp.
-            let signed_px = (1.0 - radial) * r_min;
+            // Signed distance to the edge in pixels: (1 - radial) over how fast `radial` changes
+            // per pixel here. Along the long axis it changes more slowly, so dividing by the
+            // short radius alone gave a ramp several pixels wide at the tips.
+            let grad = ((dx / rx).powi(2) + (dy / ry).powi(2)).sqrt() / radial.max(1e-6);
+            let signed_px = (1.0 - radial) / grad.max(1e-6);
             mask.data[y * width + x] = (signed_px + 0.5).clamp(0.0, 1.0);
         }
     }

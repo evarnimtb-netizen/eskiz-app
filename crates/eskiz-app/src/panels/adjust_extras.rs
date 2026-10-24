@@ -131,9 +131,17 @@ pub(crate) fn gradient_ui(ui: &mut egui::Ui, pal: &Palette, adj: &Adjustment) ->
             changed = true;
         }
     }
+    if changed {
+        // Sorting can move the selected stop past a neighbour: keep it selected, so the slider
+        // being dragged goes on editing the same stop.
+        let selected = stops.stops.get(sel).copied();
+        stops.stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some(s) = selected {
+            sel = stops.stops.iter().position(|t| *t == s).unwrap_or(sel);
+        }
+    }
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
     if changed {
-        stops.stops.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut next = adj.clone();
         next.set_gradient_stops(stops);
         return Some(next);

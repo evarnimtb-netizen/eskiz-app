@@ -16,7 +16,7 @@ On Windows and Linux, read **Cmd** as **Ctrl**.
 | Two-finger hold | Repeat undo |
 | Three-finger scrub | Clear layer |
 | Three-finger swipe | Copy menu |
-| Four-finger tap | Full screen |
+| Four-finger tap | Hide or show the interface |
 | Hold 0.4 s | Eyedropper |
 | Hold 0.65 s at a stroke's end | Hold to Shape |
 | Two fingers | Pan, zoom and rotate the view |
@@ -36,6 +36,7 @@ On Windows and Linux, read **Cmd** as **Ctrl**.
 | L | Layers panel |
 | [  ] | Smaller, larger brush |
 | F | Hide or show the interface |
+| F11 | Full screen window |
 | Esc | Close panel, cancel adjustment |
 | Enter | Apply adjustment or transform |
 
@@ -46,7 +47,7 @@ On Windows and Linux, read **Cmd** as **Ctrl**.
 | Space + drag | Pan |
 | R + drag sideways | Rotate the view with a pen or mouse; it snaps at 0, 90, 180 and 270 degrees |
 | Trackpad twist | Rotate the view (macOS trackpad rotate gesture) |
-| Wheel, Ctrl + wheel | Pan; with Ctrl, zoom |
+| Wheel, Shift + wheel, Ctrl or Alt + wheel | Pan up and down; with Shift, pan sideways; with Ctrl or Alt, zoom |
 | Alt + click, pen button | Pick a color |
 | Hold still at a stroke's end | Hold to Shape |
 

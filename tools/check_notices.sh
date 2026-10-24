@@ -74,8 +74,11 @@ done
 # AppDir and AppImage: usr/share/doc/eskiz/.
 for d in "$DIST"/Eskiz.AppDir; do [ -d "$d" ] || continue; check_dir "$d" "$d/usr/share/doc/eskiz"; done
 for a in "$DIST"/Eskiz-*.AppImage; do
+    [ -e "$a" ] || continue
     x="$TMP/appimage"; rm -rf "$x"; mkdir -p "$x"
-    if (cd "$x" && "$OLDPWD/$a" --appimage-extract 'usr/share/doc/eskiz/*' >/dev/null 2>&1); then
+    # An absolute path, whether DIST was given absolute or relative.
+    case "$a" in /*) abs="$a" ;; *) abs="$PWD/$a" ;; esac
+    if (cd "$x" && "$abs" --appimage-extract 'usr/share/doc/eskiz/*' >/dev/null 2>&1); then
         check_dir "$a" "$x/squashfs-root/usr/share/doc/eskiz"
     else bad "$a" "cannot extract (not executable here?)"; fi
 done

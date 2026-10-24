@@ -198,10 +198,14 @@ fn tinted_layer(list: &FrameList, skin: &OnionSkin) -> Layer {
 /// Union alpha of the items in frame `index`, per pixel, in 0 to 1.
 ///
 /// The union `a = as + ab (1 - as)` does not depend on the blend mode, so it is exact for every mode.
+/// Clipped items on a base in the frame are left out: they show only inside the base's alpha, so
+/// they add nothing to the frame's coverage. A clipped item that starts its frame (nothing to
+/// clip to) counts.
 fn frame_alpha(list: &FrameList, index: usize) -> Vec<f64> {
     let (width, height) = list.size();
     let mut acc = vec![0.0_f64; width * height];
-    for item in list.frame_items(index) {
+    let items = list.frame_items(index).into_iter().enumerate();
+    for (_, item) in items.filter(|(k, i)| *k == 0 || !i.clipped) {
         let opacity = item.layer.opacity.clamp(0.0, 1.0);
         let rgba = item.layer.to_rgba();
         for (p, a) in acc.iter_mut().enumerate() {

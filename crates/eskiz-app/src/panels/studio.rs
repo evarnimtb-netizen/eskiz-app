@@ -75,8 +75,9 @@ impl EskizApp {
         };
         let pal = self.pal;
         let screen = ctx.content_rect();
-        let w = (screen.width() - 32.0).clamp(560.0, 980.0);
-        let h = (screen.height() - 56.0).clamp(380.0, 680.0);
+        // Never larger than the screen: on a phone the minimum would push the sheet off it.
+        let w = (screen.width() - 32.0).clamp(560.0, 980.0).min(screen.width() - 8.0).max(1.0);
+        let h = (screen.height() - 56.0).clamp(380.0, 680.0).min(screen.height() - 8.0).max(1.0);
         let backdrop = Color32::from_black_alpha(if pal.light { 96 } else { 150 });
         let frame = Frame::new()
             .fill(pal.panel)

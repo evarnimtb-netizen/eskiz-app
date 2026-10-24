@@ -61,7 +61,7 @@ fn run_stroke(session: &mut Session, layer: usize, settings: &StrokeSettings, pt
 }
 
 /// Paint three strokes, undo and redo them, then write `selftest.png` and `selftest.procreate` to
-/// the temp dir. The `.procreate` file is a ready-made document for smoke tests that open the
+/// `eskiz-selftest-<pid>` in the temp dir (the report names both paths). The `.procreate` file is a ready-made document for smoke tests that open the
 /// window on a canvas (`packaging/windows/smoke.ps1`).
 pub fn run() -> Result<String, String> {
     let mut session = Session::new(Document::new(WIDTH, HEIGHT));
@@ -124,12 +124,16 @@ pub fn run() -> Result<String, String> {
         return Err("single redo did not restore the painted canvas".into());
     }
 
-    let out = std::env::temp_dir().join("selftest.png");
+    // One folder per process: two runs at once (CI) or another user's leftovers on a shared
+    // temp folder do not collide.
+    let dir = std::env::temp_dir().join(format!("eskiz-selftest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let out = dir.join("selftest.png");
     write_png(&out, WIDTH, HEIGHT, &painted)?;
     let sample = crate::export::export_with(
         &session.doc,
         crate::export::ExportFormat::Procreate,
-        &std::env::temp_dir().join("selftest"),
+        &dir.join("selftest"),
         &crate::export::ExportSettings::default(),
     )?;
     if checksum(&Session::new(open_procreate(&sample)?).flatten()) != painted_sum {

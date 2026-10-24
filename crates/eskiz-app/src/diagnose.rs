@@ -37,6 +37,23 @@ pub fn guarded<T>(probe: impl FnOnce() -> Probe<T>) -> Probe<T> {
     }
 }
 
+/// How long one graphics probe may take before the report says it hung.
+const PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// [`guarded`] on a thread of its own, given up after `budget`: a driver that hangs while it is
+/// probed gives a row that says so, and the rest of the report is still written.
+fn guarded_within<T: Send + 'static>(budget: std::time::Duration, probe: impl FnOnce() -> Probe<T> + Send + 'static) -> Probe<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("eskiz-diagnose-probe".into()).spawn(move || {
+        let _ = tx.send(guarded(probe));
+    });
+    if let Err(e) = spawned {
+        return Err(format!("could not start the probe: {e}"));
+    }
+    rx.recv_timeout(budget)
+        .unwrap_or_else(|_| Err(format!("no answer within {} seconds (the graphics driver may hang here)", budget.as_secs())))
+}
+
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
@@ -243,10 +260,10 @@ fn collect_gpu() -> GpuInfo {
     .into_iter()
     .map(|(name, flag)| BackendResult {
         name,
-        adapters: guarded(|| Ok(eskiz_gpu::probe_adapters(flag))),
+        adapters: guarded_within(PROBE_BUDGET, move || Ok(eskiz_gpu::probe_adapters(flag))),
     })
     .collect();
-    let picked = guarded(|| {
+    let picked = guarded_within(PROBE_BUDGET, || {
         let ctx = GpuContext::new().map_err(|e| e.to_string())?;
         Ok(PickedGpu {
             description: ctx.describe(),
@@ -259,7 +276,8 @@ fn collect_gpu() -> GpuInfo {
 
 fn collect_dirs() -> Vec<DirInfo> {
     let library = crate::storage::Library::default_location();
-    let lib_set = std::env::var_os(crate::storage::LIBRARY_ENV).is_some_and(|v| !v.is_empty());
+    // The same lookup as the library path itself, which also honours the old EASEL_ name.
+    let lib_set = crate::compat::env_os(crate::storage::LIBRARY_ENV).is_some_and(|v| !v.is_empty());
     let set = |name: &str| crate::compat::env_os(name).is_some_and(|v| !v.is_empty());
     let mut dirs = vec![
         dir_info("Library", library.root().to_owned(), Some((crate::storage::LIBRARY_ENV, lib_set))),
@@ -328,7 +346,7 @@ fn dialog_support() -> String {
     let mut text = format!("built in, `rfd` backend: {backend}");
     if cfg!(all(unix, not(target_os = "macos"))) {
         let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some();
-        let _ = write!(text, "; session bus address {}", if bus { "set" } else { "NOT set (a pick will answer 'unavailable')" });
+        let _ = write!(text, "; session bus address {}", if bus { "set" } else { "NOT set (a file dialog may not open; a pick then looks cancelled)" });
     }
     text
 }

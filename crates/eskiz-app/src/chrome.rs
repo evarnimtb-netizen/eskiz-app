@@ -238,11 +238,16 @@ impl EskizApp {
                 ui.set_width(screen.width());
                 ui.set_height(BAR_HEIGHT);
                 ctx.layer_painter(ui.layer_id()).rect_filled(bar, CornerRadius::ZERO, pal.bar);
-                // The bar background drags the window (the title bar is hidden). It is
-                // registered before the buttons, so buttons take their own clicks and drags.
-                let background = ui.interact(bar, Id::new("top-bar-drag"), Sense::drag());
-                if background.drag_started() && !fullscreen {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                // On macOS the title bar is hidden, so the bar background drags the window. It
+                // is registered before the buttons, so buttons take their own clicks and drags.
+                // Windows and Linux keep their own title bar: there a stray drag or double click
+                // on the bar would move, maximize or restore the window (as the system treats it
+                // as a title bar too).
+                if cfg!(target_os = "macos") {
+                    let background = ui.interact(bar, Id::new("top-bar-drag"), Sense::drag());
+                    if background.drag_started() && !fullscreen {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
                 }
                 ui.horizontal_centered(|ui| {
                     // The label starts exactly at the inset, in the gallery header's font; the hover

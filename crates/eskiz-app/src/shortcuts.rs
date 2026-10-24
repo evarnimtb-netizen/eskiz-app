@@ -33,6 +33,8 @@ pub const LAYERS: Key = Key::L;
 pub const SMALLER_BRUSH: Key = Key::OpenBracket;
 pub const LARGER_BRUSH: Key = Key::CloseBracket;
 pub const FULLSCREEN: Key = Key::F;
+/// Window full screen (the system's, not just the interface hidden).
+pub const WINDOW_FULLSCREEN: Key = Key::F11;
 pub const ESCAPE: Key = Key::Escape;
 pub const ENTER: Key = Key::Enter;
 /// Held keys: Space and drag pans, R and drag rotates the view.
@@ -110,6 +112,11 @@ pub const KEYBOARD: &[Entry] = &[
         keys: "F",
         action: "Hide or show the interface",
         bindings: &[Binding::Key(FULLSCREEN)],
+    },
+    Entry {
+        keys: "F11",
+        action: "Full screen window",
+        bindings: &[Binding::Key(WINDOW_FULLSCREEN)],
     },
     Entry {
         keys: "Esc",

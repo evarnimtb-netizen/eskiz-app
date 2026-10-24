@@ -213,6 +213,12 @@ impl LiquifyTool {
         self.stroking
     }
 
+    /// Is anything still moving: a stroke, momentum particles, or a reset fading out? Done and
+    /// Cancel wait for it, or the remaining motion would be cut off.
+    pub fn is_moving(&self) -> bool {
+        self.stroking || self.engine.particle_count() > 0 || self.fading_from.is_some()
+    }
+
     /// Is a reset fading out?
     pub fn is_fading(&self) -> bool {
         self.fading_from.is_some()

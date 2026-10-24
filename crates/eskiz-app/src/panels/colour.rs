@@ -56,6 +56,9 @@ pub struct ColourUi {
     /// Which slider or square is being dragged (Classic tab).
     classic_drag: bool,
     hex_text: String,
+    /// The colour when the hex field took focus: Escape goes back to it. `None` until a typed
+    /// value first changes the colour (which records "Previous" once for the whole edit).
+    hex_before: Option<[u8; 3]>,
     /// Disc centre and radius from the last frame (screen points), for tests.
     pub(crate) disc: Option<(Pos2, f32)>,
     /// Screen rectangles of the "previous" swatch half and the palette "+" cell, for tests.
@@ -71,6 +74,7 @@ impl Default for ColourUi {
             zone: None,
             classic_drag: false,
             hex_text: String::new(),
+            hex_before: None,
             disc: None,
             prev_rect: None,
             plus_rect: None,
@@ -521,15 +525,28 @@ impl EskizApp {
         let digits = text.trim().trim_start_matches('#').len();
         if resp.changed() && digits == 6 {
             if let Some(c) = parse_hex(&text) {
-                self.begin_colour_edit();
+                if self.colour_ui.hex_before.is_none() {
+                    self.colour_ui.hex_before = Some(self.colour);
+                    self.begin_colour_edit();
+                }
                 self.colour = c;
                 self.colour_ui.hsv = rgb_to_hsv(c);
             }
         }
         if resp.lost_focus() {
-            match parse_hex(&text) {
-                Some(c) => self.choose_colour(c),
-                None => text = format_hex(self.colour),
+            let before = self.colour_ui.hex_before.take();
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                // Escape cancels: the colour from before the typing comes back.
+                if let Some(c) = before {
+                    self.colour = c;
+                    self.colour_ui.hsv = rgb_to_hsv(c);
+                }
+                text = format_hex(self.colour);
+            } else {
+                match parse_hex(&text) {
+                    Some(c) => self.choose_colour(c),
+                    None => text = format_hex(self.colour),
+                }
             }
         }
         self.colour_ui.hex_text = text;

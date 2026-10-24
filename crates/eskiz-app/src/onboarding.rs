@@ -187,6 +187,8 @@ pub(crate) struct Obs {
     pub stroking: bool,
     /// Brush size of the current tool.
     pub size: f32,
+    /// The current tool (each tool keeps its own size).
+    pub tool: usize,
 }
 
 /// Why the tour is waiting to start.
@@ -376,7 +378,12 @@ impl Tour {
         if step.mark_number().is_none() {
             return false;
         }
-        let base = *self.base.get_or_insert(obs);
+        let mut base = *self.base.get_or_insert(obs);
+        if step == Step::Size && obs.tool != base.tool {
+            // Switching tool changes the size shown, not the size: start the step again.
+            base = obs;
+            self.base = Some(obs);
+        }
         let done = match step {
             Step::Paint => obs.edits > base.edits && !obs.stroking,
             Step::Undo => obs.undos > base.undos,
@@ -617,6 +624,7 @@ impl EskizApp {
             undos: self.session.undo_count(),
             stroking: self.session.is_stroking(),
             size: self.tool_size(),
+            tool: self.tool.index(),
         };
         if self.tour.observe(obs) {
             ctx.request_repaint();
@@ -624,7 +632,7 @@ impl EskizApp {
         let Some(step) = self.tour.step() else {
             return;
         };
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        if !self.escape_taken && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.tour.skip();
             return;
         }
@@ -762,7 +770,7 @@ mod tests {
         Gate { gallery: true, recovery_open: false, library_empty: Some(true) }
     }
     fn obs() -> Obs {
-        Obs { edits: 5, undos: 0, stroking: false, size: 24.0 }
+        Obs { edits: 5, undos: 0, stroking: false, size: 24.0, tool: 0 }
     }
 
     #[test]
@@ -875,6 +883,9 @@ mod tests {
         assert!(t.observe(o));
         assert_eq!(t.step(), Some(Step::Size));
         assert!(!t.observe(o));
+        o.tool = 1;
+        o.size = 40.0;
+        assert!(!t.observe(o), "another tool's own size does not count");
         o.size += 5.0;
         assert!(t.observe(o));
         assert_eq!(t.step(), Some(Step::Done));

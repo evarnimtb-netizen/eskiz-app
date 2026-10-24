@@ -26,7 +26,8 @@ impl EskizApp {
     pub(crate) fn guides_frame(&mut self, ctx: &egui::Context) {
         let key = self.gal.current.as_ref().and_then(|c| c.id.clone());
         let dir = self.gal.library.as_ref().map(|l| l.root().to_path_buf());
-        self.guides.sync(key.as_deref(), dir.as_deref());
+        let assigned = self.gal.assigned_id.clone();
+        self.guides.sync(key.as_deref(), dir.as_deref(), assigned.as_deref());
         self.guide_editor(ctx);
         self.palette_files_window(ctx);
     }

@@ -208,6 +208,8 @@ pub struct BrushBank {
     /// Where My Brushes are saved. `None` keeps them in memory only (headless tests).
     user_store: Option<BrushStore>,
     engines: HashMap<BrushId, Arc<Engine>>,
+    /// Imported and My Brushes files that were found but could not be read, so are not listed.
+    pub skipped: usize,
 }
 
 impl BrushBank {
@@ -224,11 +226,15 @@ impl BrushBank {
 
     fn build(store: BrushStore, user_store: Option<BrushStore>) -> Self {
         let mut sources = HashMap::new();
+        let mut skipped = 0;
         let mut read = |entries: Vec<(String, ImportedBrush)>, make: fn(String) -> BrushId| -> Vec<CatalogBrush> {
             entries
                 .into_iter()
                 .filter_map(|(key, ib)| {
-                    let lb = brush_import::library_brush(&ib).ok()?;
+                    let Ok(lb) = brush_import::library_brush(&ib) else {
+                        skipped += 1;
+                        return None;
+                    };
                     let id = make(key);
                     let cat = CatalogBrush { id: id.clone(), name: display_name(&ib.name), lb: LibRef::Imported(Arc::new(lb)) };
                     sources.insert(id, ib);
@@ -247,6 +253,7 @@ impl BrushBank {
             store,
             user_store,
             engines: HashMap::new(),
+            skipped,
         };
         bank.rebuild();
         bank
@@ -304,9 +311,32 @@ impl BrushBank {
         key
     }
 
+    /// A name for a new user brush that no other user brush shows: `name`, else "name 2", ...
+    fn fresh_user_name(&self, name: &str) -> String {
+        let taken = |n: &str| self.user.iter().any(|b| b.name == display_name(n));
+        let base = display_name(name);
+        let mut out = base.clone();
+        let mut n = 2;
+        while taken(&out) {
+            out = format!("{base} {n}");
+            n += 1;
+        }
+        out
+    }
+
     /// Saves `ib` as one of My Brushes: over the brush `key` when it is given and exists, else as
-    /// a new brush. Writes the file first, so nothing changes when that fails. Returns the id.
+    /// a new brush (renamed "Name 2", ... when the name is already shown in My Brushes, so the
+    /// rows can be told apart). Writes the file first, so nothing changes when that fails.
+    /// Returns the id.
     pub fn save_user(&mut self, key: Option<&str>, ib: &ImportedBrush) -> Result<BrushId, String> {
+        let renamed;
+        let ib = match key {
+            Some(_) => ib,
+            None => {
+                renamed = ImportedBrush { name: self.fresh_user_name(&ib.name), ..ib.clone() };
+                &renamed
+            }
+        };
         let lb = brush_import::library_brush(ib)?;
         let key = match key {
             Some(k) => k.to_owned(),

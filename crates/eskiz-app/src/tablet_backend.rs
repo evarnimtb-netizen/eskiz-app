@@ -275,6 +275,9 @@ mod imp {
             rx: Receiver<Vec<PenEvent>>,
             shared: Arc<Shared>,
             hung_logged: bool,
+            /// When `poll` last ran: a long gap means the whole app was away (the PC slept),
+            /// not that the pen thread hung.
+            last_poll_ms: u64,
         }
 
         pub fn start(ctx: eframe::egui::Context, handles: Handles) -> Result<ThreadSource, String> {
@@ -291,7 +294,7 @@ mod imp {
             match setup_rx.recv_timeout(SETUP_WAIT) {
                 Ok(Ok(())) => {
                     crate::startup::log(&format!("pen: Windows Ink connected on its own thread in {} ms", started.elapsed().as_millis()));
-                    Ok(ThreadSource { rx, shared, hung_logged: false })
+                    Ok(ThreadSource { rx, shared, hung_logged: false, last_poll_ms: now_ms() })
                 }
                 Ok(Err(e)) => Err(e),
                 Err(_) => {
@@ -355,6 +358,13 @@ mod imp {
 
         impl PenSource for ThreadSource {
             fn poll(&mut self) -> Vec<PenEvent> {
+                let now = now_ms();
+                let away = now.saturating_sub(self.last_poll_ms) > 1000;
+                self.last_poll_ms = now;
+                if away {
+                    // After a sleep both threads come back at once: start counting again.
+                    self.shared.beat_ms.store(now, Ordering::Relaxed);
+                }
                 if !self.hung_logged && !self.shared.done.load(Ordering::Relaxed) {
                     let age = now_ms().saturating_sub(self.shared.beat_ms.load(Ordering::Relaxed));
                     if age > HUNG_AFTER_MS {

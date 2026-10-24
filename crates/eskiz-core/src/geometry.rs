@@ -1066,7 +1066,10 @@ pub fn dynamics_step(
         (1.0 - dps.abs()).max(NO_PRESSURE_MIN_FACTOR)
     };
     let mut sx = press_f * speed_f * base;
-    sx = clamp(sx, brush.min_size * base, brush.max_size * base);
+    // A minimum above the maximum (an edited or imported brush) would make more pressure give a
+    // smaller tip past a point: the two bounds are taken in order.
+    let (lo, hi) = (brush.min_size.min(brush.max_size), brush.min_size.max(brush.max_size));
+    sx = clamp(sx, lo * base, hi * base);
     let (tilt_size_f, tilt_opacity_f, tilt_round_f) = tilt_factors(brush, s.altitude_norm);
     sx *= tilt_size_f;
     sx = taper_size_step(sx, start_amt, tp, base, sp);

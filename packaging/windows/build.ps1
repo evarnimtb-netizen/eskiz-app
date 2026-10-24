@@ -71,7 +71,7 @@ try {
     Copy-Item -Path $exe -Destination (Join-Path $stage 'eskiz.exe')
     Copy-Item -Path (Join-Path $eskizDir 'packaging\icons\eskiz.ico') -Destination (Join-Path $stage 'eskiz.ico')
     # README-Windows.txt and the compatibility launcher are files next to this script.
-    $readme = (Get-Content -Raw -Path (Join-Path $here 'README-Windows.txt')).Replace('0.1.3', $version)
+    $readme = (Get-Content -Raw -Path (Join-Path $here 'README-Windows.txt')).Replace('0.1.4', $version)
     Set-Content -Path (Join-Path $stage 'README-Windows.txt') -Encoding utf8 -Value $readme
     Copy-Item -Path (Join-Path $here 'Eskiz (compatibility mode).bat') -Destination (Join-Path $stage 'Eskiz (compatibility mode).bat')
     foreach ($f in 'THIRD_PARTY_NOTICES.md', 'LICENSE-MIT', 'LICENSE-APACHE') {

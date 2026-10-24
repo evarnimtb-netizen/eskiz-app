@@ -217,8 +217,9 @@ impl FileAccess for NoFileAccess {
 /// `rfd` builds the dialog on the calling thread (the UI thread, which macOS needs for its open
 /// panel) and the returned future is awaited on a short-lived worker thread, so the UI never
 /// blocks. On Linux the xdg-desktop-portal is used; `rfd` 0.17 drives it through `zbus` with its
-/// own small executor, so no `tokio` or `async-std` feature is needed. With no portal running the
-/// pick answers [`Picked::Unavailable`].
+/// own small executor, so no `tokio` or `async-std` feature is needed. With no portal running no
+/// dialog opens and the pick answers [`Picked::None`], as if it were cancelled (`rfd` does not
+/// report why).
 #[cfg(feature = "native-dialogs")]
 pub struct RfdFileAccess;
 

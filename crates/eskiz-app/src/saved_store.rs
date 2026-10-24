@@ -118,12 +118,17 @@ impl EskizApp {
             }
         }
         let now = signature(&tool.saved);
+        let mut failed = false;
         if now != tool.store_sig {
             if let (Some(id), Some(d)) = (key, dir) {
-                if crate::storage::write_atomic(&file_for(&d, &id), &encode(&tool.saved)).is_ok() {
-                    tool.store_sig = now;
-                }
+                // A failed write is not tried again every frame (it re-encodes every mask): the
+                // next change to the set tries again.
+                failed = crate::storage::write_atomic(&file_for(&d, &id), &encode(&tool.saved)).is_err();
+                tool.store_sig = now;
             }
+        }
+        if failed {
+            self.show_toast("Could not save the saved selections; the next change tries again", 3.0);
         }
     }
 }

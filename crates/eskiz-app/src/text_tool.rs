@@ -176,10 +176,18 @@ pub fn to_spec(text: &TextLayer) -> TextSpec {
 }
 
 /// Rebuilds a text layer from its archived form. Unknown attribute keys are dropped, and values
-/// are clamped to their ranges. Returns `None` when the runs do not cover the text.
+/// are clamped to their ranges. Returns `None` when the runs do not cover the text exactly, or
+/// a run boundary falls inside a character.
 pub fn from_spec(spec: &TextSpec) -> Option<TextLayer> {
-    let covered: usize = spec.runs.iter().map(|r| r.len).sum();
-    if covered != spec.text.len() {
+    // Checked sums and boundaries: a forged length could wrap around and pass the total.
+    let mut at = 0usize;
+    for run in &spec.runs {
+        at = at.checked_add(run.len)?;
+        if !spec.text.is_char_boundary(at.min(spec.text.len() + 1)) || at > spec.text.len() {
+            return None;
+        }
+    }
+    if at != spec.text.len() {
         return None;
     }
     let mut runs: Vec<Run> = spec

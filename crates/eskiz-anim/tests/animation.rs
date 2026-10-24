@@ -603,3 +603,22 @@ fn clipped_layer_does_not_paint_outside_its_base() {
     let t = frames.render_transparent(0);
     assert_eq!(t[7], 0, "no spill in the transparent export");
 }
+
+#[test]
+fn a_clipped_layer_past_its_base_is_not_in_the_onion_silhouette() {
+    // Frame 0: a base that covers only the left column, and a clipped layer over all of it.
+    // Frame 1: empty. The onion skin of frame 0 must tint the left column only.
+    let mut half = vec![0u8; W * H * 4];
+    for y in 0..H {
+        half[y * W * 4..y * W * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+    }
+    let base = item(Layer::from_rgba(W, H, half));
+    let mut clip = item(solid([0, 200, 0]));
+    clip.clipped = true;
+    let frames = FrameList::build(snapshot(vec![base, clip, item(clear())])).expect("valid stack");
+    assert_eq!(frames.len(), 2);
+    let skins = onion_skins(&AnimationSettings::default(), &frames, 1, false);
+    let out = render_with_onion(&frames, 1, &skins, BlendMode::Normal);
+    assert_ne!(&out[0..4], &[255, 255, 255, 255], "the base is tinted");
+    assert_eq!(&out[4..8], &[255, 255, 255, 255], "the clipped part outside the base is not");
+}

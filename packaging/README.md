@@ -98,7 +98,7 @@ runs it on a GitHub-hosted `windows-latest` runner and uploads the screenshots):
 pwsh -File packaging\windows\smoke.ps1 [-Exe target\release\eskiz.exe] [-OutDir target\windows-smoke] [-StrictInput]
 ```
 
-It runs `--version`, `--selftest` (which also writes `%TEMP%\selftest.procreate`), `--diagnose`
+It runs `--version`, `--selftest` (which also writes a `selftest.procreate` and names its path), `--diagnose`
 and `--diagnose --window`, then opens the window on `selftest.procreate`, takes screenshots
 (desktop and `PrintWindow`), paints one stroke with real mouse input, presses Ctrl+Z and closes the
 window. It fails when a command fails, the window does not appear, or the app exits by itself. A

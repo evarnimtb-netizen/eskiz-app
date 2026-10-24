@@ -139,3 +139,19 @@ fn warp_mode_refuses_quad_edits() {
     assert_eq!(s.set_mapping(Mat3::IDENTITY), Err(SelectError::WrongMode));
     assert!(s.quad().is_some());
 }
+
+#[test]
+fn an_untouched_warp_can_be_left_but_an_edited_one_cannot() {
+    let mut s = session(source(16, 12), Interp::Bilinear);
+    s.apply_gesture(Mat3::translate(2.0, 1.0) * Mat3::rotate_deg(15.0).about(Point::new(8.0, 6.0)));
+    let before = s.mapping();
+    s.enter_warp().unwrap();
+    assert!(s.leave_warp(), "nothing was warped");
+    assert!(!s.is_warp());
+    assert_eq!(s.mapping(), before, "the affine mapping is kept");
+
+    s.enter_warp().unwrap();
+    s.warp_mut().unwrap().ctrl[1][1].x += 3.0;
+    assert!(!s.leave_warp(), "a warp cannot become an affine mapping");
+    assert!(s.is_warp());
+}

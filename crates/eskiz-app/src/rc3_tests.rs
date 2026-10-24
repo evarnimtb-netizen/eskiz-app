@@ -170,6 +170,21 @@ fn scroll_and_pinch_mid_stroke_leave_the_view_and_the_ink_alone() {
 }
 
 #[test]
+fn alt_wheel_zooms_and_the_plain_wheel_pans() {
+    let mut h = canvas_app("altwheel", quiet());
+    let centre = h.app.viewport.center();
+    let zoom = h.app.view.zoom;
+    h.event(Event::ModifiersChanged(Modifiers::ALT));
+    h.scroll_at(centre, 120.0);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    assert!(h.app.view.zoom > zoom, "Alt + wheel up zooms in");
+    let view = h.app.view;
+    h.scroll_at(centre, 120.0);
+    assert_eq!(h.app.view.zoom, view.zoom, "the plain wheel does not zoom");
+    assert_ne!(h.app.view, view, "the plain wheel pans");
+}
+
+#[test]
 fn space_and_the_fit_shortcut_mid_stroke_do_not_move_the_view() {
     let mut h = canvas_app("spacefit", quiet());
     let p = open_stroke(&mut h);

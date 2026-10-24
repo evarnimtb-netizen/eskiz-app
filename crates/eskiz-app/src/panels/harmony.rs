@@ -7,13 +7,13 @@ use std::path::Path;
 use crate::file_access::PickPurpose;
 
 use eskiz_format::palettes::{self, Palette as FilePalette, Swatch};
-use eskiz_guides::colour::{hsb_to_rgb, rgb_to_hsb, Rgb8};
+use eskiz_guides::colour::{hsb_to_rgb, Hsb};
 use eskiz_guides::harmony::{harmony, Harmony};
 use eskiz_guides::palette::{extract_palette, MAX_PALETTE_COLOURS};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, UiBuilder, Vec2};
 
 use crate::app::EskizApp;
-use crate::colour::{format_hex, hue_dir, rgb_to_hsv};
+use crate::colour::{format_hex, hsv_to_rgb, hue_dir, rgb_to_hsv, Hsv};
 use crate::theme::Palette;
 
 /// The harmony modes in the Harmony tab, in order.
@@ -25,14 +25,16 @@ pub const HARMONIES: [(Harmony, &str); 5] = [
     (Harmony::Tetradic, "Tetradic"),
 ];
 
-/// Companion colours of `colour` for `mode`, as RGB bytes. The base colour is not included.
-pub fn companions(colour: [u8; 3], mode: Harmony) -> Vec<[u8; 3]> {
-    let base = rgb_to_hsb(Rgb8::new(colour[0], colour[1], colour[2]).to_rgb());
+/// Companion colours of `base` for `mode`: each one's hue (0..1, for its place on the disc)
+/// and RGB bytes. The base colour is not included. The hue comes from `base`, not from the
+/// bytes, so it is kept on greys and is not rounded on pale colours.
+pub fn companions(base: Hsv, mode: Harmony) -> Vec<(f32, [u8; 3])> {
+    let base = Hsb::new(f64::from(base.h) * 360.0, f64::from(base.s), f64::from(base.v));
     harmony(base, mode)
         .into_iter()
         .map(|hsb| {
             let c = hsb_to_rgb(hsb).to_rgb8();
-            [c.r, c.g, c.b]
+            ((hsb.h / 360.0) as f32, [c.r, c.g, c.b])
         })
         .collect()
 }
@@ -55,6 +57,9 @@ fn ext_of(path: &str) -> String {
         .unwrap_or("")
         .to_ascii_lowercase()
 }
+
+/// The most colours the palette holds.
+const MAX_PALETTE: usize = 512;
 
 impl EskizApp {
     /// The Harmony tab: mode chips, the disc, and the companion swatches on the hue ring.
@@ -84,8 +89,10 @@ impl EskizApp {
         let ring = radius * 0.86;
         let marker = radius * 0.11;
         let mut chosen = None;
-        for (i, c) in companions(self.colour, mode).into_iter().enumerate() {
-            let (dx, dy) = hue_dir(rgb_to_hsv(c).h);
+        // The panel's own HSV keeps the hue through greys; use it while it is this colour.
+        let hsv = if hsv_to_rgb(self.colour_ui.hsv) == self.colour { self.colour_ui.hsv } else { rgb_to_hsv(self.colour) };
+        for (i, (hue, c)) in companions(hsv, mode).into_iter().enumerate() {
+            let (dx, dy) = hue_dir(hue);
             let at = centre + Vec2::new(dx, dy) * ring;
             let rect = Rect::from_center_size(at, Vec2::splat(marker * 2.0));
             ui.painter()
@@ -191,14 +198,25 @@ impl EskizApp {
         };
         match parsed {
             Ok(read) => {
-                let added = read.palette.swatches.len();
+                // Colours already in the palette are not added twice, and the palette stays a
+                // size the Palettes tab can draw (and the preferences can hold).
+                let (mut added, mut skipped) = (0usize, 0usize);
                 for swatch in read.palette.swatches {
                     let [r, g, b, _] = swatch.rgba;
-                    self.colour_store
-                        .palette
-                        .push([to_byte(r), to_byte(g), to_byte(b)]);
+                    let rgb = [to_byte(r), to_byte(g), to_byte(b)];
+                    let palette = &mut self.colour_store.palette;
+                    if palette.contains(&rgb) {
+                        continue;
+                    }
+                    if palette.len() >= MAX_PALETTE {
+                        skipped += 1;
+                        continue;
+                    }
+                    palette.push(rgb);
+                    added += 1;
                 }
-                self.show_toast(format!("Imported {added} colors"), 2.5);
+                let more = if skipped > 0 { format!("; {skipped} left out (the palette holds {MAX_PALETTE})") } else { String::new() };
+                self.show_toast(format!("Imported {added} colors{more}"), 3.0);
             }
             Err(e) => self.show_toast(format!("Could not read the palette: {e}"), 3.0),
         }
@@ -279,16 +297,25 @@ mod tests {
     #[test]
     fn complementary_companion_is_the_opposite_hue() {
         let red = [220, 30, 30];
-        let comp = companions(red, Harmony::Complementary);
+        let comp = companions(rgb_to_hsv(red), Harmony::Complementary);
         assert_eq!(comp.len(), 1);
         // Opposite of red is cyan-ish: green and blue both above red.
-        assert!(comp[0][1] > 150 && comp[0][2] > 150, "got {:?}", comp[0]);
+        let c = comp[0].1;
+        assert!(c[1] > 150 && c[2] > 150, "got {c:?}");
+        assert!((comp[0].0 - 0.5).abs() < 0.02, "hue {}", comp[0].0);
+    }
+
+    #[test]
+    fn a_grey_keeps_the_hue_it_was_given() {
+        let grey = Hsv::new(0.25, 0.0, 0.5);
+        let comp = companions(grey, Harmony::Complementary);
+        assert!((comp[0].0 - 0.75).abs() < 1e-3, "the marker sits opposite the kept hue: {}", comp[0].0);
     }
 
     #[test]
     fn each_mode_gives_its_number_of_companions() {
         for (mode, n) in HARMONIES.iter().map(|(m, _)| *m).zip([1usize, 2, 2, 2, 3]) {
-            assert_eq!(companions([40, 90, 200], mode).len(), n);
+            assert_eq!(companions(rgb_to_hsv([40, 90, 200]), mode).len(), n);
         }
     }
 }

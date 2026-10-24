@@ -194,6 +194,14 @@ impl PaintSession {
         n
     }
 
+    /// Replace every queued dab with `dabs` (screen space). At the end of a stroke the engine
+    /// redraws its tail with the taper applied: the whole stroke is mapped again so the tail
+    /// ends tapered rather than as first drawn.
+    pub fn replace_dabs(&mut self, model: &Model, lookup: &LookupBuffer, dabs: &[Dab]) -> usize {
+        self.groups.clear();
+        self.add_dabs(model, lookup, dabs)
+    }
+
     /// Composite all queued dabs onto the model's texture layers.
     ///
     /// Always starts from the layer as it was before the stroke, so calling it

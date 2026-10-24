@@ -1,6 +1,6 @@
 # Windows smoke test: runs a release eskiz.exe the way a user would and records what it saw.
 #
-#   1. eskiz --version, --selftest (which also writes %TEMP%\selftest.procreate), --diagnose and
+#   1. eskiz --version, --selftest (which also writes a selftest.procreate it names), --diagnose and
 #      --diagnose --window (GPU adapter and backend, scale factor of a real window).
 #   2. Opens the real window on selftest.procreate, takes screenshots, paints one stroke with real
 #      mouse input, presses Ctrl+Z, and counts how many pixels each step changed.
@@ -371,7 +371,8 @@ function Get-ErrLineCount([string]$label) {
 
 # ------------------------------------------------------------------------------------- run
 
-$sample = Join-Path ([System.IO.Path]::GetTempPath()) 'selftest.procreate'
+# The sample document --selftest writes; its path is read from the selftest report.
+$sample = ''
 
 # Forget the previous run's start-up log, markers and remembered skips, so every window run starts
 # the way a first start does and its log is its own.
@@ -395,7 +396,7 @@ function Find-LogLine([string]$pattern) {
 # log's "renderer:" line must match so a silent fallback to another renderer is not taken for a pass.
 function Invoke-WindowRun([string]$label, [string[]]$extra, [string]$expect) {
     Write-Host "== window run '$label' ($($extra -join ' '))"
-    if (-not (Test-Path $sample)) { Fail "window ($label)" "no $sample (the self-test writes it)"; return }
+    if (-not $sample -or -not (Test-Path $sample)) { Fail "window ($label)" "no $sample (the self-test writes it)"; return }
     Reset-Logs
     $app = Start-Eskiz "window-$label" (@($extra) + @("`"$sample`""))
     try {
@@ -528,7 +529,7 @@ function Invoke-WindowRun([string]$label, [string[]]$extra, [string]$expect) {
 # step says so (SKIP with the reason) instead of passing the software path under the OpenGL name.
 function Invoke-GlRun {
     Write-Host "== window with --renderer gl"
-    if (-not (Test-Path $sample)) { Fail 'window (--renderer gl)' "no $sample"; return }
+    if (-not $sample -or -not (Test-Path $sample)) { Fail 'window (--renderer gl)' "no $sample"; return }
     Reset-Logs
     $gl = Start-Eskiz 'window-gl' @('--renderer', 'gl', "`"$sample`"")
     try {
@@ -563,13 +564,14 @@ function Invoke-GlRun {
 }
 
 try {
-    Remove-Item -Force -Path $sample -ErrorAction SilentlyContinue
     $os = Get-CimInstance Win32_OperatingSystem
     $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
     Add-Row 'machine' 'info' "$($os.Caption) $($os.Version), screen $($screen.Width)x$($screen.Height), $env:NUMBER_OF_PROCESSORS CPUs"
 
     [void](Invoke-Eskiz 'version' @('--version') 60)
     [void](Invoke-Eskiz 'selftest' @('--selftest') 900)
+    $wrote = Select-String -Path (Join-Path $OutDir 'selftest.log') -Pattern 'wrote (.+\.procreate) \(reads back' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($wrote) { $sample = $wrote.Matches[0].Groups[1].Value }
     [void](Invoke-Eskiz 'diagnose' @('--diagnose') 300)
     if (Test-Path (Join-Path $OutDir 'eskiz-diagnose.md')) {
         Move-Item -Force (Join-Path $OutDir 'eskiz-diagnose.md') (Join-Path $OutDir 'diagnose.md')

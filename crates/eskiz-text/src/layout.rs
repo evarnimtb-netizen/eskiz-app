@@ -194,6 +194,7 @@ pub(crate) fn layout(layer: &TextLayer, fonts: &mut FontLibrary) -> Layout {
         } else {
             text.to_string()
         };
+        let shown = no_extra_paragraphs(shown);
         display_starts.push(display.len());
         display.push_str(&shown);
         display_texts.push(shown);
@@ -578,4 +579,24 @@ fn finish(out: &mut Layout) {
     }
     let gutter = out.glyphs.iter().map(|g| g.outline_pt).fold(0.0, f32::max) * 0.5;
     out.bounds = bounds.outset(gutter);
+}
+
+/// The text with every paragraph separator other than `'\n'` turned into spaces of the same
+/// byte length. cosmic-text also ends a paragraph at `'\r'`, U+001C..U+001E, U+0085 and U+2029
+/// (Unicode bidi class B), but the layout counts paragraphs by `'\n'` only; an extra paragraph
+/// would shift the glyph offsets of every later line and drop the last ones.
+fn no_extra_paragraphs(text: String) -> String {
+    if !text.contains(['\r', '\u{1C}', '\u{1D}', '\u{1E}', '\u{85}', '\u{2029}']) {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\r' | '\u{1C}'..='\u{1E}' | '\u{85}' | '\u{2029}' => {
+                out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }

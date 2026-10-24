@@ -387,6 +387,10 @@ pub struct ShapeEdit {
     /// only drawn as a light vector preview. It is rasterized once, on release
     /// ([`EskizApp::settle_shape_preview`]).
     pub previewing: bool,
+    /// The layer and tool the shape was painted with: changing either makes the shape final,
+    /// or a handle drag would repaint it on another layer with another brush.
+    pub layer: u64,
+    pub tool: Tool,
 }
 
 pub struct EskizApp {
@@ -553,6 +557,9 @@ pub struct EskizApp {
     pub(crate) crop: Option<crate::canvas_ops::CropState>,
     /// The Canvas information sheet is open.
     pub(crate) canvas_info_open: bool,
+    /// Set each frame before the keys: Escape this frame closes something (a sheet, a
+    /// transform, the text tool), so it does not also end the welcome tour.
+    pub(crate) escape_taken: bool,
     /// The transform in progress, if any.
     pub(crate) transform: Option<TransformTool>,
     /// The open 3D document, if any (see [`crate::view3d`]).
@@ -686,7 +693,9 @@ impl EskizApp {
             open_path: String::new(),
             files: crate::file_access::default_file_access(),
             pending_picks: Vec::new(),
-            inbox: crate::saf::inbox().clone(),
+            // Test apps run side by side in one process: each keeps an inbox of its own, so none
+            // takes the notices a test is waiting for in the process-wide one.
+            inbox: if cfg!(test) { std::sync::Arc::new(crate::saf::Inbox::default()) } else { crate::saf::inbox().clone() },
             back_bridge: crate::back::default_back_bridge(),
             back_sent: None,
             sysclip: crate::system_clipboard::default_system_clipboard(),
@@ -728,6 +737,7 @@ impl EskizApp {
             sel: SelectionTool::default(),
             crop: None,
             canvas_info_open: false,
+            escape_taken: false,
             transform: None,
             three_d: None,
             model_jobs: crate::view3d::ModelJobs::default(),
@@ -1253,6 +1263,8 @@ impl EskizApp {
             drag: None,
             edits: 0,
             previewing: false,
+            layer: self.active,
+            tool: self.tool,
         });
         if !self.paint_shape(&fit.shape, time) {
             // The shape painted nothing: put the user's own stroke back rather than lose it.
@@ -1611,6 +1623,10 @@ impl EskizApp {
         if ctx.input(|i| i.key_pressed(sc::FULLSCREEN) && i.modifiers == Modifiers::NONE) {
             self.toggle_fullscreen();
         }
+        if ctx.input(|i| i.key_pressed(sc::WINDOW_FULLSCREEN) && i.modifiers == Modifiers::NONE) {
+            let on = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!on));
+        }
         if ctx.input(|i| i.key_pressed(sc::ESCAPE)) && self.shape_edit.as_ref().is_some_and(|e| !e.live) {
             self.settle_shape_preview();
             self.shape_edit = None;
@@ -1797,7 +1813,16 @@ impl EskizApp {
             gesture::Command::Eyedropper(pos) => {
                 // A stroke that has already moved is never cancelled by the hold: the
                 // eyedropper starts only when the press has been still since the start.
-                if self.adjust.is_none() && self.eyedrop.is_none() && !self.stroke_has_moved() {
+                // Not while another mode owns the canvas: a hold there drags a handle, moves the
+                // text caret, shapes a selection or paints the model.
+                let busy = self.adjust.is_some()
+                    || self.liquify.is_some()
+                    || self.transform.is_some()
+                    || self.three_d.is_some()
+                    || self.text.editing.is_some()
+                    || self.edit_mode != EditMode::Off
+                    || self.shape_edit.is_some();
+                if !busy && self.eyedrop.is_none() && !self.stroke_has_moved() {
                     self.begin_eyedrop(pos);
                 }
             }
@@ -1964,7 +1989,14 @@ impl EskizApp {
                 self.view.zoom_at(viewport, anchor, input.zoom);
             }
         } else if input.hover.is_some_and(|p| viewport.contains(p)) && input.scroll != Vec2::ZERO {
-            self.view.pan(input.scroll);
+            if input.alt {
+                // Alt + wheel zooms at the pointer, as in photo editors.
+                let anchor = input.hover.unwrap_or(viewport.center());
+                let step = if input.scroll.y != 0.0 { input.scroll.y } else { input.scroll.x };
+                self.view.zoom_at(viewport, anchor, (step / 200.0).exp());
+            } else {
+                self.view.pan(input.scroll);
+            }
         }
         if input.rotate == 0.0 && !self.rotating {
             self.rotate_raw = None;
@@ -2212,6 +2244,7 @@ impl EskizApp {
         }
         // Before the keys, so Enter never applies a stale transform.
         self.transform_guard();
+        self.escape_taken = !matches!(self.back_step_below_tour(), None | Some(crate::back::BackStep::Canvas));
         self.handle_keys(&ctx);
         self.poll_share();
         self.timelapse_frame(&ctx);
@@ -2662,9 +2695,9 @@ pub fn run_shared(file: Option<PathBuf>, tweak: impl Fn(&mut eframe::NativeOptio
             if let Some(text) = cc.storage.and_then(|s| crate::compat::storage_string(s, COLOUR_KEY, LEGACY_COLOUR_KEY)) {
                 app.set_colour_store(ColourStore::decode(&text));
             }
-            if let Some(text) = cc.storage.and_then(|s| crate::compat::storage_string(s, BRUSH_KEY, LEGACY_BRUSH_KEY)) {
-                app.set_brush_choice(&text);
-            }
+            // Run with no stored choice too, so unreadable brush files are reported.
+            let text = cc.storage.and_then(|s| crate::compat::storage_string(s, BRUSH_KEY, LEGACY_BRUSH_KEY));
+            app.set_brush_choice(text.as_deref().unwrap_or_default());
             app.plan_pen(cc);
             if crate::renderer::saved_choice_was_reset() {
                 app.prefs.graphics = crate::renderer::Mode::Auto;

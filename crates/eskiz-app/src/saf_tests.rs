@@ -221,7 +221,8 @@ fn an_open_pick_is_renamed_and_answered_once() {
     // A second answer for the same id finds nothing.
     t.resolve_pick(id, STATUS_OK, "x", "y", "z");
     assert!(rx.try_recv().is_err());
-    // (The notice queue is process-wide and other tests add to it: only look for ours.)
+    // (The notice queue is process-wide and other tests add to it: only look for ours. Test apps
+    // have inboxes of their own, so none of them takes it first.)
     assert!(take_notices().iter().any(|n| n == INTERRUPTED));
 }
 

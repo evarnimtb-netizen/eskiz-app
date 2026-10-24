@@ -2,6 +2,51 @@
 
 All notable changes to Eskiz are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.4] - 2026-10-24
+
+Requests from Windows testers (F11 full screen, Alt + wheel zoom, a top bar that no longer resizes the window) and the remaining smaller fixes from the third review. Your drawings and settings carry over; install it the same way as before (see the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install)). The known issues of 0.1.0 still apply.
+
+### Added
+
+- F11 switches the window to full screen and back. F still hides or shows the interface.
+- Alt + wheel zooms the canvas at the pointer, as Ctrl + wheel does.
+
+### Fixed
+
+- Windows and Linux: dragging or double-clicking the top bar no longer moves, maximizes or restores the window. The system title bar does that.
+- The user guide and the shortcuts sheet now say that Shift + wheel pans sideways, and that the four-finger tap hides the interface (it does not make the window full screen).
+- Switching layer or tool ends a shape edit instead of editing the wrong layer.
+- The eyedropper gesture no longer fires while an adjustment, Liquify, a transform, the 3D view or text editing is open.
+- Back and Escape close the guide editor, animation settings, the timelapse replay, the 3D error box and the reference window before anything else.
+- Escape in the hex field restores the color from before the edit, and the edit is one undo step.
+- Sorting gradient stops keeps the stop you had selected.
+- Liquify waits until the brush stops before it reports idle.
+- The Studio sheet fits on small screens.
+- A paste that never arrives gives up after 20 seconds with a message.
+- Diagnostics no longer hang on a stuck graphics probe (20 second limit).
+- A tablet that sleeps no longer looks like a stalled pen when it wakes.
+- Recovery compares the journal with the drawing by the journal's own time.
+- Guides drawn on an unsaved drawing move with it when it is first saved.
+- Brush Studio: saving a brush that did not change no longer marks it changed, and a pending delete is cleared by save and reset.
+- Brush import tells you why the first skipped brush was skipped.
+- Text with damaged run lengths loads without crashing.
+- Size limits whose minimum is above the maximum no longer break transforms.
+- 3D: the final stroke replaces the preview dabs instead of doubling them; back faces light correctly; glTF export keeps each part as its own named mesh.
+- Selections: soft ellipse edges are even all the way round.
+- Harmony palettes skip duplicates and stop at 512 colors, saying how many were left out.
+- Escape closes a sheet, a transform or the text tool without also ending the welcome tour.
+- The tour's brush size step no longer finishes just because you switched to a tool with another size.
+- Saving the same built-in brush to My Brushes twice names the copies "Name" and "Name 2".
+- A brush that was chosen but can no longer be read falls back to the tool's default, with a message, and brush files that cannot be read are reported at start.
+- The pressure curve handles no longer jump when grabbed by the edge, and the nearer one is picked when they overlap.
+- A transform switched to Warp can go back to Freeform, Uniform or Distort while nothing is warped yet; after warping, a message explains why it cannot.
+- Harmony markers on the color disc keep the hue of greys and pale colors.
+- OBJ models: a roughness or metallic map without its `Pr` or `Pm` value is no longer darkened or hidden.
+- Onion skins no longer show the parts of a clipped layer that fall outside its base.
+- Text with an accented letter and a Windows line break (`\r\n`) keeps every line.
+- Saved selections and guide settings that fail to save are no longer rewritten every frame; selections show a message.
+- `--selftest` writes into its own folder per run, so two runs at once do not collide.
+
 ## [0.1.3] - 2026-10-24
 
 More fixes from the third review: data safety, crashes and hangs on damaged files, and many smaller problems. Your drawings and settings carry over; install it the same way as before (see the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install)). The known issues of 0.1.0 still apply.
@@ -224,6 +269,7 @@ The full list of changes follows.
 - **MP4 export is not included.** It needs the OpenH264 codec, which these builds do not bundle. GIF, APNG and PNG sequence export work. Developers can build with `--features mp4`.
 - Some adjustment defaults and several 3D and Liquify details are approximations and may change.
 
+[0.1.4]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.4
 [0.1.3]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.3
 [0.1.2]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.1

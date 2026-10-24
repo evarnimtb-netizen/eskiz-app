@@ -272,3 +272,19 @@ fn obj_side_files_outside_the_folder_are_not_read() {
     assert!(loaded.is_ok(), "{:?}", loaded.err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_obj_roughness_or_metallic_map_without_its_factor_is_used_as_it_is() {
+    let dir = std::env::temp_dir().join(format!("eskiz-3d-pbr-maps-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    image::GrayImage::from_pixel(4, 4, image::Luma([200])).save(dir.join("rough.png")).unwrap();
+    image::GrayImage::from_pixel(4, 4, image::Luma([180])).save(dir.join("metal.png")).unwrap();
+    std::fs::write(dir.join("cube.mtl"), "newmtl blue\nKd 0 0 1\nNs 323\nmap_Pr rough.png\nmap_Pm metal.png\n").unwrap();
+    std::fs::write(dir.join("cube.obj"), cube_obj(UvMode::Atlas, true)).unwrap();
+    let m = eskiz_3d::load::load_obj(&dir.join("cube.obj"), &opts()).unwrap();
+    let set = &m.model.texture_sets[0];
+    // Not scaled by the shininess guess (0.27 for Ns 323) or by a metallic of 0.
+    assert_eq!(set.map(MapKind::Roughness).pixel(0, 0)[0], 200);
+    assert_eq!(set.map(MapKind::Metallic).pixel(0, 0)[0], 180);
+    let _ = std::fs::remove_dir_all(&dir);
+}

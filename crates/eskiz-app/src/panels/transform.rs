@@ -101,11 +101,18 @@ impl EskizApp {
             return;
         };
         let quad = t.session.quad();
+        let mut warp_kept = false;
         match action {
             TransformAction::Mode(m) => {
-                t.mode = m;
-                if m == TransformMode::Warp && !t.session.is_warp() {
-                    t.session.enter_warp().ok();
+                if m == TransformMode::Warp {
+                    t.mode = m;
+                    if !t.session.is_warp() {
+                        t.session.enter_warp().ok();
+                    }
+                } else if t.session.leave_warp() {
+                    t.mode = m;
+                } else {
+                    warp_kept = true;
                 }
             }
             TransformAction::Snap => t.snap = !t.snap,
@@ -134,6 +141,9 @@ impl EskizApp {
             TransformAction::Apply | TransformAction::Cancel => {}
         }
         t.dirty = true;
+        if warp_kept {
+            self.show_toast("A warp cannot be changed back. Apply it, or Cancel to start again", 3.0);
+        }
         self.refresh_transform_preview_now();
         ctx.request_repaint();
     }

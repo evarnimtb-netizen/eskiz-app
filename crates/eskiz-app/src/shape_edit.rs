@@ -24,8 +24,9 @@ impl EskizApp {
         let Some(edit) = self.shape_edit.as_ref() else {
             return;
         };
-        // Something else changed the document: the shape is final.
-        if edit.edits != self.session.edits() {
+        // Something else changed the document, or another layer or tool was chosen: the shape
+        // is final.
+        if edit.edits != self.session.edits() || edit.layer != self.active || edit.tool != self.tool {
             self.shape_edit = None;
             return;
         }

@@ -196,6 +196,7 @@ pub fn write_glb_bytes(model: &Model) -> Result<Vec<u8>, ExportError> {
     };
     let mut accessors: Vec<Value> = Vec::new();
     let mut primitives: Vec<Value> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
 
     for sm in &model.submeshes {
         if sm.triangle_count() == 0 {
@@ -228,7 +229,16 @@ pub fn write_glb_bytes(model: &Model) -> Result<Vec<u8>, ExportError> {
         let v = bin.add(&idx, Some(34963));
         accessors.push(json!({"bufferView": v, "componentType": 5125, "count": sm.indices.len(), "type": "SCALAR"}));
         primitives.push(json!({"attributes": attrs, "indices": accessors.len() - 1, "material": sm.material, "mode": 4}));
+        names.push(sm.name.clone());
     }
+    // One mesh and node per part, named after it: a reload gives the parts their names back
+    // (one mesh with many primitives would come back as "model.0", "model.1", ...).
+    let meshes: Vec<Value> = primitives
+        .into_iter()
+        .zip(&names)
+        .map(|(p, name)| json!({"name": name, "primitives": [p]}))
+        .collect();
+    let nodes: Vec<Value> = names.iter().enumerate().map(|(i, name)| json!({"mesh": i, "name": name})).collect();
 
     let mut images = Vec::new();
     let mut textures = Vec::new();
@@ -268,9 +278,9 @@ pub fn write_glb_bytes(model: &Model) -> Result<Vec<u8>, ExportError> {
     let root = json!({
         "asset": {"version": "2.0", "generator": "eskiz-3d"},
         "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": "model"}],
-        "meshes": [{"name": "model", "primitives": primitives}],
+        "scenes": [{"nodes": (0..nodes.len()).collect::<Vec<_>>()}],
+        "nodes": nodes,
+        "meshes": meshes,
         "materials": materials,
         "textures": textures,
         "images": images,

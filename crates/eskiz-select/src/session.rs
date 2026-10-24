@@ -175,6 +175,28 @@ impl TransformSession {
         if self.mesh.is_some() {
             return Ok(());
         }
+        self.mesh = Some(self.mapped_grid()?);
+        Ok(())
+    }
+
+    /// Leaves warp mode when the mesh is still the grid it started as (nothing was warped), so
+    /// the affine handles, flips and turns apply again. Returns false, and stays in warp mode,
+    /// when the mesh was edited: a warp cannot be turned back into an affine mapping.
+    pub fn leave_warp(&mut self) -> bool {
+        let Some(mesh) = &self.mesh else {
+            return true;
+        };
+        match self.mapped_grid() {
+            Ok(grid) if grid == *mesh => {
+                self.mesh = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The source rectangle's even grid carried through the current affine mapping.
+    fn mapped_grid(&self) -> Result<Warp> {
         let mapping = self.mapping();
         let mut mesh = Warp::identity(self.source_rect);
         for column in mesh.ctrl.iter_mut() {
@@ -182,8 +204,7 @@ impl TransformSession {
                 *point = mapping.apply(*point).ok_or(SelectError::Singular)?;
             }
         }
-        self.mesh = Some(mesh);
-        Ok(())
+        Ok(mesh)
     }
 
     /// Final affine mapping: `accumulated * initial`. In warp mode the mesh replaces

@@ -663,21 +663,25 @@ fn load_obj_impl(
                 |k: &str| unknown(k).and_then(|s| s.split_whitespace().next()?.parse::<f32>().ok());
             let d = m.diffuse.unwrap_or([0.8, 0.8, 0.8]);
             let shininess = m.shininess.unwrap_or(0.0);
+            let roughness = unknown("map_Pr").and_then(|t| read_texture(base, t, &mut notes)).map(|i| (i, 0));
+            let metallic = unknown("map_Pm").and_then(|t| read_texture(base, t, &mut notes)).map(|i| (i, 0));
+            // The maps are multiplied by the factors. A map given without its `Pr` / `Pm` is used
+            // as it is (factor 1), not scaled by the shininess guess or by a metallic of 0.
+            let roughness_factor = num("Pr").unwrap_or_else(|| {
+                if roughness.is_some() { 1.0 } else { (2.0 / (shininess + 2.0)).powf(0.25) }
+            });
+            let metallic_factor = num("Pm").unwrap_or(if metallic.is_some() { 1.0 } else { 0.0 });
             let src = MaterialSources {
                 name: m.name.clone(),
                 colour_factor: [d[0], d[1], d[2], m.dissolve.unwrap_or(1.0)],
-                roughness_factor: num("Pr").unwrap_or_else(|| (2.0 / (shininess + 2.0)).powf(0.25)),
-                metallic_factor: num("Pm").unwrap_or(0.0),
+                roughness_factor,
+                metallic_factor,
                 colour: m
                     .diffuse_texture
                     .as_deref()
                     .and_then(|t| read_texture(base, t, &mut notes)),
-                roughness: unknown("map_Pr")
-                    .and_then(|t| read_texture(base, t, &mut notes))
-                    .map(|i| (i, 0)),
-                metallic: unknown("map_Pm")
-                    .and_then(|t| read_texture(base, t, &mut notes))
-                    .map(|i| (i, 0)),
+                roughness,
+                metallic,
                 normal: m
                     .normal_texture
                     .as_deref()

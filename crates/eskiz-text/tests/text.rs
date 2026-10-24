@@ -486,3 +486,20 @@ fn later_lines_keep_their_own_run_and_text_offsets() {
     assert!(second.iter().all(|g| g.color == red), "line 2 takes its own run's colour");
     assert!(layout.glyphs.iter().filter(|g| g.cluster < 5).all(|g| g.color != red));
 }
+
+#[test]
+fn carriage_returns_do_not_add_lines_or_drop_later_ones() {
+    let Some(mut fonts) = fonts_or_skip() else {
+        return;
+    };
+    // An accented letter makes cosmic-text split paragraphs with unicode-bidi, which also ends a
+    // paragraph at '\r'. The text is "Café\r\nOne\nTwo": three lines, all drawn.
+    let text = "Caf\u{e9}\r\nOne\nTwo";
+    let layer = TextLayer::new(text, attrs(20.0), 0.0);
+    let layout = layer.layout(&mut fonts);
+    let two = text.find("Two").unwrap();
+    let one = text.find("One").unwrap();
+    assert!(layout.glyphs.iter().any(|g| g.cluster >= two), "the last line is drawn");
+    let one_glyphs: Vec<_> = layout.glyphs.iter().filter(|g| g.cluster >= one && g.cluster < two).collect();
+    assert!(!one_glyphs.is_empty(), "the middle line keeps its own offsets");
+}

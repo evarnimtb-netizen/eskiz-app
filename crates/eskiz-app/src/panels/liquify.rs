@@ -29,7 +29,7 @@ impl EskizApp {
         };
         let ctx = ui.ctx().clone();
         let pal = self.pal;
-        let busy = st.is_stroking();
+        let busy = st.is_moving();
         let mut s = st.settings();
         let mut magnitude = st.magnitude();
         let mut magnitude_changed = false;

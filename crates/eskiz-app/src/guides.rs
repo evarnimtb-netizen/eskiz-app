@@ -342,10 +342,13 @@ pub struct GuideState {
 impl GuideState {
     /// Follows the open document. `key` is its library ID (`None` for an unsaved document)
     /// and `dir` is the library folder. Switching documents loads that document's guides,
-    /// or the defaults when it has none.
-    pub fn sync(&mut self, key: Option<&str>, dir: Option<&Path>) {
+    /// or the defaults when it has none. `assigned` is the ID the latest first save gave a new
+    /// document: only that document keeps the guides it had before it was saved.
+    pub fn sync(&mut self, key: Option<&str>, dir: Option<&Path>, assigned: Option<&str>) {
         if key.map(str::to_owned) != self.doc_key {
-            let was_unsaved = self.doc_key.is_none();
+            // An external document (opened from a file) also has no key until its first save:
+            // it must not inherit the guides of the drawing before it.
+            let was_unsaved = self.doc_key.is_none() && key.is_some() && key == assigned;
             self.doc_key = key.map(str::to_owned);
             match (key, dir) {
                 (Some(id), Some(dir)) => {
@@ -386,7 +389,8 @@ impl GuideState {
     }
 
     /// Writes the settings when they differ from the file. Errors are ignored: guides are
-    /// a convenience, and a failed write must not stop painting.
+    /// a convenience, and a failed write must not stop painting. A failed write is not tried
+    /// again every frame; the next change tries again.
     fn persist(&mut self, dir: Option<&Path>) {
         let (Some(id), Some(dir)) = (self.doc_key.clone(), dir) else {
             return;
@@ -395,9 +399,8 @@ impl GuideState {
         if self.saved.as_deref() == Some(text.as_str()) {
             return;
         }
-        if crate::storage::write_atomic(&file_for(dir, &id), text.as_bytes()).is_ok() {
-            self.saved = Some(text);
-        }
+        let _ = crate::storage::write_atomic(&file_for(dir, &id), text.as_bytes());
+        self.saved = Some(text);
     }
 
     pub fn assist_on(&self, layer: u64) -> bool {
@@ -503,14 +506,14 @@ mod tests {
         };
         state.set_assist(7, true);
         state.set_assist(42, true);
-        state.sync(Some("doc-a"), Some(&dir));
+        state.sync(Some("doc-a"), Some(&dir), Some("doc-a"));
 
         let mut reopened = GuideState::default();
-        reopened.sync(Some("doc-a"), Some(&dir));
+        reopened.sync(Some("doc-a"), Some(&dir), None);
         assert_eq!(reopened.settings, state.settings);
         assert_eq!(reopened.assist_layers, BTreeSet::from([7, 42]));
         // Switching to a document with no file gives the defaults.
-        reopened.sync(Some("doc-b"), Some(&dir));
+        reopened.sync(Some("doc-b"), Some(&dir), None);
         assert_eq!(reopened.settings, GuideSettings::default());
         assert!(reopened.assist_layers.is_empty());
         let _ = fs::remove_dir_all(&dir);
