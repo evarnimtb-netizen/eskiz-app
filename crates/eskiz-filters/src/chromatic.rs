@@ -5,8 +5,10 @@
 use crate::gaussian;
 use crate::image::{mix_masked, Image, Px};
 
-/// Alpha factor `0.333252`: the average of three samples.
-pub const ALPHA_SCALE: f32 = 0.333252;
+/// Alpha factor: the average of three samples. The design notes give `0.333252`, which is one
+/// third rounded to half precision; the exact third is used, so three opaque samples give alpha 1
+/// (with 0.333252 an opaque 16-bit pixel came out as 65519).
+pub const ALPHA_SCALE: f32 = 1.0 / 3.0;
 
 /// Axial parameters. Defaults other than origin and amount are
 /// unverified.

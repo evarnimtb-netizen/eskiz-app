@@ -247,7 +247,7 @@ impl EskizApp {
             self.show_toast("Nothing is recorded yet.", 2.5);
             return;
         }
-        let path = expand_home(&self.export_path).with_extension("mp4");
+        let path = crate::export::with_export_extension(&expand_home(&self.export_path), "mp4");
         let (tx, rx) = channel();
         let repaint = ctx.clone();
         std::thread::spawn(move || {

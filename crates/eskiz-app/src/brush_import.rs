@@ -252,9 +252,21 @@ impl BrushStore {
         Self::at(crate::storage::user_brushes_dir())
     }
 
+    /// The file of `key`. Keys made by [`Self::save`] are file-name safe already; a brush file
+    /// put in the folder by hand keeps its own name, which is its key (see [`Self::load`]).
+    fn file_for(&self, key: &str) -> std::path::PathBuf {
+        let raw = self.root.join(format!("{key}.brush"));
+        let plain = !key.contains(['/', '\\']) && key != "." && key != "..";
+        if plain && raw.exists() {
+            raw
+        } else {
+            self.root.join(format!("{}.brush", safe_name(key)))
+        }
+    }
+
     /// Is there a file for `key`?
     pub fn contains(&self, key: &str) -> bool {
-        self.root.join(format!("{}.brush", safe_name(key))).exists()
+        self.file_for(key).exists()
     }
 
     /// Every stored brush as `(key, brush)`, sorted by key. The key is the file name without its
@@ -297,12 +309,12 @@ impl BrushStore {
     pub fn write(&self, key: &str, brush: &ImportedBrush) -> Result<(), String> {
         fs::create_dir_all(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
         let bytes = brushes::write_brush(brush).map_err(|e| e.to_string())?;
-        crate::storage::write_atomic(&self.root.join(format!("{}.brush", safe_name(key))), &bytes)
+        crate::storage::write_atomic(&self.file_for(key), &bytes)
     }
 
     /// Deletes the file `key`. A file that is already gone is not an error.
     pub fn remove(&self, key: &str) -> Result<(), String> {
-        match fs::remove_file(self.root.join(format!("{}.brush", safe_name(key)))) {
+        match fs::remove_file(self.file_for(key)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.to_string()),
@@ -317,9 +329,18 @@ pub fn safe_name(name: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
         .collect();
-    let clean = clean.trim();
+    // Short enough for a temporary file name beside it (every file system allows 255 bytes).
+    let mut clean = clean.trim().to_owned();
+    while clean.len() > 120 {
+        clean.pop();
+    }
+    let clean = clean.trim_end();
+    // Windows keeps these names for devices: a file called `NUL.brush` cannot be written.
+    const DEVICES: &[&str] = &["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
     if clean.is_empty() {
         "Brush".to_owned()
+    } else if DEVICES.iter().any(|d| d.eq_ignore_ascii_case(clean)) {
+        format!("{clean} brush")
     } else {
         clean.to_owned()
     }
@@ -477,5 +498,7 @@ mod tests {
         assert_eq!(safe_name("Soft Ink-2"), "Soft Ink-2");
         assert_eq!(safe_name("a|b/c"), "a_b_c");
         assert_eq!(safe_name("  "), "Brush");
+        assert_eq!(safe_name("nul"), "nul brush", "a Windows device name is not a file name");
+        assert!(safe_name(&"x".repeat(400)).len() <= 120);
     }
 }

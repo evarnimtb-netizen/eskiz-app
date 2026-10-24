@@ -22,6 +22,9 @@ use eskiz_media::{
 use crate::app::EskizApp;
 use crate::export::expand_home;
 
+/// The export job's answer when the user pressed Cancel.
+const CANCELED: &str = "The export was canceled.";
+
 /// The file's `skinBlendMode` for normal onion blending. The default.
 const SKIN_BLEND_NORMAL: i64 = 2;
 /// The file's `skinBlendMode` for multiply onion blending. A `[choice]`: the file value for multiply is not recovered.
@@ -397,7 +400,8 @@ impl EskizApp {
             self.begin_staged(ctx, crate::deliver::ExportKind::Anim(format));
             return;
         }
-        let path = expand_home(&self.export_path).with_extension(format.extension());
+        // "Study v1.2" keeps its ".2": only a known extension is replaced.
+        let path = crate::export::with_export_extension(&expand_home(&self.export_path), format.extension());
         self.start_anim_export_to(ctx, format, path, crate::deliver::Delivery::Local);
     }
 
@@ -459,6 +463,8 @@ impl EskizApp {
                         let text = format!("Exported {label} to {}", path.display());
                         self.deliver(&path, delivery, text, 3.5);
                     }
+                    // A cancel the user asked for is not a failure.
+                    Err(e) if e == CANCELED => self.show_toast(CANCELED, 2.0),
                     Err(e) => self.show_toast(format!("Export failed: {e}"), 4.0),
                 }
             }
@@ -483,7 +489,7 @@ fn run_anim_export(
     let transparent = opts.transparent && format != AnimFormat::Mp4;
     let paper = if transparent { Paper::Transparent } else { Paper::White };
     let out = export_frames_with(settings, frames, paper, progress)
-        .ok_or_else(|| "The export was canceled.".to_owned())?;
+        .ok_or_else(|| CANCELED.to_owned())?;
     if out.is_empty() {
         return Err("There are no frames to export.".to_owned());
     }

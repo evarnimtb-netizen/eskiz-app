@@ -335,7 +335,7 @@ fn the_palette_export_commits_on_android_and_stays_local_on_desktop() {
 }
 
 #[test]
-fn glb_save_on_android_commits_the_model_file() {
+fn a_glb_pick_on_android_leaves_the_typed_export_path_alone() {
     // A 3D document is needed; without one the pick is routed but no export starts. This checks
     // the route does not set the typed export path on Android.
     let (mut h, mock, dir) = android("glb");

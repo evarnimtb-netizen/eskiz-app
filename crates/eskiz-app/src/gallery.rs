@@ -529,8 +529,9 @@ impl EskizApp {
 
     /// Queue a background save of the current document. The snapshot is taken now.
     pub(crate) fn queue_save(&mut self) {
-        if self.session.is_stroking() {
-            // The layer holds a half-drawn stroke: the autosave clock saves once the pen lifts.
+        if self.session.is_stroking() || self.session.has_fill_preview() {
+            // The layer holds a half-drawn stroke (or a fill preview): the autosave clock saves
+            // once the pen lifts.
             crate::stroke_trace::event("ignored", "save while a stroke is open (deferred)");
             return;
         }
@@ -607,6 +608,7 @@ impl EskizApp {
     /// Show a rebuilt document on the canvas. It is saved at once, which removes its journal.
     fn show_restored(&mut self, ctx: &egui::Context, id: String, title: String, doc: Document) {
         self.cancel_stroke();
+        self.end_document_modes();
         self.session.replace_document(doc);
         self.active = self.session.valid_active(None);
         self.need_fit = true;
@@ -653,7 +655,7 @@ impl EskizApp {
         journal::keep_panic_snapshot_for(dirty.then_some(id.as_str()));
         let (edits, sig) = (self.session.edits(), meta_signature(&self.session.doc));
         let now = self.now;
-        let stroking = self.session.is_stroking();
+        let stroking = self.session.is_stroking() || self.session.has_fill_preview();
         let saving = self.gal.saves_in_flight > 0;
         let root = self.gal.library.as_ref().map(|l| l.recovery_root().to_owned()).unwrap_or_default();
         let Some(js) = self.gal.journal.as_mut().filter(|j| j.id == id) else {
@@ -748,7 +750,7 @@ impl EskizApp {
             return;
         }
         let dirty = self.is_dirty();
-        let busy = self.gal.saves_in_flight > 0 || self.session.is_stroking();
+        let busy = self.gal.saves_in_flight > 0 || self.session.is_stroking() || self.session.has_fill_preview();
         let secs = self.gal.autosave_secs;
         if self.gal.clock.update(dirty, busy, self.now, secs) {
             self.queue_save();
@@ -764,6 +766,8 @@ impl EskizApp {
         self.save_three_d_now();
         if matches!(self.gal.screen, Screen::Canvas) && self.gal.library.is_some() && self.is_dirty() {
             self.commit_stroke("the app is saving on exit");
+            // A Pour Fill still being dragged is kept, as it shows.
+            let _ = self.session.pour_fill_commit();
             self.queue_save();
         }
     }
@@ -931,6 +935,11 @@ impl EskizApp {
             fresh: false,
         }));
         self.gal.send(Job::Load(e.id));
+        if self.gal.worker_lost {
+            // The storage thread is gone, so the load will never answer: stay in the gallery
+            // (the next frame says why) instead of an opening screen that never ends.
+            self.gal.screen = Screen::Gallery;
+        }
     }
 
     pub(crate) fn new_canvas(&mut self, frame: u64, w: usize, h: usize, from: Rect) {
@@ -959,6 +968,7 @@ impl EskizApp {
             return;
         };
         self.cancel_stroke();
+        self.end_document_modes();
         self.session.replace_document(*doc);
         self.active = self.session.valid_active(None);
         self.need_fit = true;

@@ -279,7 +279,9 @@ fn parse(bytes: &[u8], allow16: bool) -> Result<(PsdDocument, Layers16)> {
             )))
         }
     }
-    if !(3..=4).contains(&channels) {
+    // Saved alpha and spot channels come after RGB (and the transparency): their layer data
+    // is unaffected, so they are allowed and left out. 56 is the most the format allows.
+    if !(3..=56).contains(&channels) {
         return Err(Error::Unsupported(format!(
             "unsupported channel count {channels} for RGB"
         )));
@@ -1848,7 +1850,8 @@ fn decode_merged16(data: &[u8], w: usize, h: usize, channels: usize) -> Result<V
     }
     let mut out = vec![0u16; w * h * 4];
     for (i, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-        let a = if channels >= 4 { planes[3][i] } else { 65_535 };
+        // With extra saved channels the fourth is a user channel, not the transparency.
+        let a = if channels == 4 { planes[3][i] } else { 65_535 };
         px[0] = premul16(planes[0][i], a);
         px[1] = premul16(planes[1][i], a);
         px[2] = premul16(planes[2][i], a);
@@ -1917,7 +1920,7 @@ fn decode_merged(data: &[u8], w: usize, h: usize, channels: usize) -> Result<Vec
 
     let mut out = vec![0u8; w * h * 4];
     for (i, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-        let a = if channels >= 4 { planes[3][i] } else { 255 };
+        let a = if channels == 4 { planes[3][i] } else { 255 };
         px[0] = premul(planes[0][i], a);
         px[1] = premul(planes[1][i], a);
         px[2] = premul(planes[2][i], a);

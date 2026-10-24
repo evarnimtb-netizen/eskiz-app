@@ -550,14 +550,30 @@ fn truncated_files_are_errors_not_panics() {
             read_all(doc[..cut].to_vec());
         }
     }
+    // A cut-off file of each kind is an error (a panic would fail the test before that). A PSD
+    // with layers is read from its layers alone, so a cut in the merged image after them reads
+    // the same document: what must never happen is a cut file that reads as something else.
+    let whole = psd::from_bytes(&psd8).unwrap();
+    let whole16 = psd::from_bytes16(&psd8).unwrap();
     for cut in cuts(psd8.len()) {
-        let _ = psd::from_bytes(&psd8[..cut]);
-        let _ = psd::from_bytes16(&psd8[..cut]);
+        if let Ok(doc) = psd::from_bytes(&psd8[..cut]) {
+            assert_eq!(doc, whole, "PSD cut at {cut} read as another document");
+        }
+        if let Ok(doc) = psd::from_bytes16(&psd8[..cut]) {
+            assert_eq!(doc, whole16, "16-bit PSD read cut at {cut} read as another document");
+        }
     }
     for cut in cuts(set.len()) {
-        let _ = read_brush("b", &brush_bytes[..cut.min(brush_bytes.len())]);
-        let _ = read_brushset("s", &set[..cut]);
+        if cut < brush_bytes.len() {
+            assert!(read_brush("b", &brush_bytes[..cut]).is_err(), "brush cut at {cut}");
+        }
+        assert!(read_brushset("s", &set[..cut]).is_err(), "brush set cut at {cut}");
     }
+    for cut in cuts(swatches.len()) {
+        assert!(read_swatches(&swatches[..cut]).is_err(), "swatches cut at {cut}");
+    }
+    // ACO and ASE: a cut can fall between whole sections, which reads as a shorter palette, so
+    // only "no panic" is checked; other formats' bytes must not panic either.
     for bytes in [&swatches, &aco, &ase] {
         for cut in cuts(bytes.len()) {
             let _ = read_swatches(&bytes[..cut]);

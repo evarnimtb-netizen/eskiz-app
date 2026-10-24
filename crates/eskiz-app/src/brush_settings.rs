@@ -277,9 +277,60 @@ pub fn to_settings(brush: &Brush) -> BTreeMap<String, SettingValue> {
 
 /// Overlays the `eskiz.*` settings of `ib` on `brush`. Keys the file lacks leave `brush` as it
 /// was; a value of the wrong type or a non-finite number is ignored.
-/// Settings whose Studio slider runs from 0 to 1. Imported values are clamped to that range.
-const UNIT_FIELDS: &[&str] =
-    &["smoothing", "pressure_smoothing", "stabilization", "motion_amount", "motion_expression", "spacing_jitter", "spacing_speed"];
+/// The range of each setting's Studio control. Imported values are clamped to it: a file could
+/// ask for a stabiliser that takes seconds per sample, a spacing that never advances or a grain
+/// scale that overflows the texture lookup.
+const RANGES: &[(&str, f64, f64)] = &[
+    ("size", 0.1, crate::app::MAX_SIZE as f64),
+    ("opacity", 0.0, 1.0),
+    ("flow", 0.0, 1.0),
+    ("wet_edges", 0.0, 1.0),
+    ("burnt_edges", 0.0, 1.0),
+    ("alpha_threshold", 0.0, 1.0),
+    ("grain_scale", 0.1, 4.0),
+    ("grain_depth", 0.0, 1.0),
+    ("grain_contrast", -1.0, 2.0),
+    ("grain_brightness", -1.0, 1.0),
+    ("spacing", 0.0, 1.0),
+    ("spacing_jitter", 0.0, 1.0),
+    ("spacing_speed", 0.0, 1.0),
+    ("scatter", 0.0, 3.0),
+    ("stamp_count_jitter", 0.0, 1.0),
+    ("smoothing", 0.0, 1.0),
+    ("pressure_smoothing", 0.0, 1.0),
+    ("stabilization", 0.0, 1.0),
+    ("motion_amount", 0.0, 1.0),
+    ("motion_expression", 0.0, 1.0),
+    ("shape_rotation", -std::f64::consts::PI, std::f64::consts::PI),
+    ("rotation_jitter", 0.0, 1.0),
+    ("shape_roundness", 0.02, 1.0),
+    ("pressure_roundness", 0.0, 1.0),
+    ("pressure_roundness_min", 0.0, 1.0),
+    ("pressure_size", -1.0, 1.0),
+    ("pressure_opacity", -1.0, 1.0),
+    ("speed_size", -1.0, 1.0),
+    ("speed_opacity", -1.0, 1.0),
+    ("size_jitter", 0.0, 1.0),
+    ("opacity_jitter", 0.0, 1.0),
+    ("tilt_size", -1.0, 1.0),
+    ("tilt_opacity", -1.0, 1.0),
+    ("tilt_roundness", 0.0, 1.0),
+    ("min_size", 0.0, 1.0),
+    ("max_size", 0.0, 2.0),
+    ("hue_jitter", 0.0, 1.0),
+    ("saturation_jitter", 0.0, 1.0),
+    ("lightness_jitter", 0.0, 1.0),
+    ("darkness_jitter", 0.0, 1.0),
+    ("wet.attack", 0.0, 1.0),
+    ("wet.falloff_amount", 0.0, 1.0),
+    ("wet.load_amount", 0.0, 1.0),
+    ("wet.dilution", 0.0, 1.0),
+    ("wet.tilt_angle", 0.0, 1.0),
+    ("wet.pull", 0.0, 1.0),
+    ("wet.grade", 0.0, 1.0),
+    ("wet.wetness", 0.0, 1.0),
+    ("wet.bleed", 0.0, 1.0),
+];
 
 pub fn apply_settings(ib: &ImportedBrush, brush: &mut Brush) {
     let text = |name: &str| ib.text(&key(name)).map(str::to_owned);
@@ -316,9 +367,10 @@ pub fn apply_settings(ib: &ImportedBrush, brush: &mut Brush) {
         match field {
             Field::F(slot) => {
                 if let Some(v) = ib.number(&key(&name)).filter(|v| v.is_finite()) {
-                    // Values the Studio limits to 0..1 stay there: a file could ask for a
-                    // stabiliser that takes seconds per sample, or a spacing that never advances.
-                    *slot = if UNIT_FIELDS.contains(&name.as_str()) { v.clamp(0.0, 1.0) } else { v };
+                    *slot = match RANGES.iter().find(|(n, ..)| *n == name) {
+                        Some(&(_, lo, hi)) => v.clamp(lo, hi),
+                        None => v,
+                    };
                 }
             }
             Field::B(slot) => {

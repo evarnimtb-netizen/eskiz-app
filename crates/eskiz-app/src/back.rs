@@ -180,7 +180,7 @@ impl EskizApp {
                 }
             }
             BackStep::Popover => self.popovers.close(),
-            BackStep::Studio => self.close_studio(),
+            BackStep::Studio => self.request_close_studio(),
             BackStep::Edit => {
                 // The same order as Escape: the adjustment first, then Liquify, then the
                 // transform and selection.

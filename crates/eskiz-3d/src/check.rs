@@ -18,6 +18,8 @@ pub enum FatalIssue {
     PointCloud,
     /// No mesh objects at all.
     NoMesh,
+    /// A vertex position is infinite or not a number: the model cannot be framed or exported.
+    NonFinitePositions { submesh: usize, name: String },
 }
 
 /// A check finding that lets the import continue.
@@ -54,6 +56,9 @@ impl CheckReport {
                     "The file contains only points, not triangles.".to_string()
                 }
                 FatalIssue::NoMesh => "The file contains no mesh.".to_string(),
+                FatalIssue::NonFinitePositions { name, .. } => {
+                    format!("Mesh \"{name}\" has vertex positions that are not numbers.")
+                }
             });
         }
         for w in &self.warnings {
@@ -91,6 +96,12 @@ impl Model {
             }
             if s.uvs.iter().all(|uv| *uv == Vec2::ZERO) {
                 r.fatal.push(FatalIssue::MissingUvs {
+                    submesh: i,
+                    name: s.name.clone(),
+                });
+            }
+            if !s.positions.iter().all(|p| p.is_finite()) {
+                r.fatal.push(FatalIssue::NonFinitePositions {
                     submesh: i,
                     name: s.name.clone(),
                 });

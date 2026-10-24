@@ -825,10 +825,7 @@ impl EskizApp {
         match open_procreate(path) {
             Ok(doc) => {
                 self.commit_stroke("opening another drawing");
-                self.shape_edit = None;
-                self.adjust_cancel();
-                self.exit_edit_mode();
-                self.end_text_edit();
+                self.end_document_modes();
                 // The drawing being replaced is saved first (the snapshot is taken now).
                 if self.is_dirty() {
                     self.ensure_storage(ctx);
@@ -852,10 +849,10 @@ impl EskizApp {
             self.step_three_d(false);
             return;
         }
-        if self.adjust.is_some() || self.liquify.is_some() {
-            return;
-        }
-        if self.transform.is_some() {
+        if self.adjust.is_some() || self.liquify.is_some() || self.transform.is_some() {
+            // The open mode keeps its own changes until Apply or Cancel: say so, rather than
+            // let the press look ignored.
+            self.show_toast("Apply or cancel first; then Undo works again.", 2.0);
             return;
         }
         // Undo while Edit Shape is open takes the shape back.
@@ -874,10 +871,10 @@ impl EskizApp {
             self.step_three_d(true);
             return;
         }
-        if self.adjust.is_some() || self.liquify.is_some() {
-            return;
-        }
-        if self.transform.is_some() {
+        if self.adjust.is_some() || self.liquify.is_some() || self.transform.is_some() {
+            // The open mode keeps its own changes until Apply or Cancel: say so, rather than
+            // let the press look ignored.
+            self.show_toast("Apply or cancel first; then Undo works again.", 2.0);
             return;
         }
         self.settle_shape_preview();
@@ -1096,6 +1093,8 @@ impl EskizApp {
                 "Select a layer to paint on."
             } else if doc.effective_locked(self.active) {
                 "The active layer is locked."
+            } else if doc.texts.contains_key(&self.active) {
+                "This is a text layer. Rasterize it (Layers menu) to paint on it."
             } else {
                 "The active layer is hidden. Show it to paint."
             };
@@ -1501,6 +1500,10 @@ impl EskizApp {
             } else {
                 self.load_document(ctx, path);
             }
+            if dropped.len() > 1 {
+                // One import runs at a time on the canvas: say so rather than drop the rest silently.
+                self.show_toast(format!("Only {} was added. Drop the other files one at a time.", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())), 4.0);
+            }
         }
     }
 
@@ -1534,7 +1537,7 @@ impl EskizApp {
         self.text_tick(ctx);
         if self.studio.is_some() {
             if ctx.input(|i| i.key_pressed(Key::Escape)) && !ctx.egui_wants_keyboard_input() {
-                self.close_studio();
+                self.request_close_studio();
             }
             return;
         }
@@ -2300,7 +2303,7 @@ impl eframe::App for EskizApp {
         // eframe also calls `save` every 30 s while the app runs. A stroke that is open then is
         // neither cancelled nor saved half drawn: the autosave takes it after the pen lifts
         // (on exit, `save_on_exit` commits it first).
-        if self.session.is_stroking() {
+        if self.session.is_stroking() || self.session.has_fill_preview() {
             crate::stroke_trace::event("ignored", "periodic save while a stroke is open (deferred)");
         } else {
             self.save_on_exit();

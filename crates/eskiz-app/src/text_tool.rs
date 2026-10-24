@@ -380,7 +380,8 @@ impl Session {
     /// first records the pending step (see [`Session::text_commit`]).
     pub fn text_live(&mut self, id: u64, name: &'static str, text: TextLayer, pixels: Vec<u8>) -> Option<Edit> {
         let (w, h) = (self.doc.width, self.doc.height);
-        if !self.idle() || !self.doc.texts.contains_key(&id) || pixels.len() != w * h * 4 {
+        // A locked text layer (or one in a locked group) is not edited, like any other layer.
+        if !self.idle() || !self.doc.texts.contains_key(&id) || pixels.len() != w * h * 4 || self.doc.effective_locked(id) {
             return None;
         }
         if self.pending_text.as_ref().is_some_and(|p| p.id != id || p.name != name) {
@@ -875,19 +876,18 @@ impl EskizApp {
             self.show_toast("Fonts must be .ttf, .otf or .ttc.", 2.5);
             return;
         }
-        let dir = crate::storage::fonts_dir();
-        let dest = dir.join(name);
-        let copied = std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(path, &dest).map(|_| ()));
-        if let Err(e) = copied {
-            self.show_toast(format!("Could not copy the font: {e}"), 3.0);
-            return;
-        }
-        match self.text.fonts().import_file(&dest) {
-            Ok(families) => {
-                let names = families.join(", ");
-                self.show_toast(format!("Imported {names}"), 2.5);
+        // Load it from where it is first: a file that does not load is not copied.
+        let families = match self.text.fonts().import_file(path) {
+            Ok(families) => families,
+            Err(e) => {
+                self.show_toast(format!("Could not load the font: {e}"), 3.0);
+                return;
             }
-            Err(e) => self.show_toast(format!("Could not load the font: {e}"), 3.0),
+        };
+        let names = families.join(", ");
+        match keep_font(path, name) {
+            Ok(()) => self.show_toast(format!("Imported {names}"), 2.5),
+            Err(e) => self.show_toast(format!("Imported {names} for now; it could not be kept: {e}"), 3.5),
         }
     }
 
@@ -1003,4 +1003,26 @@ fn fill_quad(painter: &egui::Painter, q: [Pos2; 4], rounding: f32, colour: Color
     } else {
         painter.add(egui::Shape::convex_polygon(q.to_vec(), colour, Stroke::NONE));
     }
+}
+
+/// Copy an imported font into the fonts folder so it loads at the next start. A font already
+/// there with the same bytes is left as it is (importing it from that folder must not copy a
+/// file onto itself, which empties it), and another font with the same file name keeps its file:
+/// this one gets a free name.
+fn keep_font(path: &Path, name: &std::ffi::OsStr) -> std::io::Result<()> {
+    let dir = crate::storage::fonts_dir();
+    std::fs::create_dir_all(&dir)?;
+    let data = std::fs::read(path)?;
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = Path::new(name).extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut dest = dir.join(name);
+    let mut n = 2;
+    while dest.exists() {
+        if std::fs::read(&dest).is_ok_and(|have| have == data) {
+            return Ok(());
+        }
+        dest = dir.join(format!("{stem} ({n}).{ext}"));
+        n += 1;
+    }
+    crate::storage::write_atomic(&dest, &data).map_err(std::io::Error::other)
 }

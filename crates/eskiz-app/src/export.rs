@@ -9,8 +9,6 @@
 //! It takes a `&Document`, so the app can clone the document and run it on a background thread (`share.rs`).
 
 use std::fmt::Display;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use eskiz_core::{composite, composite16, BlendMode, CompositeOpts, Depth, Node, NodeKind};
@@ -139,7 +137,7 @@ impl ExportSettings {
 /// there is replaced (`a.png` exported as PDF gives `a.pdf`); any other dot is part of the name
 /// (`Sketch v1.2` gives `Sketch v1.2.png`). Windows device names get a leading underscore.
 pub(crate) fn with_export_extension(path: &Path, ext: &str) -> PathBuf {
-    const KNOWN: [&str; 10] = ["procreate", "psd", "pdf", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif"];
+    const KNOWN: [&str; 11] = ["procreate", "psd", "pdf", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "mp4"];
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Untitled");
     let stem = match name.rsplit_once('.') {
         Some((stem, old)) if !stem.is_empty() && KNOWN.contains(&old.to_ascii_lowercase().as_str()) => stem,
@@ -547,8 +545,9 @@ pub fn write_png_dpi(path: &Path, width: usize, height: usize, rgba: &[u8], dpi:
             width * height * 4
         ));
     }
-    let file = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), width as u32, height as u32);
+    // Encoded in memory, then written in one step: a failed export never leaves half a file.
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width as u32, height as u32);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     if let Some(dpi) = dpi {
@@ -566,7 +565,7 @@ pub fn write_png_dpi(path: &Path, width: usize, height: usize, rgba: &[u8], dpi:
         .write_image_data(rgba)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     writer.finish().map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(())
+    eskiz_format::fsutil::write_atomic(path, &bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The user's home directory from `HOME` or `USERPROFILE`.
@@ -595,9 +594,14 @@ pub fn default_export_path() -> PathBuf {
 /// Expand a leading `~/` in a path typed into a text field.
 pub fn expand_home(text: &str) -> PathBuf {
     let trimmed = text.trim();
-    if let Some(rest) = trimmed.strip_prefix("~/") {
+    // `~\` is how a path is typed on Windows.
+    let rest = trimmed.strip_prefix("~/").or_else(|| if cfg!(windows) { trimmed.strip_prefix("~\\") } else { None });
+    if let (Some(rest), Some(home)) = (rest, home_dir()) {
+        return home.join(rest);
+    }
+    if trimmed == "~" {
         if let Some(home) = home_dir() {
-            return home.join(rest);
+            return home;
         }
     }
     PathBuf::from(trimmed)
@@ -654,7 +658,7 @@ mod tests {
         let doc = painted();
         let path = export_document(&doc, ExportFormat::Png, &dir.join("art.jpeg")).unwrap();
         assert_eq!(path, dir.join("art.png"), "the extension follows the format");
-        let decoder = png::Decoder::new(std::io::BufReader::new(File::open(&path).unwrap()));
+        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()));
         let mut reader = decoder.read_info().unwrap();
         let dims = reader.info().pixel_dims.expect("pHYs chunk");
         assert_eq!(dims.unit, png::Unit::Meter);
@@ -883,7 +887,7 @@ mod tests {
         let path = dir.join("t.png");
         let rgba: Vec<u8> = (0..(3 * 2 * 4)).map(|v| (v * 10) as u8).collect();
         write_png(&path, 3, 2, &rgba).unwrap();
-        let decoder = png::Decoder::new(std::io::BufReader::new(File::open(&path).unwrap()));
+        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()));
         let mut reader = decoder.read_info().unwrap();
         let mut buf = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).unwrap();

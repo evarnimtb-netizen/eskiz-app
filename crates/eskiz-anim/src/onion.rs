@@ -145,7 +145,11 @@ fn composite_clipped(
     stack: Vec<(Layer, BlendMode)>,
     clips: &[bool],
 ) -> Vec<u8> {
+    // Blended onto white paper, as `blend::flatten` does for frames with no clipped item: a
+    // Multiply layer then darkens the paper the same way in both cases.
     let mut doc = eskiz_core::Document::empty(width, height);
+    doc.background = [1.0; 3];
+    doc.background_visible = true;
     for ((layer, blend), &clipped) in stack.into_iter().zip(clips) {
         let props = eskiz_core::Props {
             visible: layer.visible,
@@ -160,7 +164,7 @@ fn composite_clipped(
         &doc,
         eskiz_core::composite::CompositeOpts {
             skip_private: true,
-            background: false,
+            background: true,
         },
     );
     straight

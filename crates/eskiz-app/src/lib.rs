@@ -281,11 +281,18 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     }
 }
 
+/// The command-line arguments. `std::env::args` panics on one that is not valid Unicode (a
+/// path from a file manager can be any bytes): such an argument is read with replacement
+/// characters instead.
+fn cli_args() -> Vec<String> {
+    std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect()
+}
+
 /// Desktop entry point. Parses `std::env::args`, runs the requested mode, and exits
 /// with status 1 on error.
 pub fn run() {
     journal::install_panic_hook();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = cli_args();
     let parsed = parse_args(&args);
     if let Ok((Some(mode), _)) = split_renderer_flag(&args) {
         renderer::set_cli_request(mode);
@@ -386,7 +393,7 @@ fn attach_parent_console() {}
 /// first, so a missing package gives a message and exit status 2, not a panic. A panic before
 /// the app has been created is reported the same way; a panic after that is passed on unchanged.
 fn open_window(start: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
-    startup::init(&std::env::args().skip(1).collect::<Vec<_>>());
+    startup::init(&cli_args());
     #[cfg(target_os = "linux")]
     {
         if let Err(message) = linux_runtime::preflight() {

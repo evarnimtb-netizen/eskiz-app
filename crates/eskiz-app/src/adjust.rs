@@ -223,6 +223,10 @@ impl EskizApp {
         if self.liquify.is_some() {
             return false;
         }
+        if self.transform.is_some() {
+            self.show_toast("Finish or cancel the transform first.", 2.0);
+            return false;
+        }
         if self.session.is_stroking() {
             return false;
         }
@@ -258,6 +262,10 @@ impl EskizApp {
         // Clone always paints; Pencil mode paints for every type.
         adj.pencil = pencil || kind == AdjustKind::Clone;
         let paint = adj.pencil.then(|| Arc::new(vec![0.0f32; w * h]));
+        // The first slider the banner and a canvas drag can move (Glitch and Chromatic aberration
+        // start with a choice, not the amount).
+        let specs = kind.params();
+        let param = adj.visible_params().into_iter().find(|&i| specs.get(i).is_some_and(|p| p.choices.is_empty() && !p.hidden)).unwrap_or(0);
         self.adjust = Some(AdjustState {
             adj,
             layer: id,
@@ -265,7 +273,7 @@ impl EskizApp {
             source16,
             selection,
             paint,
-            param: 0,
+            param,
             pick: Pick::None,
             dragging: false,
             painting: false,
@@ -483,6 +491,8 @@ impl EskizApp {
             self.adjust_cancel();
             if applying {
                 self.show_toast("The adjustment was not applied: the drawing changed while it was rendering.", 3.0);
+            } else {
+                self.show_toast("The adjustment was closed: the layer changed.", 2.5);
             }
             return;
         }

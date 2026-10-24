@@ -230,7 +230,10 @@ pub fn write_graphics_pref(mode: Mode) {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, text);
+        // Whole or not at all: a half-written choice would be read as no choice.
+        if let Err(e) = eskiz_format::fsutil::write_atomic(&p, text.as_bytes()) {
+            crate::startup::log(&format!("renderer: could not save the choice: {e}"));
+        }
     }
 }
 

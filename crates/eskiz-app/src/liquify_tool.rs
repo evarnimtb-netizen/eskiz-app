@@ -381,6 +381,10 @@ impl EskizApp {
         if self.refuse_in_3d() {
             return false;
         }
+        if self.transform.is_some() {
+            self.show_toast("Finish or cancel the transform first.", 2.0);
+            return false;
+        }
         if self.liquify.is_some() {
             return true;
         }
@@ -474,6 +478,7 @@ impl EskizApp {
         };
         if stale {
             self.liquify_cancel();
+            self.show_toast("Liquify was closed: the layer changed.", 2.5);
             return;
         }
         let viewport = self.viewport;

@@ -1160,6 +1160,14 @@ pub fn dynamics_step(
 
 fn unwrap_near(v: f64, reference: f64) -> f64 {
     let mut r = v;
+    // A non-finite or huge angle (from a pen driver) would never come within a turn by steps
+    // of TAU: reduce it first.
+    if !(r - reference).is_finite() {
+        return reference;
+    }
+    if (r - reference).abs() > 64.0 * TAU {
+        r = reference + (r - reference).rem_euclid(TAU);
+    }
     while r - reference > PI {
         r -= TAU;
     }
@@ -1610,7 +1618,7 @@ fn same_dab(a: &Dab, b: &Dab) -> bool {
 }
 
 fn or_default(x: f64, default: f64) -> f64 {
-    if x == 0.0 || x.is_nan() {
+    if x <= 0.0 || x.is_nan() {
         default
     } else {
         x

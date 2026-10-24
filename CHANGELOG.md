@@ -2,6 +2,43 @@
 
 All notable changes to Eskiz are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] - 2026-10-24
+
+More fixes from the third review: data safety, crashes and hangs on damaged files, and many smaller problems. Your drawings and settings carry over; install it the same way as before (see the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install)). The known issues of 0.1.0 still apply.
+
+### Fixed
+
+- A Pour Fill that is still being dragged is no longer saved into the drawing half done.
+- Escape or Back in the Brush Studio no longer throws away unsaved changes at once: press it again to close without saving.
+- Importing a font from the fonts folder no longer empties the file, a font with the same file name no longer replaces another, and `.ttc` collections can be imported.
+- Ungrouping a hidden or locked group keeps its layers hidden or locked, and Merge Down respects a locked group.
+- 3D: the Visible, Locked and Paint through settings are saved, plain `.usd` files can be imported, and models whose positions are not numbers are refused with a message.
+- PSD files with saved alpha or spot channels can be imported.
+- Text layers that are locked are no longer edited, and painting on a text layer says how to paint on it.
+- A clipped layer can always be unclipped from the Layers menu.
+- Dropping several files on the canvas says that only the first was added.
+- Brush files keep their settings within the ranges the Studio allows, which avoids very slow or stuck strokes.
+- Stability: a damaged or hostile file, recovery copy or pen value can no longer crash or hang Eskiz in several places, and a file path that is not valid Unicode no longer stops it at start.
+- Exports (PNG, GLB, USDZ, texture maps) are written in one step, so a failed export never leaves half a file, and saving retries on Windows when a sync or antivirus program holds the file for a moment.
+- Cancelling an animation export says it was canceled, not that it failed.
+- Opening another drawing ends the Crop sheet, Canvas information, a half-drawn selection, Frames playback and any open adjustment, instead of carrying them over.
+- Flip Canvas mirrors the selection too, and an open text edit or fill is recorded before a Flip or a colour conversion, so undo goes back in the right order.
+- Undo and Redo say why they wait while an adjustment, Liquify or Transform is open, and an adjustment or Liquify that closes because the layer changed says so.
+- On Windows, export paths typed as `~\Pictures` are found, and texture names that differ only in upper and lower case no longer overwrite each other.
+- A 3D document whose folder cannot be removed is reported instead of coming back after Delete.
+- Pasting a picture that fails says so, and two quick copies no longer delete each other's clipboard file.
+- Brush names that are very long or are Windows device names (such as NUL) can be saved.
+- Android: MP4 files are shared with the right file type.
+- 3D import: texture lines with options (as Blender writes them) find their texture, OBJ files from older Windows tools open, a missing material library and left-out line parts are reported, and opaque glTF materials stay opaque. Only one 3D export runs at a time, and a failed start is reported.
+- Chromatic Aberration keeps opaque pixels fully opaque in 16-bit documents.
+- Animation frames with a clipped layer are blended onto the paper the same way as other frames.
+- Brush previews show an imported grain at the size it paints.
+- Duplicate copies the latest save, with the drawing guide and saved selections.
+- Opening the Frames settings no longer marks the drawing as changed, and very tall canvases no longer make the timeline cover the window.
+- The adjustment slider starts on the amount for Glitch and Chromatic Aberration.
+- Delete says to finish the stroke first when one is open.
+- Share rows and animation and timelapse exports keep names like "Study v1.2".
+
 ## [0.1.2] - 2026-10-24
 
 Fixes from a third review of the whole code base. Your drawings and settings carry over; install it the same way as before (see the [README](https://github.com/evarnimtb-netizen/eskiz-app#download-and-install)). The known issues of 0.1.0 still apply.
@@ -187,6 +224,7 @@ The full list of changes follows.
 - **MP4 export is not included.** It needs the OpenH264 codec, which these builds do not bundle. GIF, APNG and PNG sequence export work. Developers can build with `--features mp4`.
 - Some adjustment defaults and several 3D and Liquify details are approximations and may change.
 
+[0.1.3]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.3
 [0.1.2]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.1
 [0.1.0]: https://github.com/evarnimtb-netizen/eskiz-app/releases/tag/v0.1.0

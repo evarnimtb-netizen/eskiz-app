@@ -248,14 +248,14 @@ impl FontLibrary {
         self.replacements.get(missing)
     }
 
-    /// Imports one `.ttf` or `.otf` file. Returns the families it added. A file that is
+    /// Imports one `.ttf`, `.otf` or `.ttc` file. Returns the families it added. A file that is
     /// not a valid font is rejected, and the error names the file.
     pub fn import_file(&mut self, path: &Path) -> Result<Vec<String>, FontError> {
         let file = file_name(path);
         let is_supported = path
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf") || ext.eq_ignore_ascii_case("otf"));
+            .is_some_and(|ext| ["ttf", "otf", "ttc"].iter().any(|e| ext.eq_ignore_ascii_case(e)));
         if !is_supported {
             return Err(FontError::Unsupported { file });
         }
@@ -270,8 +270,6 @@ impl FontLibrary {
     /// Loads every `.ttf`, `.otf` and `.ttc` file in a folder. Other files are ignored. A file
     /// that fails validation is listed in [`DirReport::rejected`] and does not stop the others.
     ///
-    /// Note: `.ttc` collections are accepted here because the requirement asks for folder import
-    /// of collections. The system import dialog does not accept collections.
     pub fn load_dir(&mut self, dir: &Path) -> Result<DirReport, FontError> {
         let entries = std::fs::read_dir(dir).map_err(|source| FontError::Io {
             path: dir.to_path_buf(),

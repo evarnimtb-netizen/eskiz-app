@@ -65,7 +65,7 @@ const MODEL_FILE: &str = "model.glb";
 pub fn is_model_file(path: &Path) -> bool {
     let ext = ext_lower(path);
     matches!(ext.as_deref(), Some("glb" | "gltf" | "obj"))
-        || (cfg!(feature = "usd") && matches!(ext.as_deref(), Some("usdz" | "usda" | "usdc")))
+        || (cfg!(feature = "usd") && matches!(ext.as_deref(), Some("usdz" | "usda" | "usdc" | "usd")))
 }
 
 fn ext_lower(path: &Path) -> Option<String> {
@@ -80,7 +80,8 @@ pub fn load_model_file(path: &Path) -> Result<ImportedModel, ImportError> {
         Some("glb" | "gltf") => load_gltf(path, &opts),
         Some("obj") => load_obj(path, &opts),
         #[cfg(feature = "usd")]
-        Some("usdz" | "usda" | "usdc") => eskiz_3d::load_usd_file(path, &opts),
+        // A plain `.usd` is text or binary: the importer tells them apart by content.
+        Some("usdz" | "usda" | "usdc" | "usd") => eskiz_3d::load_usd_file(path, &opts),
         _ => Err(ImportError::Parse(format!("{} is not a 3D model", path.display()))),
     }
 }
@@ -533,9 +534,9 @@ pub fn load_model_doc(lib: &Library, id: &str) -> Result<ModelDoc, String> {
         for kind in MapKind::ALL {
             let path = dir.join("layers").join(layer_file(i, kind));
             let Ok(bytes) = fs::read(&path) else { continue };
-            let (w, h, rgba) = decode_png(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-            if w == set.width && h == set.height {
-                *set.map_mut(kind) = Layer::from_rgba(w, h, premultiply(&rgba));
+            let decoded = decode_png(&bytes, (set.width, set.height)).map_err(|e| format!("{}: {e}", path.display()))?;
+            if let Some(rgba) = decoded {
+                *set.map_mut(kind) = Layer::from_rgba(set.width, set.height, premultiply(&rgba));
             }
         }
     }
@@ -545,9 +546,13 @@ pub fn load_model_doc(lib: &Library, id: &str) -> Result<ModelDoc, String> {
     Ok(doc)
 }
 
-/// Decode an 8-bit RGBA PNG (straight alpha) from memory.
-fn decode_png(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
+/// Decode an 8-bit RGBA PNG (straight alpha) of `size` from memory. `None` when its header gives
+/// another size: checked before the pixels are allocated, which a corrupt header could make huge.
+fn decode_png(bytes: &[u8], size: (usize, usize)) -> Result<Option<Vec<u8>>, String> {
     let mut reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().map_err(|e| e.to_string())?;
+    if (reader.info().width as usize, reader.info().height as usize) != size {
+        return Ok(None);
+    }
     let size = reader.output_buffer_size().ok_or("PNG too large")?;
     let mut buf = vec![0; size];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
@@ -555,7 +560,7 @@ fn decode_png(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
         return Err("expected 8-bit RGBA".into());
     }
     buf.truncate(info.buffer_size());
-    Ok((info.width as usize, info.height as usize, buf))
+    Ok(Some(buf))
 }
 
 // ---------------------------------------------------------------- import and open jobs
@@ -970,45 +975,46 @@ impl EskizApp {
 
     /// Export the model as a GLB, in the background.
     pub(crate) fn start_glb_export(&mut self, path: PathBuf, delivery: crate::deliver::Delivery) {
-        let Some(three) = self.three_d.as_mut() else { return };
-        let model = three.doc.model.clone();
-        let (tx, rx) = channel();
-        let spawned = std::thread::Builder::new().name("eskiz-3d-export".into()).spawn(move || {
-            let result = export_glb(&model, &path).map(|()| (format!("GLB to {}", path.display()), path));
-            let _ = tx.send(result.map_err(|e| e.to_string()));
+        self.run_three_d_export(delivery, move |model| {
+            export_glb(model, &path).map(|()| (format!("GLB to {}", path.display()), path)).map_err(|e| e.to_string())
         });
-        if spawned.is_ok() {
-            three.export = Some(ModelExport { rx, delivery });
-        }
     }
 
     /// Export the model as a USDZ package, in the background.
     pub(crate) fn start_usdz_export(&mut self, path: PathBuf, delivery: crate::deliver::Delivery) {
-        let Some(three) = self.three_d.as_mut() else { return };
-        let model = three.doc.model.clone();
-        let (tx, rx) = channel();
-        let spawned = std::thread::Builder::new().name("eskiz-3d-export".into()).spawn(move || {
-            let result = export_usdz(&model, &path).map(|()| (format!("USDZ to {}", path.display()), path));
-            let _ = tx.send(result.map_err(|e| e.to_string()));
+        self.run_three_d_export(delivery, move |model| {
+            export_usdz(model, &path).map(|()| (format!("USDZ to {}", path.display()), path)).map_err(|e| e.to_string())
         });
-        if spawned.is_ok() {
-            three.export = Some(ModelExport { rx, delivery });
-        }
     }
 
     /// Export one PNG per map per texture set into `dir`, in the background.
     pub(crate) fn start_texture_export(&mut self, dir: PathBuf, delivery: crate::deliver::Delivery) {
-        let Some(three) = self.three_d.as_mut() else { return };
-        let model = three.doc.model.clone();
+        self.run_three_d_export(delivery, move |model| {
+            export_map_pngs(model, &dir, Some(EXPORT_DPI))
+                .map(|paths| (format!("{} texture PNGs to {}", paths.len(), dir.display()), dir))
+                .map_err(|e| e.to_string())
+        });
+    }
+
+    /// Run one 3D export on a thread of its own. One at a time: a second would drop the first's
+    /// report and could write the same file at once.
+    fn run_three_d_export(
+        &mut self,
+        delivery: crate::deliver::Delivery,
+        job: impl FnOnce(&Model) -> Result<(String, PathBuf), String> + Send + 'static,
+    ) {
+        if self.three_d.as_ref().is_some_and(|t| t.export.is_some()) {
+            self.show_toast("An export is already running.", 2.0);
+            return;
+        }
+        let Some(model) = self.three_d.as_ref().map(|t| t.doc.model.clone()) else { return };
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new().name("eskiz-3d-export".into()).spawn(move || {
-            let result = export_map_pngs(&model, &dir, Some(EXPORT_DPI))
-                .map(|paths| (format!("{} texture PNGs to {}", paths.len(), dir.display()), dir))
-                .map_err(|e| e.to_string());
-            let _ = tx.send(result);
+            let _ = tx.send(job(&model));
         });
-        if spawned.is_ok() {
-            three.export = Some(ModelExport { rx, delivery });
+        match (spawned, self.three_d.as_mut()) {
+            (Ok(_), Some(three)) => three.export = Some(ModelExport { rx, delivery }),
+            _ => self.show_toast("Could not start the export.", 2.5),
         }
     }
 
@@ -1208,6 +1214,7 @@ impl EskizApp {
             });
         if through != three.doc.paint_through {
             three.doc.paint_through = through;
+            three.doc.dirty = true;
             three.view_dirty = true;
         }
         if dismiss {
@@ -1224,7 +1231,7 @@ impl EskizApp {
         let Some(three) = self.three_d.as_mut() else {
             small_label(ui, &pal, "NO 3D DOCUMENT");
             ui.label(if cfg!(feature = "usd") {
-                "Import a .glb, .gltf, .obj, .usdz, .usda or .usdc from the Gallery to paint in 3D."
+                "Import a .glb, .gltf, .obj, .usd, .usdz, .usda or .usdc from the Gallery to paint in 3D."
             } else {
                 "Import a .glb, .gltf or .obj from the Gallery to paint in 3D."
             });
@@ -1249,6 +1256,7 @@ impl EskizApp {
         let mut through = three.doc.paint_through;
         if crate::theme::checkbox(ui, &mut through, "Paint through (surfaces behind the front)").changed() {
             three.doc.paint_through = through;
+            three.doc.dirty = true;
             changed = true;
         }
         if changed {

@@ -350,7 +350,9 @@ impl Skips {
         if self.stages.is_empty() && !self.no_vsync && !self.cpu_compositor && !self.pen_off {
             let _ = fs::remove_file(dir.join(SKIP_FILE));
         } else {
-            let _ = fs::write(dir.join(SKIP_FILE), self.encode());
+            if let Err(e) = eskiz_format::fsutil::write_atomic(&dir.join(SKIP_FILE), self.encode().as_bytes()) {
+                crate::startup::log(&format!("stall: could not save what was learned: {e}"));
+            }
         }
     }
 

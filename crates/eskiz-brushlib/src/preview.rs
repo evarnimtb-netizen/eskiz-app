@@ -210,7 +210,9 @@ fn composite(
     h: usize,
 ) -> Vec<f64> {
     let texturized = grain.filter(|_| brush.grain_mode != GrainMode::Moving);
-    let tile = f64::from(GRAIN_SIZE) * grain_scale(brush);
+    // The grain's own size, as the real stroke uses: imported grains are not all GRAIN_SIZE.
+    let size = texturized.map_or(GRAIN_SIZE, |g| g.width().max(1));
+    let tile = f64::from(size) * grain_scale(brush);
     let mut out = vec![0.0f64; w * h];
     for (idx, &cov) in coverage.iter().enumerate() {
         if cov <= 0.0 {

@@ -156,6 +156,8 @@ impl EskizApp {
                 "Select a layer to fill."
             } else if doc.effective_locked(self.active) {
                 "The active layer is locked."
+            } else if doc.texts.contains_key(&self.active) {
+                "This is a text layer. Rasterize it (Layers menu) to fill it."
             } else {
                 "The active layer is hidden. Show it to fill."
             };

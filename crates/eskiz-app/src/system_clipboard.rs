@@ -189,7 +189,14 @@ pub fn write_clip_png(dir: &Path, serial: u64, clip: &Clip) -> Result<PathBuf, S
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with("clip-") && name.ends_with(".png") && name != clip_file_name(serial) {
+            // Only older copies go: two quick copies encode on two threads, and the older one
+            // may finish last.
+            let older = name
+                .strip_prefix("clip-")
+                .and_then(|n| n.strip_suffix(".png"))
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some_and(|n| n < serial);
+            if older {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -320,7 +327,10 @@ impl EskizApp {
                     self.show_toast(format!("Could not paste: {e}"), 4.0);
                 }
                 Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
-                Err(TryRecvError::Disconnected) => self.clips.read = None,
+                Err(TryRecvError::Disconnected) => {
+                    self.clips.read = None;
+                    self.show_toast("Could not paste the picture.", 3.0);
+                }
             }
         }
         // A paste waits while the 3D view hides the drawing it is for.
@@ -337,7 +347,10 @@ impl EskizApp {
                     }
                 }
                 Err(TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
-                Err(TryRecvError::Disconnected) => self.clips.decode = None,
+                Err(TryRecvError::Disconnected) => {
+                    self.clips.decode = None;
+                    self.show_toast("Could not paste the picture.", 3.0);
+                }
             }
         }
     }
@@ -432,6 +445,9 @@ mod tests {
         assert_eq!(b.file_name().unwrap(), "clip-2.png");
         assert!(b.is_file() && !a.exists());
         assert!(dir.join("keep.txt").exists(), "only clip files are removed");
+        // An older copy that finishes last does not delete the newer file.
+        let late = write_clip_png(&dir, 1, &clip).unwrap();
+        assert!(b.is_file() && late.is_file(), "the newer clip survives an older write");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

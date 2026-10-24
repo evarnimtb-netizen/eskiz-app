@@ -87,13 +87,33 @@ pub fn sanitise_name(name: &str) -> String {
 }
 
 /// Unique file prefixes per texture set (collisions get a numeric suffix).
+/// Write `bytes` to `path` through a temporary file beside it and a rename: a failed or
+/// interrupted export leaves the old file (or none), never half a file.
+fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 pub(crate) fn unique_prefixes(sets: &[TextureSet]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for s in sets {
         let base = sanitise_name(&s.name);
         let mut cand = base.clone();
         let mut n = 1;
-        while seen.contains(&cand) {
+        // Case-blind: `Skin` and `skin` are one file on macOS and Windows.
+        while seen.iter().any(|s| s.eq_ignore_ascii_case(&cand)) {
             n += 1;
             cand = format!("{base}_{n}");
         }
@@ -116,7 +136,7 @@ pub fn export_map_pngs(
         for kind in MapKind::ALL {
             let bytes = encode_png(&set.straight_rgba(kind), set.width, set.height, dpi)?;
             let path = dir.join(format!("{prefix}_{}.png", kind.file_stem()));
-            std::fs::write(&path, bytes)?;
+            write_file(&path, &bytes)?;
             paths.push(path);
         }
     }
@@ -284,7 +304,7 @@ pub fn write_glb_bytes(model: &Model) -> Result<Vec<u8>, ExportError> {
 /// Write a GLB file.
 pub fn export_glb(model: &Model, path: &Path) -> Result<(), ExportError> {
     let bytes = write_glb_bytes(model)?;
-    std::fs::write(path, bytes)?;
+    write_file(path, &bytes)?;
     Ok(())
 }
 
@@ -341,6 +361,6 @@ pub fn write_usdz_bytes(model: &Model, opts: &UsdzOptions) -> Result<Vec<u8>, Ex
 /// Write a USDZ file.
 pub fn export_usdz(model: &Model, path: &Path) -> Result<(), ExportError> {
     let bytes = write_usdz_bytes(model, &UsdzOptions::default())?;
-    std::fs::write(path, bytes)?;
+    write_file(path, &bytes)?;
     Ok(())
 }

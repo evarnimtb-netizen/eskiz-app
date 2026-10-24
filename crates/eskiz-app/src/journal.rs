@@ -481,8 +481,13 @@ pub fn restore_counted(recovery: &Path, library: &Library, id: &str) -> Result<(
     if m["format"].as_u64() != Some(FORMAT) {
         return Err("journal: unknown format".to_owned());
     }
-    let width = m["width"].as_u64().ok_or("journal: no width")? as usize;
-    let height = m["height"].as_u64().ok_or("journal: no height")? as usize;
+    let side = |key: &str| -> Result<u32, String> {
+        let v = m[key].as_u64().ok_or_else(|| format!("journal: no {key}"))?;
+        u32::try_from(v).ok().filter(|&v| v > 0).ok_or_else(|| format!("journal: bad {key}"))
+    };
+    let (w32, h32) = (side("width")?, side("height")?);
+    eskiz_format::limits::check_canvas(w32, h32, "the recovered canvas").map_err(|e| e.to_string())?;
+    let (width, height) = (w32 as usize, h32 as usize);
     let depth = m["depth"].as_u64().and_then(|b| Depth::from_bits(b as u32)).ok_or("journal: bad depth")?;
     let mut doc = Document::empty_depth(width, height, depth);
     doc.dpi = m["dpi"].as_f64().unwrap_or(doc.dpi);
@@ -496,7 +501,7 @@ pub fn restore_counted(recovery: &Path, library: &Library, id: &str) -> Result<(
     doc.root = tree_from_json(&m["tree"])?;
     // New items must not reuse an id from the journal.
     let top = max_id(&doc.root);
-    while doc.alloc_id() < top {}
+    doc.reserve_ids_through(top);
 
     // The base: the package's layers, matched to the journal's layer ids by position.
     let base = match m["base_keys"].as_array() {

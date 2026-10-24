@@ -134,8 +134,9 @@ impl StudioBrush {
 pub fn copy_name(name: &str) -> String {
     let n = name.trim();
     if let Some((base, k)) = n.rsplit_once(" copy ") {
-        if let Ok(k) = k.parse::<u32>() {
-            return format!("{base} copy {}", k + 1);
+        let digits = !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit());
+        if let Some(next) = k.parse::<u32>().ok().filter(|_| digits).and_then(|k| k.checked_add(1)) {
+            return format!("{base} copy {next}");
         }
     }
     if n.ends_with(" copy") {
@@ -304,6 +305,8 @@ pub struct StudioState {
     /// Tip and grain thumbnails, made when a picker first shows.
     pub thumbs: HashMap<(bool, usize), TextureHandle>,
     pub layout: StudioLayout,
+    /// When Escape or Back last asked to close with unsaved changes (app time).
+    pub close_asked: Option<f64>,
 }
 
 impl StudioState {
@@ -327,6 +330,7 @@ impl StudioState {
             strip: None,
             thumbs: HashMap::new(),
             layout: StudioLayout::default(),
+            close_asked: None,
         }
     }
 
@@ -382,6 +386,19 @@ impl EskizApp {
     /// Close the Studio. Unsaved edits are dropped.
     pub(crate) fn close_studio(&mut self) {
         self.studio = None;
+    }
+
+    /// Escape and Back. With unsaved changes the Studio closes only on a second press within
+    /// 3 seconds: one stray press must not drop a long editing session.
+    pub(crate) fn request_close_studio(&mut self) {
+        let now = self.now;
+        let Some(st) = self.studio.as_mut() else { return };
+        if st.dirty() && st.close_asked.is_none_or(|t| now - t > 3.0) {
+            st.close_asked = Some(now);
+            self.show_toast("Unsaved changes. Press again to close without saving.", 3.0);
+            return;
+        }
+        self.close_studio();
     }
 
     /// Apply one edit to the working copy.

@@ -192,7 +192,8 @@ fn menu_items(row: &Row, can_delete: bool, can_merge: bool, can_combine: bool, h
         it(Act::Clear, "Clear", !row.locked && !is_text, false, false),
         it(Act::AlphaLock, "Lock Transparency", true, row.alpha_lock, false),
         it(Act::Mask, if row.has_mask { "Remove Mask" } else { "Add Mask" }, true, false, false),
-        it(Act::Clipping, "Clip to Layer Below", has_base, row.clipped, false),
+        // A clipped layer with nothing below any more can still be unclipped.
+        it(Act::Clipping, "Clip to Layer Below", has_base || row.clipped, row.clipped, false),
         it(Act::Assist, "Guided Layer", true, false, false),
         it(Act::Invert, "Invert", false, false, false),
         it(Act::Reference, "Reference", false, false, false),
@@ -1102,11 +1103,14 @@ impl EskizApp {
             rows[i + 1..].iter().find(skip).or_else(|| rows[..i].iter().rev().find(skip)).map(|r| r.id)
         });
         self.layers_ui.revealed = None;
+        let busy = self.session.is_stroking();
         let e = self.session.delete_layer(id);
         if self.layer_keep(e) {
             if self.active == id || self.session.doc.node(self.active).is_none() {
                 self.active = self.session.valid_active(neighbour);
             }
+        } else if busy {
+            self.show_toast("Finish the stroke first.", 2.0);
         } else {
             self.show_toast("A document needs at least one layer.", 2.0);
         }

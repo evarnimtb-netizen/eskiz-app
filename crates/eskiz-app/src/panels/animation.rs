@@ -134,13 +134,18 @@ impl EskizApp {
             return;
         }
         let (w, h) = cache.frames.size();
-        let thumb_h = THUMB_W * h as f32 / w.max(1) as f32;
+        // A very tall canvas would make a strip taller than the window: cap the height and
+        // narrow the thumbnail to keep its shape.
+        let tall = THUMB_W * h as f32 / w.max(1) as f32;
+        let thumb_h = tall.min(THUMB_W * 2.0);
+        let thumb_w = THUMB_W * thumb_h / tall.max(1.0);
         let mut clicked = None;
         egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for i in 0..cache.frames.len() {
                     let (rect, response) = ui.allocate_exact_size(Vec2::new(THUMB_W, thumb_h + 18.0), Sense::click());
-                    let image_rect = Rect::from_min_size(rect.min, Vec2::new(THUMB_W, thumb_h));
+                    let pad = (THUMB_W - thumb_w) * 0.5;
+                    let image_rect = Rect::from_min_size(rect.min + Vec2::new(pad, 0.0), Vec2::new(thumb_w, thumb_h));
                     let painter = ui.painter_at(rect);
                     painter.rect_filled(image_rect, CornerRadius::same(6), pal.row);
                     if let Some(Some(tex)) = self.anim.thumbs.get(i) {
@@ -244,7 +249,8 @@ impl EskizApp {
         let (mut bg, mut fg) = (bottom.is_some_and(|b| b.1), top.is_some_and(|t| t.1));
         let mut fps = s.fps();
         let mut count = s.onion_count();
-        let mut opacity = (s.onion_opacity() * 100.0).round();
+        let shown_opacity = (s.onion_opacity() * 100.0).round();
+        let mut opacity = shown_opacity;
         let mut open = true;
         egui::Window::new("Frames")
             .open(&mut open)
@@ -309,7 +315,11 @@ impl EskizApp {
             });
         s.set_frame_rate(fps);
         s.onion_count = count;
-        s.onion_opacity = opacity / 100.0;
+        // Only an opacity the user moved is stored: writing back the rounded percentage would
+        // change a stored 0.6667 to 0.67 just by opening the settings.
+        if opacity != shown_opacity {
+            s.onion_opacity = opacity / 100.0;
+        }
         if s != before {
             self.session.doc.animation = s;
             self.session.mark_edited();
@@ -361,7 +371,7 @@ impl EskizApp {
             } else if staged {
                 crate::saf::export_file_name(&title, format.extension())
             } else {
-                base.with_extension(format.extension()).display().to_string()
+                crate::export::with_export_extension(&base, format.extension()).display().to_string()
             };
             if list_row(ui, &pal, icon, name, Some(&file), !busy && !unavailable, Trailing::None).clicked() {
                 self.start_anim_export(&ctx, format);

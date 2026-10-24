@@ -38,9 +38,14 @@ pub fn save_queued() {
 
 /// A queued save finished or failed.
 pub fn save_done() {
+    decrement(&SAVES_PENDING);
+}
+
+/// One less, never below zero.
+fn decrement(counter: &AtomicUsize) {
     loop {
-        let n = SAVES_PENDING.load(Ordering::SeqCst);
-        if n == 0 || SAVES_PENDING.compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        let n = counter.load(Ordering::SeqCst);
+        if n == 0 || counter.compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
             break;
         }
     }
@@ -188,9 +193,13 @@ mod tests {
 
     #[test]
     fn save_counter_never_goes_below_zero() {
-        save_done();
-        save_done();
-        save_queued();
-        assert!(saves_pending() >= 1 || saves_pending() == 0);
+        // A counter of its own: the process-wide one is shared with tests running alongside.
+        let c = AtomicUsize::new(0);
+        decrement(&c);
+        decrement(&c);
+        assert_eq!(c.load(Ordering::SeqCst), 0, "a done without a queued save stays at zero");
+        c.fetch_add(2, Ordering::SeqCst);
+        decrement(&c);
+        assert_eq!(c.load(Ordering::SeqCst), 1);
     }
 }

@@ -228,8 +228,8 @@ fn a_failed_save_keeps_the_document_dirty_and_the_old_file_until_a_save_works() 
     h.settle_storage();
     assert!(h.app.is_dirty());
 
-    // The journal still holds the work, and the disk working again lets the next autosave succeed.
-    assert!(lib.recovery_root().join(&id).exists() || h.app.is_dirty());
+    // The work stays in the document (the failing folder holds the journal too), and the disk
+    // working again lets the next autosave succeed.
     FAIL_WRITES_UNDER.lock().unwrap().retain(|p| p != &dir);
     h.advance(2.5);
     h.settle_storage();

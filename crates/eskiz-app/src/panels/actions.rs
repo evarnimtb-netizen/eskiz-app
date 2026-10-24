@@ -416,7 +416,7 @@ impl EskizApp {
             } else if format.is_folder() {
                 base.display().to_string()
             } else {
-                base.with_extension(format.extension()).display().to_string()
+                crate::export::with_export_extension(&base, format.extension()).display().to_string()
             };
             if list_row(ui, &pal, icon, name, Some(&file), !busy, Trailing::None).clicked() {
                 chosen = Some(format);

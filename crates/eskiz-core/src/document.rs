@@ -237,6 +237,11 @@ impl Document {
         d
     }
 
+    /// Make every id up to and including `id` taken, so new items never reuse one of them.
+    pub fn reserve_ids_through(&mut self, id: u64) {
+        self.next_id = self.next_id.max(id.saturating_add(1));
+    }
+
     /// A fresh id. Ids are never reused within a document.
     pub fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;

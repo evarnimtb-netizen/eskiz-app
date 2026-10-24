@@ -123,7 +123,7 @@ pub trait FileAccess: Send + Sync {
 const PICTURES: FileFilter = FileFilter { name: "Pictures", extensions: &["png", "jpg", "jpeg", "webp"] };
 const IMPORTABLE: FileFilter = FileFilter {
     name: "Pictures, PSD, .procreate and 3D models",
-    extensions: &["png", "jpg", "jpeg", "webp", "psd", "procreate", "glb", "gltf", "obj", "usdz", "usda", "usdc"],
+    extensions: &["png", "jpg", "jpeg", "webp", "psd", "procreate", "glb", "gltf", "obj", "usd", "usdz", "usda", "usdc"],
 };
 const PROCREATE: FileFilter = FileFilter { name: "Eskiz drawings", extensions: &["procreate"] };
 const FONTS: FileFilter = FileFilter { name: "Fonts", extensions: &["ttf", "otf", "ttc"] };
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(exts(PickPurpose::Usdz), ["usdz"]);
         assert_eq!(exts(PickPurpose::Reference), ["png", "jpg", "jpeg", "webp"]);
         let import = exts(PickPurpose::ImportImage);
-        for e in ["png", "jpg", "webp", "psd", "procreate", "glb", "gltf", "obj", "usdz", "usda", "usdc"] {
+        for e in ["png", "jpg", "webp", "psd", "procreate", "glb", "gltf", "obj", "usd", "usdz", "usda", "usdc"] {
             assert!(import.contains(&e), "import filter lacks {e}");
         }
         for p in [PickPurpose::ExportBase, PickPurpose::ExportFolder, PickPurpose::GalleryShare, PickPurpose::ExportTree] {

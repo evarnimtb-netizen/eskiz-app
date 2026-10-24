@@ -277,7 +277,7 @@ impl Library {
                 return Err(format!("{}: {}", bak.display(), friendly(&e)));
             }
         }
-        if let Err(e) = fs::rename(&tmp, &path) {
+        if let Err(e) = rename_retry(&tmp, &path) {
             let _ = fs::remove_file(&tmp);
             let _ = fs::remove_file(&bak);
             return Err(format!("{}: {}", path.display(), friendly(&e)));
@@ -304,7 +304,7 @@ impl Library {
         let t = make_thumbnail(rgba, width, height, THUMB_MAX);
         let tmp = self.root.join(format!(".{id}.png.tmp"));
         write_png(&tmp, t.width, t.height, &t.rgba)?;
-        fs::rename(&tmp, self.thumb_file(id)).map_err(|e| e.to_string())
+        rename_retry(&tmp, &self.thumb_file(id)).map_err(|e| e.to_string())
     }
 
     /// Read a document back.
@@ -342,8 +342,15 @@ impl Library {
         }
         let tmp = self.root.join(format!(".{new_id}.tmp"));
         fs::copy(self.package(id), &tmp).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, self.package(&new_id)).map_err(|e| e.to_string())?;
+        rename_retry(&tmp, &self.package(&new_id)).map_err(|e| e.to_string())?;
         let _ = fs::copy(self.thumb_file(id), self.thumb_file(&new_id));
+        // The drawing guide and the saved selections live beside the package: the copy keeps them.
+        for ext in ["guides", "selections"] {
+            let from = self.root.join(format!("{id}.{ext}"));
+            if from.exists() {
+                let _ = fs::copy(&from, self.root.join(format!("{new_id}.{ext}")));
+            }
+        }
         let title = format!("{} copy", src.title);
         write_atomic(&self.meta_file(&new_id), format_meta(&title, src.width, src.height).as_bytes())?;
         self.get(&new_id).ok_or_else(|| "copy is missing".to_owned())
@@ -356,7 +363,7 @@ impl Library {
         copy_dir(&self.model_dir(id), &tmp)?;
         let title = format!("{} copy", src.title);
         set_model_title(&tmp, &title)?;
-        fs::rename(&tmp, self.model_dir(new_id)).map_err(|e| e.to_string())?;
+        rename_retry(&tmp, &self.model_dir(new_id)).map_err(|e| e.to_string())?;
         let _ = fs::copy(self.thumb_file(id), self.thumb_file(new_id));
         write_atomic(&self.meta_file(new_id), format_meta(&title, src.width, src.height).as_bytes())?;
         self.get(new_id).ok_or_else(|| "copy is missing".to_owned())
@@ -364,12 +371,17 @@ impl Library {
 
     /// Remove a document and its cache files. Deleting a missing document is fine.
     pub fn delete(&self, id: &str) -> Result<(), String> {
-        if check_id(id).is_ok() {
-            for dir in [self.model_dir(id), self.model_bak(id), self.model_tmp(id)] {
-                let _ = fs::remove_dir_all(dir);
-            }
-        }
         check_id(id)?;
+        for dir in [self.model_bak(id), self.model_tmp(id)] {
+            let _ = fs::remove_dir_all(dir);
+        }
+        // A 3D document whose folder stays (a file in it is open elsewhere) is not deleted:
+        // saying so beats a document that comes back at the next refresh.
+        match fs::remove_dir_all(self.model_dir(id)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {}", self.model_dir(id).display(), friendly(&e))),
+        }
         for path in [self.package(id), self.thumb_file(id), self.meta_file(id)] {
             match fs::remove_file(&path) {
                 Ok(()) => {}
@@ -878,12 +890,27 @@ pub(crate) fn write_atomic_nodir(path: &Path, bytes: &[u8]) -> Result<(), String
         let mut f = fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
-        fs::rename(&tmp, path)
+        rename_retry(&tmp, path)
     })();
     result.map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("{}: {}", path.display(), friendly(&e))
     })
+}
+
+/// Rename `from` over `to`. On Windows a sync client or virus scanner may hold a freshly written
+/// file for a moment, so a refused rename is tried a few more times.
+pub(crate) fn rename_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match fs::rename(from, to) {
+            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied && attempt < 5 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(40 * attempt));
+            }
+            other => return other,
+        }
+    }
 }
 
 /// A short reason for a file error, for toasts: disk full and permission errors get plain words.

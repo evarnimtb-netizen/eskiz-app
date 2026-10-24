@@ -275,6 +275,11 @@ impl Session {
         self.doc_gen
     }
 
+    /// A Pour Fill preview is in the layer while the finger is down: a save now would keep it.
+    pub fn has_fill_preview(&self) -> bool {
+        self.drop_preview.is_some()
+    }
+
     pub fn is_stroking(&self) -> bool {
         self.engine.is_active() || self.smudge.is_active()
     }
@@ -819,10 +824,11 @@ impl Session {
         let lower_id = self.doc.children(loc.parent)?.get(lower_index)?.id;
         let upper = self.doc.node(id)?;
         let lower = self.doc.node(lower_id)?;
-        if upper.is_group() || lower.is_group() || upper.props.locked || lower.props.locked {
+        if upper.is_group() || lower.is_group() {
             return None;
         }
-        if self.doc.texts.contains_key(&lower_id) {
+        // A lock on either layer or on a group around them (as every pixel edit checks).
+        if self.doc.effective_locked(id) || self.doc.effective_locked(lower_id) || self.doc.texts.contains_key(&lower_id) {
             return None;
         }
 
@@ -910,8 +916,8 @@ impl Session {
             (Some(u), Some(l)) => {
                 !u.is_group()
                     && !l.is_group()
-                    && !u.props.locked
-                    && !l.props.locked
+                    && !self.doc.effective_locked(id)
+                    && !self.doc.effective_locked(lower)
                     && !self.doc.texts.contains_key(&lower)
             }
             _ => false,
@@ -977,7 +983,21 @@ impl Session {
             return None;
         }
         let children: Vec<u64> = node.children().iter().map(|c| c.id).collect();
+        let (hidden, locked) = (!node.props.visible, node.props.locked);
         let mut cmd = Command::new("Ungroup");
+        // A hidden or locked group passes that on: its layers must not appear or become
+        // editable just because the group goes.
+        if hidden || locked {
+            for child in &children {
+                let Some(before) = self.doc.node(*child).map(|n| n.props.clone()) else { continue };
+                let mut after = before.clone();
+                after.visible &= !hidden;
+                after.locked |= locked;
+                if after != before {
+                    cmd.apply(&mut self.doc, Change::Props { id: *child, before, after });
+                }
+            }
+        }
         for child in &children {
             let from = self.doc.locate(*child)?;
             let group_index = self.doc.locate(id)?.index;
@@ -1315,7 +1335,12 @@ impl Session {
     /// Mirror the whole canvas: every layer and mask. One undo step.
     pub fn flip_canvas(&mut self, horizontal: bool) -> Option<Edit> {
         let name = if horizontal { "Flip Canvas Horizontal" } else { "Flip Canvas Vertical" };
-        self.apply_doc_op(name, Box::new(FlipCanvas { horizontal }))
+        // The selection lives in the session, not the document: it is mirrored with the layers.
+        let selection = self
+            .selection()
+            .mask()
+            .map(|m| Selection::active(eskiz_select::canvas::flip_mask(m, horizontal)));
+        self.canvas_op(name, Box::new(FlipCanvas { horizontal }), selection)
     }
 
     /// Apply any document-wide operation as one undo step (crop, resize and the like).
@@ -1323,6 +1348,10 @@ impl Session {
         if !self.idle() {
             return None;
         }
+        // Typing in a text layer and a Pour Fill preview are steps of their own, recorded first
+        // so undo takes them back in the right order.
+        self.text_commit();
+        let _ = self.pour_fill_commit();
         let mut cmd = Command::new(name);
         cmd.apply(&mut self.doc, Change::Doc(op));
         self.finish(cmd, None)
@@ -2565,5 +2594,53 @@ mod tests {
         assert!(s.merge_down(upper).is_none());
         s.doc.texts.remove(&text);
         assert!(s.can_merge_down(upper), "a raster layer below still merges");
+    }
+
+    #[test]
+    fn ungroup_passes_hidden_and_locked_to_the_layers() {
+        let mut s = fresh();
+        let layer = base(&s);
+        let group = s.group_items(&[layer]).unwrap().id.unwrap();
+        s.set_props(group, "Hide", |p| {
+            p.visible = false;
+            p.locked = true;
+        })
+        .unwrap();
+        s.ungroup(group).unwrap();
+        let props = &s.doc.node(layer).unwrap().props;
+        assert!(!props.visible && props.locked, "the layers stay hidden and locked");
+        s.undo().unwrap();
+        let props = &s.doc.node(layer).unwrap().props;
+        assert!(props.visible && !props.locked, "undo gives the layer its own settings back");
+    }
+
+    #[test]
+    fn merge_down_refuses_layers_in_a_locked_group() {
+        let mut s = fresh();
+        let lower = base(&s);
+        let upper = s.add_layer(Some(lower)).unwrap().id.unwrap();
+        let group = s.group_items(&[lower, upper]).unwrap().id.unwrap();
+        s.set_props(group, "Lock", |p| p.locked = true).unwrap();
+        assert!(!s.can_merge_down(upper));
+        assert!(s.merge_down(upper).is_none());
+    }
+
+    #[test]
+    fn flip_canvas_mirrors_the_selection_and_undo_restores_it() {
+        let mut s = fresh();
+        let (w, h) = (s.doc.width, s.doc.height);
+        let mut mask = eskiz_select::Mask::empty(w, h);
+        for y in 0..h {
+            for x in 0..w / 4 {
+                mask.data[y * w + x] = 1.0;
+            }
+        }
+        s.set_selection("Selection", Selection::active(mask));
+        s.flip_canvas(true).unwrap();
+        let m = s.selection().mask().unwrap();
+        assert_eq!(m.get(w - 1, 0), 1.0, "the selected strip is now on the right");
+        assert_eq!(m.get(0, 0), 0.0);
+        s.undo().unwrap();
+        assert_eq!(s.selection().mask().unwrap().get(0, 0), 1.0, "undo puts it back");
     }
 }

@@ -119,6 +119,9 @@ pub(crate) struct MaterialSources {
     pub metallic: Option<(Img, usize)>,
     pub normal: Option<Img>,
     pub ao: Option<(Img, usize)>,
+    /// The material is opaque (glTF `alphaMode` OPAQUE): the colour texture's alpha is not
+    /// coverage (exporters often pack other data there), so it is read as fully opaque.
+    pub opaque: bool,
 }
 
 pub(crate) fn assemble(src: MaterialSources, default_size: usize) -> TextureSet {
@@ -168,6 +171,9 @@ pub(crate) fn assemble(src: MaterialSources, default_size: usize) -> TextureSet 
                         p[c] = linear_to_srgb(srgb_to_linear(p[c]) * f[c]);
                     }
                     p[3] = (f32::from(p[3]) * f[3].clamp(0.0, 1.0)).round() as u8;
+                }
+                if src.opaque {
+                    p[3] = 255;
                 }
                 let a = u32::from(p[3]);
                 let i = (y * size.0 + x) * 4;
@@ -321,7 +327,21 @@ fn build_gltf(
     images: &[gltf::image::Data],
     opts: &ImportOptions,
 ) -> Result<ImportedModel, ImportError> {
-    let notes = Vec::new();
+    // The glTF reader checks a buffer view's stride only against 4..=252: a stride shorter than
+    // the element makes its accessor iterator panic on the first item.
+    for acc in doc.accessors() {
+        if let Some(stride) = acc.view().and_then(|v| v.stride()) {
+            if stride < acc.size() {
+                return Err(ImportError::Parse(format!(
+                    "accessor {} has elements of {} bytes but a stride of {stride}",
+                    acc.index(),
+                    acc.size()
+                )));
+            }
+        }
+    }
+    let mut notes = Vec::new();
+    let (mut lines, mut no_positions) = (0usize, 0usize);
     let img = |tex: gltf::Texture<'_>| gltf_image(images, tex.source().index());
     let mut sets: Vec<TextureSet> = doc
         .materials()
@@ -347,6 +367,7 @@ fn build_gltf(
                     .occlusion_texture()
                     .and_then(|i| img(i.texture()))
                     .map(|i| (i, 0)),
+                opaque: m.alpha_mode() == gltf::material::AlphaMode::Opaque,
             };
             assemble(src, opts.default_texture_size)
         })
@@ -372,10 +393,12 @@ fn build_gltf(
                     prim.mode(),
                     Mode::Triangles | Mode::TriangleStrip | Mode::TriangleFan
                 ) {
+                    lines += 1;
                     continue;
                 }
                 let reader = prim.reader(|b| buffers.get(b.index()).map(|d| &d.0[..]));
                 let Some(pos) = reader.read_positions() else {
+                    no_positions += 1;
                     continue;
                 };
                 let positions: Vec<Vec3> =
@@ -481,6 +504,13 @@ fn build_gltf(
         }
     }
     debug_assert!(sets.len() >= material_count);
+    // Say what was left out, as the USD importer does.
+    if lines > 0 {
+        notes.push(format!("{lines} line part(s) left out: only triangles can be painted"));
+    }
+    if no_positions > 0 {
+        notes.push(format!("{no_positions} part(s) without vertex positions left out"));
+    }
     finish(Model::new(submeshes, sets, points), generated, notes)
 }
 
@@ -490,7 +520,10 @@ fn build_gltf(
 
 /// Load an `.obj` file; its `mtllib` and textures resolve next to it.
 pub fn load_obj(path: &Path, opts: &ImportOptions) -> Result<ImportedModel, ImportError> {
-    let text = std::fs::read_to_string(path).map_err(|e| ImportError::Io(e.to_string()))?;
+    let bytes = std::fs::read(path).map_err(|e| ImportError::Io(e.to_string()))?;
+    // Older Windows tools write names in Latin-1 ("Zürich"): read those bytes as Latin-1 rather
+    // than refuse the file.
+    let text = String::from_utf8(bytes).unwrap_or_else(|e| e.into_bytes().iter().map(|&b| char::from(b)).collect());
     load_obj_impl(&text, None, path.parent(), opts)
 }
 
@@ -533,9 +566,33 @@ fn side_file(base: &Path, name: &str) -> Option<PathBuf> {
     (meta.is_file() && meta.len() <= MAX_SIDE_FILE_BYTES).then_some(path)
 }
 
+/// The file name of an MTL texture statement without its options (`-bm 1.0 normal.png` and
+/// `-s 2 2 1 tile.png` name `normal.png` and `tile.png`). The name may hold spaces.
+fn texture_file_name(statement: &str) -> &str {
+    // Each option and how many values follow it.
+    const OPTIONS: &[(&str, usize)] = &[
+        ("-blendu", 1), ("-blendv", 1), ("-bm", 1), ("-boost", 1), ("-cc", 1), ("-clamp", 1),
+        ("-imfchan", 1), ("-texres", 1), ("-type", 1), ("-mm", 2), ("-o", 3), ("-s", 3), ("-t", 3),
+    ];
+    let mut rest = statement.trim();
+    loop {
+        let Some((head, tail)) = rest.split_once(char::is_whitespace) else { return rest };
+        let Some(&(_, args)) = OPTIONS.iter().find(|(o, _)| o.eq_ignore_ascii_case(head)) else { return rest };
+        rest = tail.trim_start();
+        for i in 0..args {
+            // `-o`, `-s` and `-t` take one to three numbers: stop at the first word that is not one.
+            let Some((value, after)) = rest.split_once(char::is_whitespace) else { return rest };
+            if i > 0 && args == 3 && value.parse::<f32>().is_err() {
+                break;
+            }
+            rest = after.trim_start();
+        }
+    }
+}
+
 fn read_texture(base: Option<&Path>, name: &str, notes: &mut Vec<String>) -> Option<Img> {
     let base = base?;
-    let name = name.trim();
+    let name = texture_file_name(name);
     let Some(path) = side_file(base, name) else {
         notes.push(format!("texture {name} is not a file next to the model; skipped"));
         return None;
@@ -588,7 +645,15 @@ fn load_obj_impl(
     };
     let (models, materials) = tobj::load_obj_buf(&mut Cursor::new(obj.as_bytes()), &lo, loader)
         .map_err(|e| ImportError::Parse(e.to_string()))?;
-    let materials = materials.unwrap_or_default();
+    let materials = match materials {
+        Ok(m) => m,
+        Err(e) => {
+            if obj.lines().any(|l| l.trim_start().starts_with("mtllib")) {
+                notes.push(format!("the material library could not be read ({e}); the model uses a plain material"));
+            }
+            Vec::new()
+        }
+    };
 
     let mut sets: Vec<TextureSet> = materials
         .iter()
@@ -622,6 +687,8 @@ fn load_obj_impl(
                     .as_deref()
                     .and_then(|t| read_texture(base, t, &mut notes))
                     .map(|i| (i, 0)),
+                // OBJ has no opaque flag: its `d` and texture alpha are coverage.
+                opaque: false,
             };
             assemble(src, opts.default_texture_size)
         })
@@ -677,4 +744,18 @@ fn load_obj_impl(
     }
     let points = if has_faces { 0 } else { vertex_lines };
     finish(Model::new(submeshes, sets, points), generated, notes)
+}
+
+#[cfg(test)]
+mod mtl_tests {
+    use super::texture_file_name;
+
+    #[test]
+    fn texture_options_are_not_part_of_the_file_name() {
+        assert_eq!(texture_file_name("normal.png"), "normal.png");
+        assert_eq!(texture_file_name("-bm 1.000000 normal.png"), "normal.png");
+        assert_eq!(texture_file_name("-s 2 2 1 tile.png"), "tile.png");
+        assert_eq!(texture_file_name("-s 2 2 my tile.png"), "my tile.png");
+        assert_eq!(texture_file_name("-blendu on -clamp off wood grain.jpg"), "wood grain.jpg");
+    }
 }

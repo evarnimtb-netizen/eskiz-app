@@ -421,6 +421,22 @@ impl EskizApp {
 
     /// Redraw after an undo or redo. `before` is the canvas size before the step, so a step that
     /// changed the size (a crop or resize) refits the view.
+    /// Another drawing is about to take the canvas: end what belongs to this one, so no sheet,
+    /// mode or playback carries over to the next drawing (with this one's sizes and pixels).
+    pub(crate) fn end_document_modes(&mut self) {
+        self.adjust_cancel();
+        self.liquify_cancel();
+        self.end_text_edit();
+        self.exit_edit_mode();
+        self.shape_edit = None;
+        self.crop = None;
+        self.canvas_info_open = false;
+        self.anim.playback = None;
+        self.anim.frame = 0;
+        self.anim.selected = None;
+        self.anim.canvas_key = None;
+    }
+
     pub(crate) fn apply_history_refresh(&mut self, before: (usize, usize), refresh: Refresh) {
         self.clamp_text_caret();
         if before != (self.session.doc.width, self.session.doc.height) {

@@ -856,6 +856,10 @@ impl EskizApp {
             }
             Action::Duplicate(id) => {
                 self.gal.revealed = None;
+                // A save still queued for it would make this a copy of the version before.
+                if !self.wait_for_saves() {
+                    return;
+                }
                 match self.gal.library.as_ref().map(|l| l.duplicate(&id)) {
                     Some(Ok(copy)) => {
                         self.gal.refresh();

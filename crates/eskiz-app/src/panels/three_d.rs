@@ -66,6 +66,8 @@ impl EskizApp {
                 });
         }
         if changed {
+            // Visible and Locked are saved with the document.
+            three.doc.dirty = true;
             three.touch();
         }
     }

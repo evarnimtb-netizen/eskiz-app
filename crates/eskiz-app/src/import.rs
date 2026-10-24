@@ -62,6 +62,16 @@ fn open_procreate_with(path: &Path, direct: bool) -> Result<Document, String> {
     Ok(doc)
 }
 
+/// An opacity from a file, in 0..1. A NaN (a plist real can hold one) is read as fully opaque:
+/// `clamp` would keep it, and the package writer refuses to save it.
+fn unit_or_one(v: f64) -> f64 {
+    if v.is_nan() {
+        1.0
+    } else {
+        v.clamp(0.0, 1.0)
+    }
+}
+
 fn extension_lower(path: &Path) -> Option<String> {
     path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
 }
@@ -375,7 +385,7 @@ fn add_group(doc: &mut Document, src: &mut ProcDocument, parent: Option<u64>, gr
     } else {
         group.name.clone()
     });
-    props.opacity = group.opacity.clamp(0.0, 1.0);
+    props.opacity = unit_or_one(group.opacity);
     props.visible = !group.hidden;
     props.locked = group.locked;
     props.private = group.private;
@@ -454,7 +464,7 @@ fn add_layer(doc: &mut Document, src: &mut ProcDocument, parent: Option<u64>, la
         layer.name.clone()
     });
     props.visible = !layer.hidden;
-    props.opacity = layer.opacity.clamp(0.0, 1.0);
+    props.opacity = unit_or_one(layer.opacity);
     props.blend = layer.blend_mode.and_then(BlendMode::from_index).unwrap_or_default();
     props.clipped = layer.clipped;
     props.alpha_lock = layer.alpha_locked;

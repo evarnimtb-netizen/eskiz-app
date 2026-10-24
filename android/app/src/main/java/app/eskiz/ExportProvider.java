@@ -140,6 +140,7 @@ public class ExportProvider extends ContentProvider {
             case "psd": return "image/vnd.adobe.photoshop";
             case "glb": return "model/gltf-binary";
             case "usdz": return "model/vnd.usdz+zip";
+            case "mp4": return "video/mp4";
             default: return "application/octet-stream";
         }
     }
